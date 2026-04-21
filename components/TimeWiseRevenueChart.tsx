@@ -92,14 +92,27 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
             />
             <Tooltip 
               cursor={{ fill: 'rgba(239, 68, 68, 0.03)' }}
-              contentStyle={{ 
-                borderRadius: '20px', 
-                border: '4px solid #3c2a21', 
-                boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)',
-                padding: '16px' 
+              content={({ active, payload, label }) => {
+                if (active && payload && payload.length) {
+                  const data = payload[0].payload;
+                  return (
+                    <div className="bg-brand-brown p-4 rounded-2xl shadow-2xl border-2 border-brand-stone min-w-[140px]">
+                      <p className="text-brand-yellow text-[10px] font-black uppercase tracking-widest mb-3 italic">{label}</p>
+                      <div className="space-y-3">
+                        <div>
+                          <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-0.5">Revenue</p>
+                          <p className="text-white text-lg font-black leading-none">₹{Number(data.revenue).toLocaleString()}</p>
+                        </div>
+                        <div className="pt-2 border-t border-white/5">
+                          <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-0.5">Total Orders</p>
+                          <p className="text-brand-yellow text-sm font-black leading-none">{data.orders}</p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+                return null;
               }}
-              labelStyle={{ fontWeight: '900', color: '#3c2a21', fontSize: '12px', marginBottom: '4px', textTransform: 'uppercase', fontStyle: 'italic' }}
-              formatter={(value: any) => [`₹${Number(value).toLocaleString()}`, 'REVENUE']}
             />
             <Bar 
               dataKey="revenue" 

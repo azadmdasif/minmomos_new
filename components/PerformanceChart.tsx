@@ -15,10 +15,11 @@ import { TrendingUp, DollarSign, ShoppingBag, BarChart2 } from 'lucide-react';
 
 interface PerformanceChartProps {
   orders: CompletedOrder[];
-  days: number;
+  startDate: string;
+  endDate: string;
 }
 
-const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, days }) => {
+const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, endDate }) => {
   const [showSMA, setShowSMA] = useState(false);
   const [showRevenue, setShowRevenue] = useState(true);
   const [showProfit, setShowProfit] = useState(true);
@@ -26,24 +27,28 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, days }) => 
   const [revenueType, setRevenueType] = useState<'ALL' | 'DINE_IN' | 'TAKEAWAY'>('ALL');
 
   const chartData = useMemo(() => {
+    // 1. Determine date range for data population: startDate - 31 to endDate
+    const startObj = new Date(startDate);
+    startObj.setDate(startObj.getDate() - 31);
+    const endObj = new Date(endDate);
+    
     const dailyData: Record<string, { totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; totalCogs: number; dineInCogs: number; takeawayCogs: number; totalOrders: number; dineInOrders: number; takeawayOrders: number }> = {};
     
     // Initialize all dates in range to 0
-    const today = new Date();
-    for (let i = 0; i < days; i++) {
-        const d = new Date();
-        d.setDate(today.getDate() - i);
-        const dateStr = d.toISOString().split('T')[0];
-        dailyData[dateStr] = { 
+    let curr = new Date(startObj);
+    while (curr <= endObj) {
+        const ds = curr.toISOString().split('T')[0];
+        dailyData[ds] = { 
           totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, 
           totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, 
           totalOrders: 0, dineInOrders: 0, takeawayOrders: 0 
         };
+        curr.setDate(curr.getDate() + 1);
     }
 
     // Populate with actual data
     orders.forEach(order => {
-      const dateStr = new Date(order.date).toISOString().split('T')[0];
+      const dateStr = order.date.split('T')[0];
       if (dailyData[dateStr]) {
         const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
         
@@ -63,7 +68,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, days }) => 
       }
     });
 
-    const sortedData = Object.entries(dailyData)
+    const fullSortedData = Object.entries(dailyData)
       .map(([date, values]) => {
         let revenue = values.totalRevenue;
         let cogs = values.totalCogs;
@@ -90,25 +95,23 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, days }) => 
       })
       .sort((a, b) => a.date.localeCompare(b.date));
 
-    // Calculate SMA if needed (simple window avg within the dataset)
-    if (showSMA) {
-      const windowSize = 30; // user requested SMA-30
-      return sortedData.map((day, idx, arr) => {
-        // Find indices for trailing window
-        const window = arr.slice(Math.max(0, idx - windowSize + 1), idx + 1);
-        const actualSize = window.length;
-        
-        return {
-          ...day,
-          revenueSMA: window.reduce((sum, d) => sum + d.revenue, 0) / actualSize,
-          profitSMA: window.reduce((sum, d) => sum + d.profit, 0) / actualSize,
-          ticketSMA: window.reduce((sum, d) => sum + d.avgTicket, 0) / actualSize,
-        };
-      });
-    }
+    // Calculate SMA on the full dataset (trailing 30 days)
+    const windowSize = 30;
+    const dataWithSMA = fullSortedData.map((day, idx, arr) => {
+      const window = arr.slice(Math.max(0, idx - windowSize + 1), idx + 1);
+      const actualSize = window.length;
+      
+      return {
+        ...day,
+        revenueSMA: window.reduce((sum, d) => sum + d.revenue, 0) / actualSize,
+        profitSMA: window.reduce((sum, d) => sum + d.profit, 0) / actualSize,
+        ticketSMA: window.reduce((sum, d) => sum + d.avgTicket, 0) / actualSize,
+      };
+    });
 
-    return sortedData;
-  }, [orders, days, showSMA, revenueType]);
+    // Finally, filter to only return the visible range [startDate, endDate]
+    return dataWithSMA.filter(d => d.date >= startDate && d.date <= endDate);
+  }, [orders, startDate, endDate, showSMA, revenueType]);
 
   return (
     <div className="bg-white p-6 rounded-lg shadow-md border border-brand-brown/10 mb-6 font-primary">

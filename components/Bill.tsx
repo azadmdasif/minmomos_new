@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { OrderItem } from '../types';
+import { OrderItem, OrderType } from '../types';
 import BillItem from './BillItem';
 import { MENU_ITEMS } from '../constants';
 
@@ -11,24 +11,65 @@ interface BillProps {
   onPreview: () => void;
   branchName: string | null;
   onAddItem: (items: OrderItem[]) => void;
-  orderType?: string;
+  orderType: OrderType;
+  setOrderType: (type: OrderType) => void;
+  customerPhone: string;
+  setCustomerPhone: (phone: string) => void;
 }
 
-const Bill: React.FC<BillProps> = ({ orderItems, onUpdateQuantity, onClear, onPreview, branchName, onAddItem, orderType }) => {
+const Bill: React.FC<BillProps> = ({ 
+  orderItems, 
+  onUpdateQuantity, 
+  onClear, 
+  onPreview, 
+  branchName, 
+  onAddItem, 
+  orderType,
+  setOrderType,
+  customerPhone,
+  setCustomerPhone
+}) => {
   const total = orderItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
 
   return (
-    <div className="flex flex-col h-full text-stone-800">
-      <div className="p-6 border-b border-stone-100 flex justify-between items-start">
+    <div className="flex flex-col h-full bg-white lg:bg-transparent">
+      {/* Settings / Meta Section */}
+      <div className="p-4 lg:p-6 border-b border-black/5 lg:border-white/5 bg-brand-brown/5 lg:bg-transparent">
+        <div className="flex bg-black/10 lg:bg-black/20 p-1 rounded-2xl mb-4">
+          {(['DINE_IN', 'TAKEAWAY', 'DELIVERY'] as OrderType[]).map(type => (
+            <button
+              key={type}
+              onClick={() => {
+                setOrderType(type);
+              }}
+              className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all duration-200 ${
+                orderType === type 
+                  ? 'bg-brand-yellow text-brand-brown shadow-md scale-[1.02]' 
+                  : 'text-brand-brown/40 lg:text-brand-cream/40 hover:text-brand-brown/60 lg:hover:text-brand-cream/60'
+              }`}
+            >
+              {type.replace('_', ' ')}
+            </button>
+          ))}
+        </div>
+        
+        <div className="space-y-1">
+          <label className="text-[9px] font-black uppercase text-brand-brown/30 lg:text-brand-cream/40 tracking-[0.2em] ml-1">Customer Contact</label>
+          <input 
+            type="tel"
+            placeholder="Enter Phone Number..."
+            value={customerPhone}
+            onChange={(e) => setCustomerPhone(e.target.value)}
+            className="w-full bg-white/10 lg:bg-white/10 border border-brand-brown/10 lg:border-white/10 rounded-xl p-3 text-sm font-bold text-brand-brown lg:text-brand-cream outline-none focus:border-brand-yellow transition-colors placeholder:text-stone-400 lg:placeholder:text-white/20"
+          />
+        </div>
+      </div>
+
+      <div className="p-6 border-b border-stone-100 flex justify-between items-start lg:hidden">
         <div>
-          <h2 className="text-xl font-black text-mountain-green tracking-tighter italic uppercase">Current <span className="text-peak-amber">Cart</span></h2>
+          <h2 className="text-xl font-black text-mountain-green tracking-tighter italic uppercase leading-none">Current <span className="text-peak-amber">Cart</span></h2>
           {branchName && <p className="text-[9px] font-black text-stone-400 uppercase tracking-[0.2em] mt-1">{branchName}</p>}
         </div>
-        {orderType && (
-          <span className="bg-brand-yellow text-brand-brown px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest italic shadow-sm">
-            {orderType.replace('_', ' ')}
-          </span>
-        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-4 no-scrollbar">
@@ -60,7 +101,7 @@ const Bill: React.FC<BillProps> = ({ orderItems, onUpdateQuantity, onClear, onPr
       <div className="p-6 bg-stone-50 border-t border-stone-200">
         <div className="flex justify-between items-end mb-6">
           <span className="text-[10px] font-black uppercase text-stone-400 tracking-widest">Total Amount</span>
-          <span className="text-3xl font-black text-mountain-green tracking-tighter">₹{total.toFixed(2)}</span>
+          <span className="text-3xl font-black text-mountain-green tracking-tighter lg:text-white">₹{total.toFixed(2)}</span>
         </div>
         <div className="grid grid-cols-2 gap-4">
           <button 

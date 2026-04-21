@@ -7,10 +7,15 @@ import DeleteBillModal from './DeleteBillModal';
 import ItemSalesReport from './ItemSalesReport';
 import PerformanceChart from './PerformanceChart';
 import TimeWiseRevenueChart from './TimeWiseRevenueChart';
-import { Search, User as UserIcon, MapPin, Receipt, History } from 'lucide-react';
+import { Search, User as UserIcon, MapPin, Receipt, History, X } from 'lucide-react';
 
 const getTodaysDateString = () => new Date().toISOString().split('T')[0];
 const getDateString = (date: Date) => date.toISOString().split('T')[0];
+const getHistoricalStartDate = (dateStr: string, daysToSubtract: number) => {
+  const d = new Date(dateStr);
+  d.setDate(d.getDate() - daysToSubtract);
+  return d.toISOString().split('T')[0];
+};
 
 interface AnalyticsProps {
   user: User;
@@ -32,6 +37,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [availableStations, setAvailableStations] = useState<Station[]>([]);
   
   const [orders, setOrders] = useState<CompletedOrder[]>([]);
+  const [chartOrders, setChartOrders] = useState<CompletedOrder[]>([]);
   const [allOrdersRaw, setAllOrdersRaw] = useState<CompletedOrder[]>([]);
   const [deletedOrders, setDeletedOrders] = useState<CompletedOrder[]>([]);
   const [procurements, setProcurements] = useState<any[]>([]);
@@ -62,16 +68,27 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   }, [isAdmin]);
 
   const fetchOrders = useCallback(async () => {
-    const fetchedOrders = await getOrdersForDateRange(startDate, endDate);
+    // Expand start date by 32 days to ensure 30-day SMA is accurate for the start of the visible range
+    const expandedStart = getHistoricalStartDate(startDate, 32);
+    const fetchedOrders = await getOrdersForDateRange(expandedStart, endDate);
     setAllOrdersRaw(fetchedOrders);
     
     // Filter by store - Managers only see their own
     const storeToFilter = isAdmin ? selectedStore : (user.stationName || 'All');
-    const filtered = storeToFilter === 'All' 
+    
+    // Process Chart Data (Historical + Visible range, Station Filtered)
+    const stationFiltered = storeToFilter === 'All' 
       ? fetchedOrders 
       : fetchedOrders.filter(o => o.branchName === storeToFilter);
+    setChartOrders(stationFiltered);
+
+    // Process View Data (Visible range ONLY, Station Filtered)
+    const inRange = stationFiltered.filter(o => {
+      const d = o.date.split('T')[0];
+      return d >= startDate && d <= endDate;
+    });
       
-    setOrders([...filtered].sort((a, b) => b.billNumber - a.billNumber));
+    setOrders([...inRange].sort((a, b) => b.billNumber - a.billNumber));
   }, [startDate, endDate, selectedStore, isAdmin, user.stationName]);
 
   const fetchFinanceData = useCallback(async () => {
@@ -149,15 +166,19 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     setEndDate(getDateString(end));
   };
 
-  const handleSearch = async () => {
+  const handleSearch = async (forcedBillNum?: number) => {
     setFoundOrder(null);
     setSearchMessage('');
-    if (!searchTerm.trim()) return;
-    const billNum = parseInt(searchTerm, 10);
+    
+    const query = forcedBillNum?.toString() || searchTerm;
+    if (!query.trim()) return;
+
+    const billNum = parseInt(query, 10);
     if (isNaN(billNum)) {
       setSearchMessage('Please enter a valid bill number.');
       return;
     };
+
     const order = await getOrderByBillNumber(billNum);
     if (order) {
       setFoundOrder(order);
@@ -235,7 +256,12 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const comparisonData = useMemo(() => {
     if (!isAdmin) return [];
     const stores: Record<string, { revenue: number, orders: number, profit: number }> = {};
-    allOrdersRaw.forEach(order => {
+    const visibleRaw = allOrdersRaw.filter(o => {
+      const d = o.date.split('T')[0];
+      return d >= startDate && d <= endDate;
+    });
+
+    visibleRaw.forEach(order => {
       if (!stores[order.branchName]) stores[order.branchName] = { revenue: 0, orders: 0, profit: 0 };
       stores[order.branchName].revenue += order.total;
       stores[order.branchName].orders += 1;
@@ -248,13 +274,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const filteredCustomers = useMemo(() => {
     return customers.filter(c => c.phone.includes(customerSearchTerm));
   }, [customers, customerSearchTerm]);
-
-  const displayDays = useMemo(() => {
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    const diffTime = Math.abs(end.getTime() - start.getTime());
-    return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-  }, [startDate, endDate]);
 
   const SummaryCard = ({ title, value, sub, color, textWhite }: any) => (
     <div className={`${color} p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-sm relative overflow-hidden group border border-black/5`}>
@@ -283,7 +302,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                   onKeyDown={e => e.key === 'Enter' && handleSearch()}
                   className="bg-transparent text-[10px] font-black uppercase px-4 py-2 outline-none w-32"
                />
-               <button onClick={handleSearch} className="bg-brand-brown text-brand-yellow px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Find</button>
+               <button onClick={() => handleSearch()} className="bg-brand-brown text-brand-yellow px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Find</button>
             </div>
 
             <div className="flex flex-wrap items-center gap-2 bg-white/50 p-2 rounded-2xl lg:rounded-3xl border border-brand-stone">
@@ -312,44 +331,79 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         </header>
 
         {foundOrder && (
-          <div className="mb-10 animate-in zoom-in-95 duration-500 relative">
-             <div className="bg-white rounded-[3rem] p-10 border-8 border-brand-red shadow-2xl flex flex-col md:flex-row gap-10">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 lg:p-10 animate-in fade-in duration-300">
+             <div className="absolute inset-0 bg-brand-brown/80 backdrop-blur-md" onClick={() => setFoundOrder(null)}></div>
+             <div className="bg-white rounded-[2rem] lg:rounded-[3.5rem] p-6 lg:p-12 border-4 lg:border-[12px] border-brand-red shadow-[0_35px_60px_-15px_rgba(0,0,0,0.3)] flex flex-col lg:flex-row gap-6 lg:gap-12 relative z-10 w-full max-w-5xl max-h-[90vh] overflow-y-auto no-scrollbar">
+                <button 
+                  onClick={() => setFoundOrder(null)}
+                  className="absolute top-4 right-4 lg:top-8 lg:right-8 p-3 bg-brand-brown/5 rounded-full hover:bg-brand-red hover:text-white transition-all text-brand-brown group"
+                >
+                  <X className="w-6 h-6 lg:w-8 h-8 group-hover:rotate-90 transition-transform duration-300" />
+                </button>
+
                 <div className="flex-1">
-                   <div className="flex items-center gap-4 mb-6">
-                      <span className="bg-brand-red text-white px-6 py-2 rounded-full font-black text-sm italic">SEARCH RESULT</span>
-                      <button onClick={() => setFoundOrder(null)} className="text-brand-brown/20 hover:text-brand-red font-black text-xs uppercase underline">Clear Search</button>
+                   <div className="flex items-center gap-4 mb-8">
+                      <span className="bg-brand-red text-white px-6 py-2 rounded-full font-black text-[10px] tracking-widest uppercase italic">Invoice Details</span>
                    </div>
-                   <h3 className="text-5xl font-black text-brand-brown tracking-tighter uppercase mb-2">BILL <span className="text-brand-red">#{foundOrder.billNumber}</span></h3>
-                   <div className="grid grid-cols-2 gap-4 mt-8">
-                      <div className="bg-brand-brown/5 p-4 rounded-2xl">
-                         <p className="text-[8px] font-black text-brand-brown/40 uppercase tracking-widest mb-1">Status</p>
+                   <h3 className="text-4xl lg:text-6xl font-black text-brand-brown tracking-tighter uppercase mb-4 leading-none">BILL <span className="text-brand-red">#{foundOrder.billNumber}</span></h3>
+                   
+                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-10">
+                      <div className="bg-brand-brown/5 p-5 rounded-2xl border border-brand-brown/5">
+                         <p className="text-[9px] font-black text-brand-brown/40 uppercase tracking-widest mb-1">Status</p>
                          <p className="font-black text-brand-brown uppercase italic text-sm">{foundOrder.deletionInfo ? 'Voided / Deleted' : foundOrder.status}</p>
                       </div>
-                      <div className="bg-brand-brown/5 p-4 rounded-2xl">
-                         <p className="text-[8px] font-black text-brand-brown/40 uppercase tracking-widest mb-1">Total Amount</p>
+                      <div className="bg-brand-brown/5 p-5 rounded-2xl border border-brand-brown/5">
+                         <p className="text-[9px] font-black text-brand-brown/40 uppercase tracking-widest mb-1">Type</p>
+                         <p className="font-black text-brand-red uppercase italic text-sm">{foundOrder.type.replace('_', ' ')}</p>
+                      </div>
+                      <div className="bg-brand-brown/5 p-5 rounded-2xl border border-brand-brown/5">
+                         <p className="text-[9px] font-black text-brand-brown/40 uppercase tracking-widest mb-1">Method</p>
+                         <p className="font-black text-brand-brown uppercase italic text-sm">{foundOrder.paymentMethod || 'N/A'}</p>
+                      </div>
+                      <div className="bg-brand-brown/5 p-5 rounded-2xl border border-brand-brown/5">
+                         <p className="text-[9px] font-black text-brand-brown/40 uppercase tracking-widest mb-1">Amount</p>
                          <p className="font-black text-brand-red italic text-xl">₹{(foundOrder.total ?? 0).toLocaleString()}</p>
                       </div>
                    </div>
-                   <div className="mt-8 space-y-4">
-                      {foundOrder.items.map((it, idx) => (
-                         <div key={idx} className="flex justify-between items-center border-b border-brand-stone pb-2">
-                            <span className="font-black text-brand-brown uppercase text-xs">x{it.quantity} {it.name}</span>
-                            <span className="font-bold text-brand-brown/60 text-xs">₹{it.price * it.quantity}</span>
-                         </div>
-                      ))}
+
+                   <div className="mt-10 space-y-3">
+                      <p className="text-[10px] font-black uppercase text-brand-brown/30 tracking-widest px-1">Order Breakdown</p>
+                      <div className="max-h-[250px] overflow-y-auto no-scrollbar pr-2">
+                        {foundOrder.items.map((it, idx) => (
+                          <div key={idx} className="flex justify-between items-center border-b border-brand-stone/50 py-3 group/item">
+                              <div>
+                                <span className="font-black text-brand-brown uppercase text-xs lg:text-sm block">x{it.quantity} {it.name}</span>
+                              </div>
+                              <span className="font-black text-brand-brown text-xs lg:text-sm">₹{(it.price * it.quantity).toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
                    </div>
+
                    {foundOrder.deletionInfo && (
-                      <div className="mt-8 p-6 bg-red-50 rounded-2xl border-2 border-brand-red/20">
-                         <p className="text-[10px] font-black text-brand-red uppercase mb-2">Deletion Audit</p>
-                         <p className="text-xs font-bold text-brand-brown italic">Reason: {foundOrder.deletionInfo.reason}</p>
-                         <p className="text-[9px] font-black text-brand-brown/40 uppercase mt-2">At: {foundOrder.deletionInfo.date ? new Date(foundOrder.deletionInfo.date).toLocaleString() : 'N/A'}</p>
+                      <div className="mt-10 p-6 bg-red-50 rounded-3xl border-2 border-brand-red/10">
+                         <p className="text-[10px] font-black text-brand-red uppercase mb-2 tracking-widest">Deletion Record</p>
+                         <p className="text-xs font-bold text-brand-brown italic">" {foundOrder.deletionInfo.reason} "</p>
+                         <div className="flex justify-between items-center mt-3 pt-3 border-t border-brand-red/10">
+                           <p className="text-[9px] font-black text-brand-brown/40 uppercase">Timestamp: {foundOrder.deletionInfo.date ? new Date(foundOrder.deletionInfo.date).toLocaleString() : 'N/A'}</p>
+                         </div>
                       </div>
                    )}
+                   
                    {!foundOrder.deletionInfo && (
-                      <button onClick={() => { setOrderToDelete(foundOrder); setIsDeleteModalOpen(true); }} className="mt-10 w-full py-5 bg-red-100 text-brand-red rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-brand-red hover:text-white transition-all">Void Bill Records</button>
+                      <button 
+                        onClick={() => { setOrderToDelete(foundOrder); setIsDeleteModalOpen(true); }} 
+                        className="mt-10 w-full py-5 bg-red-50 text-brand-red rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-brand-red hover:text-white transition-all shadow-sm active:scale-[0.98]"
+                      >
+                        Void Transaction
+                      </button>
                    )}
                 </div>
-                <div className="w-full md:w-80 bg-brand-cream rounded-[2rem] p-4 border-2 border-brand-stone shadow-inner">
+
+                <div className="w-full lg:w-96 bg-brand-cream/50 rounded-[2rem] p-6 border-2 border-brand-stone shadow-inner">
+                   <div className="mb-4 text-center">
+                     <p className="text-[10px] font-black text-brand-brown/30 uppercase tracking-widest">Digital Copy</p>
+                   </div>
                    <PrintReceipt 
                     orderItems={foundOrder.items} 
                     billNumber={foundOrder.billNumber} 
@@ -357,6 +411,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                     date={foundOrder.date} 
                     paymentMethod={foundOrder.paymentMethod}
                     customerPhone={foundOrder.customerPhone}
+                    orderType={foundOrder.type}
                    />
                 </div>
              </div>
@@ -402,10 +457,26 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
               </div>
               <div className="min-w-[600px]">
                 <table className="w-full text-left">
-                  <thead><tr className="bg-brand-brown/5 text-brand-brown/40 text-[9px] lg:text-[10px] font-black uppercase"><th className="px-4 lg:px-8 py-4">Bill #</th><th className="px-4 lg:px-8 py-4">Date</th><th className="px-4 lg:px-8 py-4">Branch</th><th className="px-4 lg:px-8 py-4">Type</th><th className="px-4 lg:px-8 py-4 text-right">Total</th></tr></thead>
+                  <thead><tr className="bg-brand-brown/5 text-brand-brown/40 text-[9px] lg:text-[10px] font-black uppercase"><th className="px-4 lg:px-8 py-4">Bill #</th><th className="px-4 lg:px-8 py-4">Date</th><th className="px-4 lg:px-8 py-4">Branch</th><th className="px-4 lg:px-8 py-4">Type</th><th className="px-4 lg:px-8 py-4 text-right">Total</th><th className="px-4 lg:px-8 py-4 text-right">Action</th></tr></thead>
                   <tbody className="divide-y divide-brand-stone">
                     {(activeTab === 'active' ? orders : deletedOrders).map(o => (
-                      <tr key={o.id} className="hover:bg-brand-cream/50 cursor-pointer" onClick={() => { setSearchTerm(o.billNumber.toString()); handleSearch(); }}><td className="px-4 lg:px-8 py-4 font-black text-xs lg:text-sm">#{o.billNumber}</td><td className="px-4 lg:px-8 py-4 text-[10px] lg:text-xs">{new Date(o.date).toLocaleDateString()}</td><td className="px-4 lg:px-8 py-4 text-[9px] lg:text-[10px] font-bold uppercase">{o.branchName}</td><td className="px-4 lg:px-8 py-4 text-[8px] font-black uppercase text-brand-brown/50">{o.type.replace('_', ' ')}</td><td className="px-4 lg:px-8 py-4 text-right font-black text-xs lg:text-sm">₹{o.total}</td></tr>
+                      <tr key={o.id} className="hover:bg-brand-cream/50 transition-colors group">
+                        <td className="px-4 lg:px-8 py-4 font-black text-xs lg:text-sm">#{o.billNumber}</td>
+                        <td className="px-4 lg:px-8 py-4 text-[10px] lg:text-xs">{new Date(o.date).toLocaleDateString()}</td>
+                        <td className="px-4 lg:px-8 py-4 text-[9px] lg:text-[10px] font-bold uppercase">{o.branchName}</td>
+                        <td className="px-4 lg:px-8 py-4">
+                           <span className="px-2 py-0.5 bg-brand-brown/5 rounded text-[8px] font-black uppercase text-brand-brown/40">{o.type.replace('_', ' ')}</span>
+                        </td>
+                        <td className="px-4 lg:px-8 py-4 text-right font-black text-xs lg:text-sm">₹{o.total}</td>
+                        <td className="px-4 lg:px-8 py-4 text-right">
+                          <button 
+                            onClick={() => handleSearch(o.billNumber)}
+                            className="bg-brand-brown text-brand-yellow px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-brand-red hover:text-white transition-all shadow-md active:scale-95"
+                          >
+                            View
+                          </button>
+                        </td>
+                      </tr>
                     ))}
                   </tbody>
                 </table>
@@ -416,7 +487,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
         {reportView === 'trends' && (
           <div className="animate-in fade-in duration-500">
-            <PerformanceChart orders={orders} days={displayDays} />
+            <PerformanceChart orders={chartOrders} startDate={startDate} endDate={endDate} />
           </div>
         )}
 
@@ -506,26 +577,34 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         selectedCustomerHistory.map(o => (
                           <div 
                             key={o.id}
-                            onClick={() => { setSearchTerm(o.billNumber.toString()); handleSearch(); }}
-                            className="bg-brand-cream/30 border border-brand-stone p-5 rounded-2xl flex items-center justify-between hover:bg-brand-cream transition-all cursor-pointer group"
+                            className="bg-brand-cream/30 border border-brand-stone p-5 rounded-2xl flex items-center justify-between hover:bg-brand-cream transition-all group"
                           >
                             <div className="flex items-center gap-4">
                               <div className="bg-white shadow-sm w-12 h-12 rounded-xl flex items-center justify-center font-black text-brand-brown text-xs border border-brand-stone">#{o.billNumber}</div>
                               <div>
                                 <p className="text-sm font-black text-brand-brown uppercase">{new Date(o.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
-                                <div className="flex items-center gap-3 mt-1">
+                                <div className="flex items-center gap-3 mt-2">
                                   <span className="flex items-center gap-1 text-[8px] font-black uppercase text-brand-brown/40 tracking-widest">
-                                    <MapPin className="w-2 h-2" /> {o.branchName}
+                                    <MapPin className="w-2.5 h-2.5" /> {o.branchName}
                                   </span>
                                   <span className="flex items-center gap-1 text-[8px] font-black uppercase text-brand-brown/40 tracking-widest">
-                                    <Receipt className="w-2 h-2" /> {o.paymentMethod}
+                                    <Receipt className="w-2.5 h-2.5" /> {o.paymentMethod}
                                   </span>
                                 </div>
                               </div>
                             </div>
-                            <div className="text-right">
-                              <p className="text-lg font-black text-brand-brown">₹{(o.total ?? 0).toLocaleString()}</p>
-                              <p className="text-[8px] font-black uppercase text-emerald-600 tracking-tighter">Verified Order</p>
+                            
+                            <div className="flex items-center gap-6">
+                              <div className="text-right hidden sm:block">
+                                <p className="text-lg font-black text-brand-brown">₹{(o.total ?? 0).toLocaleString()}</p>
+                                <p className="text-[8px] font-black uppercase text-emerald-600 tracking-tighter">Verified Order</p>
+                              </div>
+                              <button 
+                                onClick={() => handleSearch(o.billNumber)}
+                                className="bg-brand-brown text-brand-yellow px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-brand-red hover:text-white transition-all shadow-md active:scale-95"
+                              >
+                                View Bill
+                              </button>
                             </div>
                           </div>
                         ))

@@ -228,36 +228,6 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
 
       {/* Cart Sidebar */}
       <div className="hidden lg:flex w-96 bg-brand-brown border-l border-brand-brown/10 flex-col shadow-2xl relative z-10 text-white">
-        <div className="p-4 border-b border-white/5 bg-brand-brown/90">
-          <div className="flex bg-black/20 p-1 rounded-2xl mb-4">
-            {(['DINE_IN', 'TAKEAWAY', 'DELIVERY'] as OrderType[]).map(type => (
-              <button
-                key={type}
-                onClick={() => {
-                  setOrderType(type);
-                  if (type !== 'DINE_IN') setSelectedTable(null);
-                }}
-                className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all duration-200 ${
-                  orderType === type ? 'bg-brand-yellow text-brand-brown shadow-md scale-[1.02]' : 'text-brand-cream/40 hover:text-brand-cream/60'
-                }`}
-              >
-                {type.replace('_', ' ')}
-              </button>
-            ))}
-          </div>
-          
-          <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase text-brand-cream/40 tracking-[0.2em]">Customer Contact</label>
-            <input 
-              type="tel"
-              placeholder="Enter Phone Number..."
-              value={customerPhone}
-              onChange={(e) => setCustomerPhone(e.target.value)}
-              className="w-full bg-white/10 border border-white/10 rounded-xl p-3 text-sm font-bold text-brand-cream outline-none focus:border-brand-yellow transition-colors placeholder:text-white/20"
-            />
-          </div>
-        </div>
-        
         <div className="flex-1 overflow-hidden">
           <Bill 
             orderItems={order} 
@@ -267,6 +237,9 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
             branchName={branchName}
             onAddItem={handleAddItem}
             orderType={orderType}
+            setOrderType={setOrderType}
+            customerPhone={customerPhone}
+            setCustomerPhone={setCustomerPhone}
           />
         </div>
       </div>
@@ -285,14 +258,14 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
       </button>
 
       {isMobileCartOpen && (
-        <div className="lg:hidden fixed inset-0 bg-brand-brown z-50 flex flex-col animate-in slide-in-from-bottom duration-300">
-          <div className="p-6 border-b border-white/10 flex justify-between items-center text-white">
+        <div className="lg:hidden fixed inset-0 bg-white z-50 flex flex-col animate-in slide-in-from-bottom duration-300">
+          <div className="p-6 bg-brand-brown lg:border-b border-white/10 flex justify-between items-center text-white">
             <button onClick={() => setIsMobileCartOpen(false)} className="text-white/40">
               <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
             <div className="text-center">
-              <h3 className="text-xl font-black text-brand-yellow uppercase italic">Your <span className="text-white">Cart</span></h3>
-              <p className="text-[8px] font-bold text-white/30 uppercase tracking-[0.2em]">{orderType.replace('_', ' ')}</p>
+              <h3 className="text-xl font-black text-brand-yellow uppercase italic leading-none">Your <span className="text-white">Cart</span></h3>
+              <p className="text-[8px] font-bold text-white/30 uppercase tracking-[0.2em] mt-1">Order Details</p>
             </div>
             <div className="w-8 h-8"></div>
           </div>
@@ -306,6 +279,12 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
               branchName={branchName}
               onAddItem={handleAddItem}
               orderType={orderType}
+              setOrderType={(type) => {
+                setOrderType(type);
+                if (type !== 'DINE_IN') setSelectedTable(null);
+              }}
+              customerPhone={customerPhone}
+              setCustomerPhone={setCustomerPhone}
             />
           </div>
         </div>
