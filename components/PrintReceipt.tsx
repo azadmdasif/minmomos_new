@@ -9,7 +9,6 @@ interface PrintReceiptProps {
   branchName?: string | null;
   date?: string | Date | null;
   orderType?: OrderType;
-  tableId?: string;
   customerPhone?: string;
 }
 
@@ -20,13 +19,10 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
   branchName, 
   date,
   orderType,
-  tableId,
   customerPhone
 }) => {
   const total = orderItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
   const transactionDate = date ? new Date(date) : new Date();
-  
-  const tableNum = tableId?.split('-')[1];
 
   const styles: { [key: string]: React.CSSProperties } = {
     container: {
@@ -69,7 +65,6 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
       </div>
       <div style={styles.metaRow}>
         <span>TIME: {transactionDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-        {tableNum && <span>TABLE: {tableNum}</span>}
       </div>
       {customerPhone && <div style={styles.metaRow}><span>CUST: {customerPhone}</span></div>}
       {paymentMethod && <div style={styles.metaRow}><span>PAY: {paymentMethod}</span></div>}

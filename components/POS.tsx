@@ -1,13 +1,11 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { TABLES } from '../constants';
-import { MenuItem as MenuItemType, OrderItem, OrderType, PaymentMethod, DiningTable } from '../types';
+import { MenuItem as MenuItemType, OrderItem, OrderType, PaymentMethod } from '../types';
 import Menu from './Menu';
 import Bill from './Bill';
 import VariantSelectionModal from './VariantSelectionModal';
 import BillPreviewModal from './BillPreviewModal';
 import { saveOrder, peekNextBillNumber, fetchMenuItems } from '../utils/storage';
-import { supabase } from '../utils/supabase';
 import { printerService } from '../utils/bluetoothPrinter';
 
 const CATEGORIES = [
@@ -26,25 +24,19 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
   const [isSaving, setIsSaving] = useState(false);
   const [pendingBillNumber, setPendingBillNumber] = useState<number | null>(null);
   const [orderType, setOrderType] = useState<OrderType>('TAKEAWAY');
-  const [selectedTable, setSelectedTable] = useState<DiningTable | null>(null);
-  const [isTableModalOpen, setIsTableModalOpen] = useState(false);
-  const [dbTables, setDbTables] = useState<any[]>([]);
   const [customerPhone, setCustomerPhone] = useState('');
   const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
   const [isPrinterConnected, setIsPrinterConnected] = useState(false);
 
   useEffect(() => {
     const loadData = async () => {
-      const [mResponse, { data: t }] = await Promise.all([
-        fetchMenuItems(),
-        supabase.from('dining_tables').select('*')
+      const [mResponse] = await Promise.all([
+        fetchMenuItems()
       ]);
       
       if (mResponse.data) {
         setMenuItems(mResponse.data);
       }
-      
-      if (t) setDbTables(t);
     };
     loadData();
 
@@ -56,15 +48,6 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
       setIsPrinterConnected(false);
     });
   }, []);
-
-  // Separate effect for table updates if needed, but let's keep it simple
-  useEffect(() => {
-    if (isTableModalOpen) {
-      supabase.from('dining_tables').select('*').then(({ data }) => {
-        if (data) setDbTables(data);
-      });
-    }
-  }, [isTableModalOpen]);
 
   const handleConnectPrinter = async () => {
     const connected = await printerService.connect();
@@ -89,10 +72,6 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
   };
 
   const handleFinalize = async () => {
-    if (orderType === 'DINE_IN' && !selectedTable) {
-      setIsTableModalOpen(true);
-      return;
-    }
     const nextNum = await peekNextBillNumber();
     setPendingBillNumber(nextNum);
     setIsPreviewing(true);
@@ -100,7 +79,6 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
 
   const resetAfterOrder = () => {
     setOrder([]);
-    setSelectedTable(null);
     setCustomerPhone('');
     setIsPreviewing(false);
     setIsMobileCartOpen(false);
@@ -122,7 +100,7 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
         orderType, 
         'ORDERED', 
         method, 
-        selectedTable?.id,
+        undefined,
         customerPhone
       );
       
@@ -165,13 +143,6 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
     }
   };
 
-  const handleTableSelect = (table: DiningTable) => {
-    if (table.status === 'AVAILABLE') {
-      setSelectedTable(table);
-      setIsTableModalOpen(false);
-    }
-  };
-
   const filteredItems = menuItems.filter(item => item.category === activeCategory);
 
   return (
@@ -211,15 +182,6 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
                    {isPrinterConnected ? 'BT Ready' : 'Connect Printer'}
                  </button>
                )}
-
-               {orderType === 'DINE_IN' && (
-                 <button 
-                  onClick={() => setIsTableModalOpen(true)}
-                  className="flex-1 sm:flex-none px-4 py-2 bg-brand-yellow text-brand-brown rounded-full text-[9px] font-black uppercase tracking-widest shadow-lg"
-                 >
-                   {selectedTable ? `Table ${selectedTable.number}` : 'Select Table'}
-                 </button>
-               )}
              </div>
           </div>
           <Menu menuItems={filteredItems} onSelectItem={setSelectedItem} />
@@ -232,7 +194,7 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
           <Bill 
             orderItems={order} 
             onUpdateQuantity={handleUpdateQuantity} 
-            onClear={() => { setOrder([]); setSelectedTable(null); setCustomerPhone(''); }} 
+            onClear={() => { setOrder([]); setCustomerPhone(''); }} 
             onPreview={handleFinalize}
             branchName={branchName}
             onAddItem={handleAddItem}
@@ -274,43 +236,17 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
             <Bill 
               orderItems={order} 
               onUpdateQuantity={handleUpdateQuantity} 
-              onClear={() => { setOrder([]); setSelectedTable(null); setCustomerPhone(''); setIsMobileCartOpen(false); }} 
+              onClear={() => { setOrder([]); setCustomerPhone(''); setIsMobileCartOpen(false); }} 
               onPreview={handleFinalize}
               branchName={branchName}
               onAddItem={handleAddItem}
               orderType={orderType}
               setOrderType={(type) => {
                 setOrderType(type);
-                if (type !== 'DINE_IN') setSelectedTable(null);
               }}
               customerPhone={customerPhone}
               setCustomerPhone={setCustomerPhone}
             />
-          </div>
-        </div>
-      )}
-
-      {isTableModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-[100] p-4">
-          <div className="bg-brand-cream rounded-[2rem] lg:rounded-[3rem] shadow-2xl w-full max-w-4xl p-6 lg:p-10 overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="flex justify-between items-center mb-6 lg:mb-8">
-              <h3 className="text-2xl lg:text-3xl font-black text-brand-brown italic uppercase">Seating <span className="text-brand-red">Plan</span></h3>
-              <button onClick={() => setIsTableModalOpen(false)} className="text-brand-brown/40 hover:text-brand-brown transition-colors">
-                <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6" /></svg>
-              </button>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4 overflow-y-auto no-scrollbar">
-              {TABLES.map(table => {
-                const dbTable = dbTables.find(dt => dt.id === table.id);
-                const status = dbTable?.status || 'AVAILABLE';
-                return (
-                  <button key={table.id} disabled={status !== 'AVAILABLE'} onClick={() => handleTableSelect({ ...table, status })} className={`aspect-square rounded-2xl lg:rounded-3xl p-4 flex flex-col items-center justify-center border-4 transition-all ${selectedTable?.id === table.id ? 'bg-brand-yellow border-brand-yellow text-brand-brown' : status === 'AVAILABLE' ? 'bg-white border-brand-stone text-brand-brown' : 'bg-stone-200 border-stone-300 text-stone-400'}`}>
-                    <span className="text-2xl lg:text-3xl font-black">{table.number}</span>
-                    <span className="text-[8px] font-bold uppercase tracking-widest mt-1">{status}</span>
-                  </button>
-                );
-              })}
-            </div>
           </div>
         </div>
       )}
@@ -327,7 +263,6 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
         onUpdateQuantity={handleUpdateQuantity}
         isSaving={isSaving}
         orderType={orderType}
-        tableId={selectedTable?.id}
         customerPhone={customerPhone}
         isPrinterConnected={isPrinterConnected}
       />

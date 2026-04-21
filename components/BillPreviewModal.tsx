@@ -17,7 +17,6 @@ interface BillPreviewModalProps {
   onUpdateQuantity: (itemId: string, newQuantity: number) => void;
   isSaving?: boolean;
   orderType?: OrderType;
-  tableId?: string;
   customerPhone?: string;
   isPrinterConnected?: boolean;
 }
@@ -33,7 +32,6 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
   onUpdateQuantity,
   isSaving = false,
   orderType,
-  tableId,
   customerPhone,
   isPrinterConnected = false
 }) => {
@@ -81,7 +79,6 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
                 billNumber={billNumber} 
                 branchName={branchName} 
                 orderType={orderType}
-                tableId={tableId}
                 customerPhone={customerPhone}
               />
             </div>
@@ -153,7 +150,6 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
           billNumber={billNumber} 
           branchName={branchName} 
           orderType={orderType}
-          tableId={tableId}
           customerPhone={customerPhone}
         />,
         printRoot
