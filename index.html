@@ -1,0 +1,102 @@
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/icon-192.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>minmomos POS | the ultimate momo station</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              'brand-brown': '#4A2C2A',
+              'brand-yellow': '#FBBF24',
+              'brand-cream': '#FDFBF5',
+              'brand-red': '#D95323',
+              'brand-stone': '#E7E5E4',
+              'mountain-green': '#064E3B',
+              'peak-amber': '#D97706',
+            },
+            fontFamily: {
+              sans: ['Nunito', 'sans-serif'],
+            },
+          }
+        }
+      }
+    </script>
+    <style>
+      /* Ensure print root is hidden on screen */
+      #print-root {
+        display: none;
+      }
+
+      @media print {
+        @page {
+          size: 58mm auto;
+          margin: 0;
+        }
+
+        /* Hide every direct child of body except the print root */
+        body > *:not(#print-root) {
+          display: none !important;
+        }
+
+        #print-root {
+          display: block !important;
+          width: 58mm !important;
+          margin: 0 !important;
+          padding: 2mm !important;
+          background-color: #ffffff !important;
+          color: #000000 !important;
+          visibility: visible !important;
+          opacity: 1 !important;
+          position: static !important;
+        }
+
+        /* Force white background on body to stop 'yellow' leaking */
+        body {
+          background-color: #ffffff !important;
+          background: #ffffff !important;
+          color: #000000 !important;
+          margin: 0 !important;
+          padding: 0 !important;
+        }
+
+        /* Ensure monochrome for thermal heads */
+        * {
+          -webkit-print-color-adjust: exact !important;
+          print-color-adjust: exact !important;
+          color: black !important;
+        }
+      }
+
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      body { background-color: #FDFBF5; color: #4A2C2A; }
+    </style>
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://aistudiocdn.com/react@^19.2.0",
+        "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+        "react/": "https://aistudiocdn.com/react@^19.2.0/",
+        "vite": "https://aistudiocdn.com/vite@^7.1.12",
+        "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.0",
+        "vite-plugin-pwa": "https://aistudiocdn.com/vite-plugin-pwa@^1.1.0",
+        "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@^2.94.0",
+        "react-dom": "https://esm.sh/react-dom@^19.2.4"
+      }
+    }
+    </script>
+  </head>
+  <body class="font-sans overflow-hidden">
+    <div id="root"></div>
+    <div id="print-root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>

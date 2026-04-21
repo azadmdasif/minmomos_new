@@ -1,0 +1,7 @@
+{
+  "name": "minmomos_v2",
+  "description": "A simple point-of-sale application for Momomaya to create and print customer bills. Click items to add them to the bill, adjust quantities, and print a receipt to a connected thermal printer.",
+  "requestFramePermissions": [
+    "bluetooth"
+  ]
+}
