@@ -90,7 +90,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
           fullDate: new Date(date).toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short' }),
           revenue,
           profit: revenue - cogs,
-          avgTicket: count > 0 ? revenue / count : 0
+          avgTicket: count > 0 ? revenue / count : 0,
+          orderCount: count
         };
       })
       .sort((a, b) => a.date.localeCompare(b.date));
@@ -112,6 +113,18 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
     // Finally, filter to only return the visible range [startDate, endDate]
     return dataWithSMA.filter(d => d.date >= startDate && d.date <= endDate);
   }, [orders, startDate, endDate, showSMA, revenueType]);
+
+  const stats = useMemo(() => {
+    const totalRevenue = chartData.reduce((sum, d) => sum + d.revenue, 0);
+    const totalProfit = chartData.reduce((sum, d) => sum + d.profit, 0);
+    const totalOrders = chartData.reduce((sum, d) => sum + d.orderCount, 0);
+    
+    return {
+      totalRevenue,
+      totalProfit,
+      avgTicket: totalOrders > 0 ? totalRevenue / totalOrders : 0
+    };
+  }, [chartData]);
 
   return (
     <div className="bg-white p-6 rounded-lg shadow-md border border-brand-brown/10 mb-6 font-primary">
@@ -314,7 +327,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
                   <span className="text-xs font-bold text-brand-brown/60 uppercase">Total Revenue</span>
               </div>
               <p className="text-2xl font-black text-brand-red">
-                  ₹{chartData.reduce((sum, d) => sum + d.revenue, 0).toFixed(2)}
+                  ₹{stats.totalRevenue.toFixed(2)}
               </p>
           </div>
           <div className="bg-green-50 p-4 rounded-xl border border-green-100">
@@ -323,7 +336,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
                   <span className="text-xs font-bold text-brand-brown/60 uppercase">Gross Profit</span>
               </div>
               <p className="text-2xl font-black text-green-600">
-                  ₹{chartData.reduce((sum, d) => sum + d.profit, 0).toFixed(2)}
+                  ₹{stats.totalProfit.toFixed(2)}
               </p>
           </div>
           <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100">
@@ -332,9 +345,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
                   <span className="text-xs font-bold text-brand-brown/60 uppercase">Avg. Ticket</span>
               </div>
               <p className="text-2xl font-black text-indigo-600">
-                  ₹{chartData.reduce((sum, d) => sum + d.revenue, 0) > 0 
-                    ? (chartData.reduce((sum, d) => sum + d.revenue, 0) / (orders.length || 1)).toFixed(2)
-                    : '0.00'}
+                  ₹{stats.avgTicket.toFixed(2)}
               </p>
           </div>
       </div>
