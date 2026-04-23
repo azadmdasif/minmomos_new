@@ -409,20 +409,42 @@ export async function updateOrderStatus(orderId: string, status: OrderStatus): P
 
 // --- CUSTOMER MANAGEMENT ---
 
+export async function getCustomerByPhone(phone: string): Promise<Customer | null> {
+  const { data } = await supabase.rpc('get_customer_stats');
+  if (!data) return null;
+  const match = data.find((c: any) => c.phone === phone);
+  if (!match) return null;
+  
+  const totalSpent = Number(match.total_spent || 0);
+  return {
+    id: match.id,
+    phone: match.phone,
+    totalOrders: Number(match.total_orders || 0),
+    totalSpent: totalSpent,
+    minCoins: Math.floor(totalSpent * 0.1),
+    lastVisit: match.last_visit,
+    joinedDate: match.joined_date
+  };
+}
+
 export async function fetchCustomers(): Promise<Customer[]> {
   const { data } = await supabase
     .rpc('get_customer_stats'); 
   
   if (!data) return [];
   
-  return data.map((c: any) => ({
-    id: c.id,
-    phone: c.phone,
-    totalOrders: Number(c.total_orders || 0),
-    totalSpent: Number(c.total_spent || 0),
-    lastVisit: c.last_visit,
-    joinedDate: c.joined_date
-  }));
+  return data.map((c: any) => {
+    const totalSpent = Number(c.total_spent || 0);
+    return {
+      id: c.id,
+      phone: c.phone,
+      totalOrders: Number(c.total_orders || 0),
+      totalSpent: totalSpent,
+      minCoins: Math.floor(totalSpent * 0.1),
+      lastVisit: c.last_visit,
+      joinedDate: c.joined_date
+    };
+  });
 }
 
 export async function fetchCustomerHistory(phone: string): Promise<CompletedOrder[]> {

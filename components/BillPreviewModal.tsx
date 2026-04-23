@@ -1,10 +1,12 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { OrderItem, PaymentMethod, OrderType } from '../types';
+import { OrderItem, PaymentMethod, OrderType, Customer } from '../types';
 import PrintReceipt from './PrintReceipt';
 import { TANDOORI_MAYO_ORDER_ITEM } from '../constants';
 import { printerService } from '../utils/bluetoothPrinter';
+import { getCustomerByPhone } from '../utils/storage';
+import { MessageSquare } from 'lucide-react';
 
 interface BillPreviewModalProps {
   isOpen: boolean;
@@ -36,9 +38,52 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
   isPrinterConnected = false
 }) => {
   const [selectedMethod, setSelectedMethod] = useState<PaymentMethod | null>(null);
+  const [customer, setCustomer] = useState<Customer | null>(null);
+
+  useEffect(() => {
+    if (isOpen && customerPhone) {
+      getCustomerByPhone(customerPhone).then(setCustomer);
+    } else if (!isOpen) {
+      setCustomer(null);
+    }
+  }, [isOpen, customerPhone]);
 
   if (!isOpen) return null;
   
+  const total = orderItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
+  const earnedCoins = Math.floor(total * 0.1);
+  const totalBalance = (customer?.minCoins || 0) + earnedCoins;
+
+  const handleWhatsAppSend = () => {
+    if (!customerPhone) return;
+    
+    // Format message
+    const orderDetails = orderItems
+      .map(item => `*${item.quantity}x ${item.name}* - ₹${item.price * item.quantity}`)
+      .join('\n');
+      
+    const message = `*MinMomos Bill #${billNumber || '---'}*
+--------------------------
+${orderDetails}
+--------------------------
+*Total: ₹${total}*
+
+🌟 *LOYALTY REWARDS* 🌟
+Coins Earned: +${earnedCoins}
+*Total MinCoins: ${totalBalance}*
+
+_Thank you for visiting MinMomos!_`;
+
+    const encodedMessage = encodeURIComponent(message);
+    const whatsappUrl = `https://wa.me/${customerPhone.replace(/\D/g, '')}?text=${encodedMessage}`;
+    
+    window.open(whatsappUrl, '_blank');
+    
+    // Also trigger the confirm flow
+    if (selectedMethod) {
+        onConfirm(selectedMethod, false);
+    }
+  };
   const hasMayo = orderItems.some(item => item.menuItemId === TANDOORI_MAYO_ORDER_ITEM.menuItemId && !item.parentItemId);
 
   const handleToggleMayo = () => {
@@ -120,6 +165,17 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" /></svg>
                   Confirm & System Print
               </button>
+
+              {customerPhone && (
+                <button 
+                  onClick={handleWhatsAppSend}
+                  disabled={isSaving || !selectedMethod}
+                  className="w-full bg-white text-brand-brown font-black py-5 rounded-2xl transition-all shadow-xl text-[10px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-brand-brown flex items-center justify-center gap-3"
+                >
+                  <MessageSquare className="w-4 h-4 text-[#25D366]" />
+                  Confirm & WhatsApp Bill
+                </button>
+              )}
 
               {printerService.isSupported() && isPrinterConnected && (
                 <button 

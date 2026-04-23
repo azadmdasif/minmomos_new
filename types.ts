@@ -103,6 +103,7 @@ export interface Customer {
   phone: string;
   totalOrders: number;
   totalSpent: number;
+  minCoins?: number;
   lastVisit: string;
   joinedDate: string;
 }

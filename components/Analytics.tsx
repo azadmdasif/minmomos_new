@@ -7,7 +7,7 @@ import DeleteBillModal from './DeleteBillModal';
 import ItemSalesReport from './ItemSalesReport';
 import PerformanceChart from './PerformanceChart';
 import TimeWiseRevenueChart from './TimeWiseRevenueChart';
-import { Search, User as UserIcon, MapPin, Receipt, History, X } from 'lucide-react';
+import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare } from 'lucide-react';
 
 const getTodaysDateString = () => new Date().toISOString().split('T')[0];
 const getDateString = (date: Date) => date.toISOString().split('T')[0];
@@ -44,6 +44,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [centralInv, setCentralInv] = useState<CentralMaterial[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [selectedCustomerHistory, setSelectedCustomerHistory] = useState<CompletedOrder[]>([]);
+  const [customMessage, setCustomMessage] = useState('');
   const [activeCustomer, setActiveCustomer] = useState<Customer | null>(null);
   
   const [searchTerm, setSearchTerm] = useState('');
@@ -539,7 +540,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                       <p className="text-[10px] font-black uppercase text-brand-yellow tracking-[0.3em] mb-2 font-primary">Profile Record</p>
                       <h2 className="text-4xl font-black italic uppercase tracking-tighter mb-8 font-primary">{activeCustomer.phone}</h2>
                       
-                      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+                      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
                         <div className="bg-brand-yellow/20 p-4 rounded-2xl backdrop-blur-md border border-brand-yellow/30">
                           <p className="text-[8px] font-black uppercase text-brand-yellow tracking-widest mb-1">Lifetime Value (LTV)</p>
                           <p className="text-lg font-black text-brand-yellow">₹{(activeCustomer.totalSpent ?? 0).toLocaleString()}</p>
@@ -548,9 +549,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                           <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-1">Visits</p>
                           <p className="text-lg font-black text-brand-yellow">{activeCustomer.totalOrders ?? 0}</p>
                         </div>
-                        <div className="bg-white/10 p-4 rounded-2xl backdrop-blur-md">
-                          <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-1">Avg. Bill</p>
-                          <p className="text-lg font-black text-brand-yellow">₹{activeCustomer.totalOrders ? (activeCustomer.totalSpent / activeCustomer.totalOrders).toFixed(0) : '0'}</p>
+                        <div className="bg-brand-yellow p-4 rounded-2xl backdrop-blur-md border border-brand-brown/20 shadow-lg">
+                          <p className="text-[8px] font-black uppercase text-brand-brown/60 tracking-widest mb-1">MinCoins Balance</p>
+                          <p className="text-lg font-black text-brand-brown">🪙 {activeCustomer.minCoins || 0}</p>
                         </div>
                         <div className="bg-white/10 p-4 rounded-2xl backdrop-blur-md">
                           <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-1">Last Seen</p>
@@ -559,6 +560,33 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         <div className="bg-white/10 p-4 rounded-2xl backdrop-blur-md">
                           <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-1">Member Since</p>
                           <p className="text-xs font-black uppercase">{activeCustomer.joinedDate ? new Date(activeCustomer.joinedDate).toLocaleDateString() : 'N/A'}</p>
+                        </div>
+                      </div>
+
+                      {/* Messaging Widget */}
+                      <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-lg">
+                        <div className="flex items-center gap-2 mb-4">
+                           <MessageSquare className="w-4 h-4 text-brand-yellow" />
+                           <h4 className="text-[10px] font-black uppercase text-white tracking-[0.2em]">Message Customer</h4>
+                        </div>
+                        <div className="flex flex-col sm:flex-row gap-3">
+                          <textarea 
+                            value={customMessage}
+                            onChange={(e) => setCustomMessage(e.target.value)}
+                            placeholder="Type a custom message (e.g. Special offer for you!)..."
+                            className="flex-1 bg-white/10 border border-white/20 rounded-2xl p-4 text-white text-xs font-bold placeholder:text-white/20 focus:outline-none focus:border-brand-yellow transition-all resize-none h-20"
+                          />
+                          <button 
+                            onClick={() => {
+                              if (!customMessage.trim()) return;
+                              const url = `https://wa.me/${activeCustomer.phone.replace(/\D/g, '')}?text=${encodeURIComponent(customMessage)}`;
+                              window.open(url, '_blank');
+                            }}
+                            className="bg-brand-yellow text-brand-brown px-8 py-4 sm:w-24 rounded-2xl flex flex-col items-center justify-center gap-2 hover:bg-white transition-all active:scale-95 group shadow-xl"
+                          >
+                            <Send className="w-5 h-5 group-hover:translate-x-1 group-hover:-translate-y-1 transition-transform" />
+                            <span className="text-[8px] font-black uppercase">Send</span>
+                          </button>
                         </div>
                       </div>
                     </div>
