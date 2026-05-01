@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../utils/supabase';
-import { updateOrderStatus } from '../utils/storage';
+import { updateOrderStatus, getISTDate, getISTTimeString } from '../utils/storage';
 
 const KDS: React.FC = () => {
   const [orders, setOrders] = useState<any[]>([]);
@@ -63,7 +63,7 @@ const KDS: React.FC = () => {
           <div className="px-3 py-1 bg-peak-amber/20 border border-peak-amber/30 rounded-full text-peak-amber text-[10px] font-black uppercase">
             {orders.length} Active Peaks
           </div>
-          <div className="text-white/30 font-mono text-[10px] uppercase tracking-widest">{new Date().toLocaleTimeString()}</div>
+          <div className="text-white/30 font-mono text-[10px] uppercase tracking-widest">{getISTTimeString()}</div>
         </div>
       </header>
       
@@ -89,7 +89,7 @@ const KDS: React.FC = () => {
                   </div>
                 </div>
                 <div className="text-[10px] font-black uppercase tracking-widest opacity-60 mt-3">
-                  T-Plus: {Math.floor((Date.now() - new Date(order.date).getTime()) / 60000)} mins
+                  T-Plus: {Math.floor((getISTDate().getTime() - new Date(order.date).getTime()) / 60000)} mins
                 </div>
               </div>
               

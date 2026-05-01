@@ -14,7 +14,10 @@ import {
   seedStandardInventory,
   fetchProcurements,
   logProcurement,
-  fetchAllocations
+  fetchAllocations,
+  getISTDate,
+  getISTDateString,
+  getISTISOString
 } from '../utils/storage';
 
 interface InventoryProps {
@@ -35,8 +38,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   // Ledger States
   const [ledgerType, setLedgerType] = useState<LedgerType>('BUYING');
   const [datePreset, setDatePreset] = useState<DatePreset>('today');
-  const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
-  const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
+  const [startDate, setStartDate] = useState(getISTDateString());
+  const [endDate, setEndDate] = useState(getISTDateString());
   const [sortBy, setSortBy] = useState<SortBy>('date');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
@@ -136,9 +139,9 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
 
   const handlePresetChange = (preset: DatePreset) => {
     setDatePreset(preset);
-    const today = new Date();
-    let start = new Date();
-    let end = new Date();
+    const today = getISTDate();
+    let start = getISTDate();
+    let end = getISTDate();
 
     if (preset === 'today') {
       start = today;
@@ -149,8 +152,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
       start.setDate(today.getDate() - 7);
     }
 
-    setStartDate(start.toISOString().split('T')[0]);
-    setEndDate(end.toISOString().split('T')[0]);
+    setStartDate(getISTDateString(start));
+    setEndDate(getISTDateString(end));
   };
 
   const sortedProcurements = useMemo(() => {
@@ -198,7 +201,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           unit: selectedItem.unit,
           total_cost: parseFloat(cost),
           vendor: vendor || 'Local Market',
-          date: new Date().toISOString()
+          date: getISTISOString()
         });
         await recordCentralPurchase(selectedItem.id, parseFloat(qty), parseFloat(cost));
         setIsRestockModalOpen(false);

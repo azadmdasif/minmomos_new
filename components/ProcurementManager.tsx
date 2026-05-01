@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { fetchProcurements, logProcurement, getCentralInventory } from '../utils/storage';
+import { fetchProcurements, logProcurement, getCentralInventory, getISTDate, getISTDateString, getISTISOString } from '../utils/storage';
 
 const ProcurementManager: React.FC = () => {
   const [procurements, setProcurements] = useState<any[]>([]);
@@ -14,7 +14,7 @@ const ProcurementManager: React.FC = () => {
   const [vendor, setVendor] = useState('');
 
   const load = async () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getISTDateString();
     const { data, error } = await fetchProcurements(today, today);
     
     if (error && error.code === 'PGRST205') {
@@ -41,7 +41,7 @@ const ProcurementManager: React.FC = () => {
           unit: item.unit,
           total_cost: parseFloat(cost),
           vendor,
-          date: new Date().toISOString()
+          date: getISTISOString()
         });
         setIsModalOpen(false);
         setQty(''); setCost(''); setVendor('');

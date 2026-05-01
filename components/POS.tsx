@@ -9,7 +9,8 @@ import { saveOrder, peekNextBillNumber, fetchMenuItems } from '../utils/storage'
 import { printerService } from '../utils/bluetoothPrinter';
 
 const CATEGORIES = [
-  { id: 'momo', label: 'Steam & Fried', icon: '♨️' },
+  { id: 'momo', label: 'Momos', icon: '♨️' },
+  { id: 'moburg', label: 'Moburg', icon: '🍔' },
   { id: 'side', label: 'Sides', icon: '🥗' },
   { id: 'drink', label: 'Drinks', icon: '🥤' },
   { id: 'combo', label: 'Combos', icon: '🍱' }
@@ -60,7 +61,16 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
       const newOrder = [...prev];
       itemsToAdd.forEach(item => {
         const idx = newOrder.findIndex(i => i.id === item.id);
-        if (idx > -1) newOrder[idx].quantity += item.quantity;
+        if (idx > -1) {
+          // If it exists, update it (allows price updates for discounts)
+          newOrder[idx] = { ...newOrder[idx], ...item, quantity: newOrder[idx].quantity + (item.quantity > 0 ? item.quantity : 0) };
+          // Special case: if adding specifically 1 quantity for a newly added item, but it was already there, we might just want to set it.
+          // For the discount auto-update, we pass quantity: 1 but we really just want to update the price.
+          if (item.id === 'welcome-discount') {
+            newOrder[idx].quantity = 1;
+            newOrder[idx].price = item.price;
+          }
+        }
         else newOrder.push(item);
       });
       return newOrder;
@@ -91,7 +101,7 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
     setIsSaving(true);
     
     try {
-      const total = order.reduce((acc, i) => acc + i.price * i.quantity, 0);
+      const total = Math.round(order.reduce((acc, i) => acc + i.price * i.quantity, 0));
       
       const savedNum = await saveOrder(
         order, 
@@ -143,7 +153,14 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
     }
   };
 
-  const filteredItems = menuItems.filter(item => item.category === activeCategory);
+  const filteredItems = menuItems.filter(item => {
+    if (item.category !== activeCategory) return false;
+    
+    // Check if any variant has a price > 0
+    return Object.values(item.preparations).some(prep => 
+      prep && Object.values(prep).some(price => price !== undefined && price > 0)
+    );
+  });
 
   return (
     <div className="flex flex-col lg:flex-row h-full bg-brand-cream pb-20 lg:pb-0">
@@ -251,7 +268,11 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
         </div>
       )}
 
-      <VariantSelectionModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddItem={handleAddItem} />
+      <VariantSelectionModal 
+        item={selectedItem} 
+        onClose={() => setSelectedItem(null)} 
+        onAddItem={handleAddItem} 
+      />
       <BillPreviewModal 
         isOpen={isPreviewing} 
         onClose={() => setIsPreviewing(false)} 
@@ -265,6 +286,7 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
         orderType={orderType}
         customerPhone={customerPhone}
         isPrinterConnected={isPrinterConnected}
+        menuItems={menuItems}
       />
     </div>
   );

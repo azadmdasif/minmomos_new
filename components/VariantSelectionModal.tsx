@@ -6,6 +6,7 @@ interface VariantSelectionModalProps {
   item: MenuItem | null;
   onClose: () => void;
   onAddItem: (items: OrderItem[]) => void;
+  customerPhone?: string;
 }
 
 const formatPrepName = (prep: string) => {
@@ -16,33 +17,30 @@ const VariantSelectionModal: React.FC<VariantSelectionModalProps> = ({ item, onC
   const [selectedPrep, setSelectedPrep] = useState<PreparationType>('steamed');
   const [selectedSize, setSelectedSize] = useState<Size>('medium');
   const [quantity, setQuantity] = useState(1);
-  
-  const { isSingleVariant, availablePreps, availableSizes } = useMemo(() => {
-    if (!item) return { isSingleVariant: false, availablePreps: [], availableSizes: [] };
+
+  const { isSingleVariant, availablePreps } = useMemo(() => {
+    if (!item) return { isSingleVariant: false, availablePreps: [] };
 
     const prices = new Set<number>();
     const preps: PreparationType[] = [];
-    const sizes: Size[] = [];
 
     const PREP_ORDER: PreparationType[] = ['steamed', 'fried', 'pan-fried', 'peri-peri', 'normal'];
-    const SIZE_ORDER: Size[] = ['small', 'medium', 'large'];
 
     for (const prep in item.preparations) {
       const prepKey = prep as PreparationType;
       const prepData = item.preparations[prepKey];
       
       if (prepData) {
-        let hasAnyValidSize = false;
+        let hasAnyValidPrice = false;
         for (const size in prepData) {
           const sizeKey = size as Size;
           const price = prepData[sizeKey];
-          if (price !== undefined && price !== -1) {
-            sizes.push(sizeKey);
+          if (price !== undefined && price !== -1 && price > 0) {
             prices.add(price);
-            hasAnyValidSize = true;
+            hasAnyValidPrice = true;
           }
         }
-        if (hasAnyValidSize) {
+        if (hasAnyValidPrice) {
           preps.push(prepKey);
         }
       }
@@ -54,27 +52,55 @@ const VariantSelectionModal: React.FC<VariantSelectionModalProps> = ({ item, onC
         const indexA = PREP_ORDER.indexOf(a);
         const indexB = PREP_ORDER.indexOf(b);
         return (indexA === -1 ? 99 : indexA) - (indexB === -1 ? 99 : indexB);
-      }),
-      availableSizes: [...new Set(sizes)].sort((a, b) => {
-        return SIZE_ORDER.indexOf(a) - SIZE_ORDER.indexOf(b);
-      }),
+      })
     };
   }, [item]);
 
+  const availableSizes = useMemo(() => {
+    if (!item) return [];
+    const sizes: Size[] = [];
+    const SIZE_ORDER: Size[] = ['small', 'medium', 'large'];
+    const prepData = item.preparations[selectedPrep];
+    
+    if (prepData) {
+      for (const size in prepData) {
+        const sizeKey = size as Size;
+        const price = prepData[sizeKey];
+        if (price !== undefined && price !== -1 && price > 0) {
+          sizes.push(sizeKey);
+        }
+      }
+    }
+    
+    return sizes.sort((a, b) => {
+      return SIZE_ORDER.indexOf(a) - SIZE_ORDER.indexOf(b);
+    });
+  }, [item, selectedPrep]);
 
-  // Reset state when a new item is selected
+
+  // Reset state when a new item is selected or prep changes
   useEffect(() => {
     if (item) {
-      if (availablePreps.length > 0) {
+      if (!availablePreps.includes(selectedPrep) && availablePreps.length > 0) {
         setSelectedPrep(availablePreps[0]);
       }
-      if (availableSizes.length > 0) {
-        // Try to default to medium if available, otherwise first available
+    }
+  }, [item, availablePreps, selectedPrep]);
+
+  useEffect(() => {
+    if (item && availableSizes.length > 0) {
+      if (!availableSizes.includes(selectedSize)) {
+        // Try to select medium if available, otherwise first available
         setSelectedSize(availableSizes.includes('medium') ? 'medium' : availableSizes[0]);
       }
+    }
+  }, [item, availableSizes, selectedSize]);
+  
+  useEffect(() => {
+    if (item) {
       setQuantity(1);
     }
-  }, [item, availablePreps, availableSizes]);
+  }, [item]);
   
   const currentPrice = useMemo(() => {
     if (!item) return 0;
@@ -85,6 +111,22 @@ const VariantSelectionModal: React.FC<VariantSelectionModalProps> = ({ item, onC
   const currentCost = useMemo(() => {
     if (!item || !item.costs) return 0;
     return item.costs[selectedPrep]?.[selectedSize] ?? 0;
+  }, [item, selectedPrep, selectedSize]);
+
+  const minCoinsPrice = useMemo(() => {
+    if (!item || !item.minCoinsPrices) {
+      return 0;
+    }
+    
+    const pricesObj: any = item.minCoinsPrices;
+    const prepPrices = pricesObj[selectedPrep];
+    
+    if (!prepPrices) {
+      return 0;
+    }
+    
+    const price = prepPrices[selectedSize];
+    return typeof price === 'number' ? price : 0;
   }, [item, selectedPrep, selectedSize]);
 
   if (!item) return null;
@@ -105,18 +147,17 @@ const VariantSelectionModal: React.FC<VariantSelectionModalProps> = ({ item, onC
     }
 
     const momoOrderItem: OrderItem = {
-      id: isSingleVariant ? item.id : `${item.id}-${selectedPrep}-${selectedSize}`,
+      id: isSingleVariant ? item.id : `${item.id}-${selectedPrep}-${selectedSize}-sale`,
       menuItemId: item.id,
       name: name,
       price: currentPrice,
-      // FIX: Add the required 'cost' property to the OrderItem.
       cost: currentCost,
       quantity: quantity,
+      paidWithCoins: false,
+      coinsPrice: minCoinsPrice || 0
     };
     
-    const itemsToAdd: OrderItem[] = [momoOrderItem];
-
-    onAddItem(itemsToAdd);
+    onAddItem([momoOrderItem]);
     onClose();
   };
 
@@ -202,7 +243,9 @@ const VariantSelectionModal: React.FC<VariantSelectionModalProps> = ({ item, onC
           <div className="flex justify-between items-center border-t border-brand-brown/10 pt-4">
             <div>
               <p className="text-sm text-brand-brown/70">Total Price</p>
-              <span className="text-3xl font-bold text-brand-red">₹{totalItemPrice.toFixed(2)}</span>
+              <span className="text-3xl font-bold text-brand-red">
+                ₹{totalItemPrice.toFixed(2)}
+              </span>
             </div>
             <button 
               onClick={handleAddItem}

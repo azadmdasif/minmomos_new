@@ -2,7 +2,7 @@
 export type PreparationType = 'steamed' | 'fried' | 'normal' | 'peri-peri' | 'pan-fried';
 export type Size = 'small' | 'medium' | 'large';
 export type PaymentMethod = 'Cash' | 'UPI' | 'Card';
-export type Category = 'momo' | 'side' | 'drink' | 'combo';
+export type Category = 'momo' | 'side' | 'drink' | 'combo' | 'moburg';
 export type OrderType = 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
 export type OrderStatus = 'ORDERED' | 'PREPARING' | 'READY' | 'SERVED' | 'COMPLETED' | 'CANCELLED';
 export type UserRole = 'ADMIN' | 'STORE_MANAGER';
@@ -59,6 +59,11 @@ export interface MenuItem {
   name: string;
   image: string;
   category: Category;
+  minCoinsPrices?: {
+    [key in PreparationType]?: {
+      [key in Size]?: number;
+    }
+  };
   preparations: {
     [key in PreparationType]?: {
       [key in Size]?: number;
@@ -88,6 +93,8 @@ export interface OrderItem {
   cost: number;
   quantity: number;
   parentItemId?: string;
+  paidWithCoins?: boolean;
+  coinsPrice?: number;
 }
 
 export interface DiningTable {
@@ -101,11 +108,17 @@ export interface DiningTable {
 export interface Customer {
   id: string;
   phone: string;
+  name?: string;
+  email?: string;
+  birthday?: string;
+  note?: string;
   totalOrders: number;
   totalSpent: number;
   minCoins?: number;
-  lastVisit: string;
+  lastVisit?: string | null;
   joinedDate: string;
+  welcomeCouponUsed?: boolean;
+  welcomeCouponCode?: string;
 }
 
 export interface CompletedOrder {

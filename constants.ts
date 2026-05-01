@@ -194,6 +194,32 @@ export const MENU_ITEMS: MenuItem[] = [
       normal: { small: 3, medium: 3, large: 3 },
     },
     recipe: [{ materialId: 'pkt-mayo', quantity: 0.1 }] // Linked to bulk pkt
+  },
+  {
+    id: 'campa-cola',
+    name: 'Campa Cola',
+    image: 'https://m.media-amazon.com/images/I/71u9v8v-WXL._SL1500_.jpg',
+    category: 'drink',
+    preparations: {
+      normal: { small: 20, medium: 35, large: 50 },
+    },
+    costs: {
+      normal: { small: 8, medium: 12, large: 18 },
+    },
+    recipe: []
+  },
+  {
+    id: 'classic-moburg',
+    name: 'Classic Moburg',
+    image: 'https://images.unsplash.com/photo-1571091718767-18b5b1457add?w=800&auto=format&fit=crop&q=60',
+    category: 'moburg',
+    preparations: {
+      normal: { small: 60, medium: 85, large: 110 },
+    },
+    costs: {
+      normal: { small: 25, medium: 35, large: 45 },
+    },
+    recipe: []
   }
 ];
 
@@ -221,5 +247,14 @@ export const TANDOORI_MAYO_ORDER_ITEM: OrderItem = {
   name: 'Extra Mayo Dip',
   price: 10,
   cost: 2,
+  quantity: 1,
+};
+
+export const GIFT_CAMPA_COLA: OrderItem = {
+  id: 'gift-campa-cola',
+  menuItemId: 'campa-cola',
+  name: 'Celebratory Campa Cola (Gift)',
+  price: 0,
+  cost: 0,
   quantity: 1,
 };

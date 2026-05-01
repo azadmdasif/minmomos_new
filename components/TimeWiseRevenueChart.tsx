@@ -1,5 +1,5 @@
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   BarChart,
   Bar,
@@ -17,52 +17,108 @@ interface TimeWiseRevenueChartProps {
 }
 
 const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) => {
+  const [viewMode, setViewMode] = useState<'hourly' | 'daily'>('hourly');
+
   const chartData = useMemo(() => {
-    // Initialize 24 hours
-    const hours = Array.from({ length: 24 }, (_, i) => ({
-      hour: i,
-      label: `${i % 12 || 12}${i >= 12 ? 'PM' : 'AM'}`,
-      revenue: 0,
-      orders: 0
-    }));
+    if (viewMode === 'hourly') {
+      // Initialize 24 hours
+      const hours = Array.from({ length: 24 }, (_, i) => ({
+        key: i,
+        label: `${i % 12 || 12}${i >= 12 ? 'PM' : 'AM'}`,
+        revenue: 0,
+        orders: 0
+      }));
 
-    orders.forEach(order => {
-      try {
-        const date = new Date(order.date);
-        const h = date.getHours();
-        if (h >= 0 && h < 24) {
-          hours[h].revenue += (order.total || 0);
-          hours[h].orders += 1;
+      orders.forEach(order => {
+        try {
+          const date = new Date(order.date);
+          const h = date.getHours();
+          if (h >= 0 && h < 24) {
+            hours[h].revenue += (order.total || 0);
+            hours[h].orders += 1;
+          }
+        } catch (e) {
+          console.error("Date parsing error in chart:", e);
         }
-      } catch (e) {
-        console.error("Date parsing error in chart:", e);
-      }
-    });
+      });
 
-    // Filter to show active hours (where there's revenue) or a sensible range (10AM - 11PM)
-    const activeHours = hours.filter(h => h.revenue > 0);
-    if (activeHours.length === 0) {
-        return hours.filter(h => h.hour >= 10 && h.hour <= 22);
+      // Filter to show active hours (where there's revenue) or a sensible range (10AM - 11PM)
+      const activeHours = hours.filter(h => h.revenue > 0);
+      if (activeHours.length === 0) {
+          return hours.filter(h => h.key >= 10 && h.key <= 22);
+      }
+      
+      const minHour = Math.max(0, Math.min(...activeHours.map(h => h.key)) - 1);
+      const maxHour = Math.min(23, Math.max(...activeHours.map(h => h.key)) + 1);
+      
+      return hours.filter(h => h.key >= minHour && h.key <= maxHour);
+    } else {
+      // Daily view
+      const days = [
+        { key: 1, label: 'Monday', revenue: 0, orders: 0 },
+        { key: 2, label: 'Tuesday', revenue: 0, orders: 0 },
+        { key: 3, label: 'Wednesday', revenue: 0, orders: 0 },
+        { key: 4, label: 'Thursday', revenue: 0, orders: 0 },
+        { key: 5, label: 'Friday', revenue: 0, orders: 0 },
+        { key: 6, label: 'Saturday', revenue: 0, orders: 0 },
+        { key: 0, label: 'Sunday', revenue: 0, orders: 0 },
+      ];
+
+      orders.forEach(order => {
+        try {
+          const date = new Date(order.date);
+          const d = date.getDay();
+          const day = days.find(day => day.key === d);
+          if (day) {
+            day.revenue += (order.total || 0);
+            day.orders += 1;
+          }
+        } catch (e) {
+          console.error("Date parsing error in chart:", e);
+        }
+      });
+
+      // Rearrange to put Sunday as the last day for better visual flow in some contexts, 
+      // but usually Mon-Sun is standard for POS.
+      const mondayFirst = [...days.slice(0, 6), days[6]];
+      return mondayFirst;
     }
-    
-    const minHour = Math.max(0, Math.min(...activeHours.map(h => h.hour)) - 1);
-    const maxHour = Math.min(23, Math.max(...activeHours.map(h => h.hour)) + 1);
-    
-    return hours.filter(h => h.hour >= minHour && h.hour <= maxHour);
-  }, [orders]);
+  }, [orders, viewMode]);
+
+  const peakLabel = chartData.length > 0 
+    ? chartData.reduce((prev, current) => (prev.revenue > current.revenue) ? prev : current).label 
+    : 'N/A';
 
   return (
     <div className="bg-white p-6 lg:p-10 rounded-[2.5rem] lg:rounded-[3rem] shadow-xl border border-brand-stone mb-10 overflow-hidden">
-      <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
+      <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-6">
         <div>
-          <h3 className="text-xl lg:text-2xl font-black text-brand-brown uppercase italic leading-none">TIME-WISE <span className="text-brand-red">REVENUE</span></h3>
-          <p className="text-[9px] lg:text-[10px] font-bold text-brand-brown/40 uppercase tracking-[0.3em] mt-2">Hourly sales distribution</p>
+          <div className="flex items-center gap-3 mb-2">
+            <h3 className="text-xl lg:text-2xl font-black text-brand-brown uppercase italic leading-none">
+              {viewMode === 'hourly' ? 'TIME-WISE' : 'DAY-WISE'} <span className="text-brand-red">REVENUE</span>
+            </h3>
+            <div className="flex bg-brand-stone/30 p-1 rounded-xl">
+              <button 
+                onClick={() => setViewMode('hourly')}
+                className={`px-3 py-1 text-[8px] font-black uppercase tracking-widest rounded-lg transition-all ${viewMode === 'hourly' ? 'bg-brand-brown text-brand-yellow shadow-md' : 'text-brand-brown/40'}`}
+              >Hourly</button>
+              <button 
+                onClick={() => setViewMode('daily')}
+                className={`px-3 py-1 text-[8px] font-black uppercase tracking-widest rounded-lg transition-all ${viewMode === 'daily' ? 'bg-brand-brown text-brand-yellow shadow-md' : 'text-brand-brown/40'}`}
+              >Daily</button>
+            </div>
+          </div>
+          <p className="text-[9px] lg:text-[10px] font-bold text-brand-brown/40 uppercase tracking-[0.3em] mt-1">
+            {viewMode === 'hourly' ? 'Hourly sales distribution' : 'Revenue by day of week'}
+          </p>
         </div>
         <div className="flex gap-4">
             <div className="bg-brand-brown/5 px-4 py-2 rounded-xl">
-                <p className="text-[8px] font-black text-brand-brown/40 uppercase tracking-widest">Peak Hour</p>
+                <p className="text-[8px] font-black text-brand-brown/40 uppercase tracking-widest">
+                    {viewMode === 'hourly' ? 'Peak Hour' : 'Best Day'}
+                </p>
                 <p className="text-sm font-black text-brand-brown uppercase">
-                    {chartData.length > 0 ? chartData.reduce((prev, current) => (prev.revenue > current.revenue) ? prev : current).label : 'N/A'}
+                    {peakLabel}
                 </p>
             </div>
             <div className="bg-brand-red/5 px-4 py-2 rounded-xl">
@@ -107,6 +163,10 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
                           <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-0.5">Total Orders</p>
                           <p className="text-brand-yellow text-sm font-black leading-none">{data.orders}</p>
                         </div>
+                        <div className="pt-2 border-t border-white/5">
+                             <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-0.5">Avg/Order</p>
+                             <p className="text-white text-sm font-black leading-none">₹{data.orders > 0 ? Math.round(data.revenue / data.orders).toLocaleString() : 0}</p>
+                        </div>
                       </div>
                     </div>
                   );
@@ -118,7 +178,7 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
               dataKey="revenue" 
               animationBegin={0}
               animationDuration={1000}
-              barSize={40}
+              barSize={viewMode === 'daily' ? 60 : 40}
             >
               {chartData.map((entry, index) => (
                 <Cell 

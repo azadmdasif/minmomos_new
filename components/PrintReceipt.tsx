@@ -10,6 +10,12 @@ interface PrintReceiptProps {
   date?: string | Date | null;
   orderType?: OrderType;
   customerPhone?: string;
+  customerCoins?: number;
+  customerInitialBalance?: number;
+  customerFinalBalance?: number;
+  earnedCoinsValue?: number;
+  welcomeCouponCode?: string;
+  totalValue?: number;
 }
 
 const PrintReceipt: React.FC<PrintReceiptProps> = ({ 
@@ -19,10 +25,44 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
   branchName, 
   date,
   orderType,
-  customerPhone
+  customerPhone,
+  customerCoins,
+  customerInitialBalance,
+  customerFinalBalance,
+  earnedCoinsValue,
+  welcomeCouponCode,
+  totalValue
 }) => {
-  const total = orderItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
-  const transactionDate = date ? new Date(date) : new Date();
+  const calculatedTotal = orderItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
+  const total = totalValue !== undefined ? totalValue : calculatedTotal;
+  const coinsRequired = orderItems.reduce((acc, item) => acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
+  
+  // If specific balances are provided (e.g. from historical view), use them.
+  // Otherwise calculate based on Base Camp (8%) logic (for new orders or fallback).
+  let initialBalance = customerInitialBalance !== undefined ? customerInitialBalance : (customerCoins || 0);
+  let finalBalance = customerFinalBalance !== undefined ? customerFinalBalance : (Math.max(0, initialBalance - coinsRequired) + Math.floor(total * 0.08));
+  let earnedCoins = earnedCoinsValue !== undefined 
+    ? earnedCoinsValue 
+    : (customerFinalBalance !== undefined && customerInitialBalance !== undefined 
+        ? (customerFinalBalance - (customerInitialBalance - coinsRequired))
+        : Math.floor(total * 0.08));
+  
+  // Use Intl.DateTimeFormat to ensure consistent IST display regardless of environment timezone
+  const istFormatter = new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true
+  });
+
+  const parts = istFormatter.formatToParts(date ? new Date(date) : new Date());
+  const getPart = (type: string) => parts.find(p => p.type === type)?.value;
+  
+  const dateStr = `${getPart('day')}/${getPart('month')}/${getPart('year')}`;
+  const timeStr = `${getPart('hour')}:${getPart('minute')} ${getPart('dayPeriod')}`;
 
   const styles: { [key: string]: React.CSSProperties } = {
     container: {
@@ -61,10 +101,10 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
 
       <div style={styles.metaRow}>
         <span>BILL: #{billNumber || '----'}</span>
-        <span>{transactionDate.toLocaleDateString()}</span>
+        <span>{dateStr}</span>
       </div>
       <div style={styles.metaRow}>
-        <span>TIME: {transactionDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+        <span>TIME: {timeStr}</span>
       </div>
       {customerPhone && <div style={styles.metaRow}><span>CUST: {customerPhone}</span></div>}
       {paymentMethod && <div style={styles.metaRow}><span>PAY: {paymentMethod}</span></div>}
@@ -84,7 +124,9 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
             <tr key={item.id}>
               <td style={{padding: '2px 0', textAlign: 'left'}}>{item.name}</td>
               <td style={{padding: '2px 0', textAlign: 'center'}}>{item.quantity}</td>
-              <td style={{padding: '2px 0', textAlign: 'right'}}>{(item.price * item.quantity).toFixed(0)}</td>
+              <td style={{padding: '2px 0', textAlign: 'right'}}>
+                {item.paidWithCoins ? 'FREE' : (item.price * item.quantity).toFixed(0)}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -97,7 +139,40 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
         <span>₹{total.toFixed(0)}</span>
       </div>
       
+      {customerPhone && (
+        <>
+          <div style={styles.divider}></div>
+          <div style={{...styles.center, fontWeight: 'bold', fontSize: '8pt'}}>LOYALTY REWARDS</div>
+          <div style={styles.metaRow}>
+            <span>INITIAL BALANCE</span>
+            <span>{initialBalance}</span>
+          </div>
+          <div style={styles.metaRow}>
+            <span>EARNED COINS</span>
+            <span>+{earnedCoins}</span>
+          </div>
+          {coinsRequired > 0 && (
+            <div style={styles.metaRow}>
+              <span>REDEEMED COINS</span>
+              <span>-{coinsRequired}</span>
+            </div>
+          )}
+          <div style={{...styles.metaRow, fontWeight: 'bold', borderTop: '1px solid #000000', marginTop: '2px', paddingTop: '2px'}}>
+            <span>TOTAL MINCOINS</span>
+            <span>{finalBalance}</span>
+          </div>
+        </>
+      )}
+      
       <div style={styles.divider}></div>
+      
+      {welcomeCouponCode && (
+        <div style={{...styles.footer, border: '1px dashed #000', padding: '4px', margin: '8px 0'}}>
+          <div style={{fontWeight: 'bold', fontSize: '9pt'}}>15% OFF NEXT VISIT!</div>
+          <div style={{fontSize: '11pt', fontWeight: 'bold', letterSpacing: '2px', color: '#B91C1C'}}>{welcomeCouponCode}</div>
+          <div style={{fontSize: '7pt', marginTop: '2px'}}>Redeemable on 2nd visit only</div>
+        </div>
+      )}
       
       <div style={styles.footer}>
         <div>Fresh from the Himalayan Peaks</div>

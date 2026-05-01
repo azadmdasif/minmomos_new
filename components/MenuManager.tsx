@@ -7,7 +7,7 @@ import { supabase } from '../utils/supabase';
 
 const PREP_TYPES: PreparationType[] = ['steamed', 'fried', 'normal', 'peri-peri', 'pan-fried'];
 const SIZES: Size[] = ['small', 'medium', 'large'];
-const CATEGORIES: Category[] = ['momo', 'side', 'drink', 'combo'];
+const CATEGORIES: Category[] = ['momo', 'moburg', 'side', 'drink', 'combo'];
 
 const formatPrepName = (prep: string) => {
   return prep.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
@@ -81,6 +81,7 @@ const MenuManager: React.FC = () => {
       category: 'momo',
       preparations: { steamed: { small: 0, medium: 0, large: 0 } },
       costs: { steamed: { small: 0, medium: 0, large: 0 } },
+      minCoinsPrices: { steamed: { small: 0, medium: 0, large: 0 } },
       recipe: [],
       sizeRecipes: { small: [], medium: [], large: [] }
     });
@@ -92,6 +93,7 @@ const MenuManager: React.FC = () => {
       try {
         const itemToSave = {
           ...editingItem,
+          minCoinsPrices: editingItem.minCoinsPrices || {},
           sizeRecipes: editingItem.sizeRecipes || {}
         } as MenuItem;
         
@@ -121,22 +123,30 @@ const MenuManager: React.FC = () => {
     if (!editingItem) return;
     const newPreps = { ...(editingItem.preparations || {}) };
     const newCosts = { ...(editingItem.costs || {}) };
+    const newRedeem = { ...(editingItem.minCoinsPrices || {}) };
 
     if (newPreps[prep]) {
       delete newPreps[prep];
       delete newCosts[prep];
+      delete newRedeem[prep];
     } else {
       newPreps[prep] = { small: 0, medium: 0, large: 0 };
       newCosts[prep] = { small: 0, medium: 0, large: 0 };
+      newRedeem[prep] = { small: 0, medium: 0, large: 0 };
     }
 
-    setEditingItem({ ...editingItem, preparations: newPreps, costs: newCosts });
+    setEditingItem({ ...editingItem, preparations: newPreps, costs: newCosts, minCoinsPrices: newRedeem });
   };
 
-  const updateVal = (type: 'price' | 'cost', prep: PreparationType, size: Size, val: string) => {
+  const updateVal = (type: 'price' | 'cost' | 'redeem', prep: PreparationType, size: Size, val: string) => {
     if (!editingItem) return;
     const numVal = parseFloat(val) || 0;
-    const targetField = type === 'price' ? 'preparations' : 'costs';
+    const targetMap = {
+      price: 'preparations',
+      cost: 'costs',
+      redeem: 'minCoinsPrices'
+    };
+    const targetField = targetMap[type] as keyof MenuItem;
     
     const updatedData = { ...(editingItem[targetField] as any) || {} };
     if (!updatedData[prep]) updatedData[prep] = {};
@@ -309,7 +319,6 @@ const MenuManager: React.FC = () => {
                     {CATEGORIES.map(c => <option key={c} value={c}>{c.toUpperCase()}</option>)}
                   </select>
                 </div>
-
                 <div className="pt-4">
                   <button onClick={handleSave} className="w-full py-6 bg-brand-brown text-brand-yellow rounded-3xl font-black uppercase tracking-widest shadow-2xl hover:scale-105 transition-transform active:scale-95">Update Global Data</button>
                 </div>
@@ -369,6 +378,21 @@ const MenuManager: React.FC = () => {
                                   className="w-full bg-brand-stone/10 border border-brand-stone p-2 rounded-lg text-center font-bold text-sm text-brand-brown/60"
                                   value={editingItem.costs?.[prep as PreparationType]?.[size] || 0}
                                   onChange={e => updateVal('cost', prep as PreparationType, size, e.target.value)}
+                                />
+                              </td>
+                            ))}
+                          </tr>
+                          <tr className="bg-indigo-50/20">
+                            <td className="px-6 py-4 font-black text-indigo-600/60 uppercase italic text-xs">
+                              <span className="text-[9px] block font-bold not-italic">🪙 MINCOINS (0=OFF)</span>
+                            </td>
+                            {SIZES.map(size => (
+                              <td key={size} className="px-4 py-2">
+                                <input 
+                                  type="number" 
+                                  className="w-full bg-white border border-indigo-200 p-2 rounded-lg text-center font-black text-sm text-indigo-600"
+                                  value={editingItem.minCoinsPrices?.[prep as PreparationType]?.[size] || 0}
+                                  onChange={e => updateVal('redeem', prep as PreparationType, size, e.target.value)}
                                 />
                               </td>
                             ))}

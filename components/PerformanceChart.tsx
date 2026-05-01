@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import { CompletedOrder } from '../types';
 import { TrendingUp, DollarSign, ShoppingBag, BarChart2 } from 'lucide-react';
+import { getISTDate, getISTDateString } from '../utils/storage';
 
 interface PerformanceChartProps {
   orders: CompletedOrder[];
@@ -25,94 +26,307 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
   const [showProfit, setShowProfit] = useState(true);
   const [showAvgTicket, setShowAvgTicket] = useState(true);
   const [revenueType, setRevenueType] = useState<'ALL' | 'DINE_IN' | 'TAKEAWAY'>('ALL');
+  const [viewType, setViewType] = useState<'daily' | 'weekly' | 'monthly'>('daily');
 
   const chartData = useMemo(() => {
-    // 1. Determine date range for data population: startDate - 31 to endDate
+    // 1. Determine date range for data population
     const startObj = new Date(startDate);
-    startObj.setDate(startObj.getDate() - 31);
     const endObj = new Date(endDate);
-    
-    const dailyData: Record<string, { totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; totalCogs: number; dineInCogs: number; takeawayCogs: number; totalOrders: number; dineInOrders: number; takeawayOrders: number }> = {};
-    
-    // Initialize all dates in range to 0
-    let curr = new Date(startObj);
-    while (curr <= endObj) {
-        const ds = curr.toISOString().split('T')[0];
-        dailyData[ds] = { 
-          totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, 
-          totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, 
-          totalOrders: 0, dineInOrders: 0, takeawayOrders: 0 
-        };
-        curr.setDate(curr.getDate() + 1);
-    }
 
-    // Populate with actual data
-    orders.forEach(order => {
-      const dateStr = order.date.split('T')[0];
-      if (dailyData[dateStr]) {
-        const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
+    if (viewType === 'daily') {
+      startObj.setDate(startObj.getDate() - 31);
+      
+      const dailyData: Record<string, { 
+        totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; 
+        totalCogs: number; dineInCogs: number; takeawayCogs: number; 
+        totalOrders: number; dineInOrders: number; takeawayOrders: number 
+      }> = {};
+      
+      // Initialize all dates in range to 0
+      let curr = getISTDate(startObj);
+      while (curr <= endObj) {
+          const ds = getISTDateString(curr);
+          dailyData[ds] = { 
+            totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, 
+            totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, 
+            totalOrders: 0, dineInOrders: 0, takeawayOrders: 0 
+          };
+          curr.setDate(curr.getDate() + 1);
+      }
+
+      // Populate with actual data
+      orders.forEach(order => {
+        const dateStr = getISTDateString(order.date);
+        if (dailyData[dateStr]) {
+          const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
+          
+          dailyData[dateStr].totalRevenue += order.total;
+          dailyData[dateStr].totalOrders += 1;
+          dailyData[dateStr].totalCogs += totalCost;
+
+          if (order.type === 'DINE_IN') {
+            dailyData[dateStr].dineInRevenue += order.total;
+            dailyData[dateStr].dineInOrders += 1;
+            dailyData[dateStr].dineInCogs += totalCost;
+          } else if (order.type === 'TAKEAWAY') {
+            dailyData[dateStr].takeawayRevenue += order.total;
+            dailyData[dateStr].takeawayOrders += 1;
+            dailyData[dateStr].takeawayCogs += totalCost;
+          }
+        }
+      });
+
+      const fullSortedData = Object.entries(dailyData)
+        .map(([date, values]) => {
+          let revenue = values.totalRevenue;
+          let cogs = values.totalCogs;
+          let count = values.totalOrders;
+
+          if (revenueType === 'DINE_IN') {
+            revenue = values.dineInRevenue;
+            cogs = values.dineInCogs;
+            count = values.dineInOrders;
+          } else if (revenueType === 'TAKEAWAY') {
+            revenue = values.takeawayRevenue;
+            cogs = values.takeawayCogs;
+            count = values.takeawayOrders;
+          }
+
+          return {
+            date,
+            formattedDate: new Date(date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+            fullDate: new Date(date).toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short' }),
+            revenue,
+            profit: revenue - cogs,
+            avgTicket: count > 0 ? revenue / count : 0,
+            orderCount: count
+          };
+        })
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+      // Calculate WMA-28 on the full dataset
+      const calculateWMA = (arr: any[], idx: number, key: string) => {
+        const window = arr.slice(Math.max(0, idx - 27), idx + 1).reverse();
         
-        dailyData[dateStr].totalRevenue += order.total;
-        dailyData[dateStr].totalOrders += 1;
-        dailyData[dateStr].totalCogs += totalCost;
+        const getAvg = (start: number, end: number) => {
+          const slice = window.slice(start, end);
+          if (slice.length === 0) return 0;
+          return slice.reduce((sum, d) => sum + d[key], 0) / slice.length;
+        };
+
+        const w1 = getAvg(0, 7);
+        const w2 = getAvg(7, 14);
+        const w3 = getAvg(14, 21);
+        const w4 = getAvg(21, 28);
+        
+        let totalWeight = 0;
+        if (window.length > 0) totalWeight += 0.4;
+        if (window.length > 7) totalWeight += 0.3;
+        if (window.length > 14) totalWeight += 0.2;
+        if (window.length > 21) totalWeight += 0.1;
+        
+        if (totalWeight === 0) return 0;
+        
+        const rawWMA = (w1 * 0.4) + (w2 * 0.3) + (w3 * 0.2) + (w4 * 0.1);
+        return rawWMA / totalWeight;
+      };
+
+      const dataWithSMA = fullSortedData.map((day, idx, arr) => {
+        return {
+          ...day,
+          revenueSMA: calculateWMA(arr, idx, 'revenue'),
+          profitSMA: calculateWMA(arr, idx, 'profit'),
+          ticketSMA: calculateWMA(arr, idx, 'avgTicket'),
+        };
+      });
+
+      return dataWithSMA.filter(d => d.date >= startDate && d.date <= endDate);
+    } else if (viewType === 'weekly') {
+      // Weekly view [Monday to Sunday]
+      const getISOWeek = (date: Date) => {
+        const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+        const dayNum = d.getUTCDay() || 7;
+        d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+        const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+        return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+      };
+
+      const getISOWeekYear = (date: Date) => {
+        const d = new Date(date.getTime());
+        d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+        return d.getFullYear();
+      };
+
+      const weeklyData: Record<string, { 
+        totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; 
+        totalCogs: number; dineInCogs: number; takeawayCogs: number; 
+        totalOrders: number; dineInOrders: number; takeawayOrders: number;
+        weekNum: number;
+        year: number;
+        monday: string;
+        sunday: string;
+      }> = {};
+
+      // Helper to get Monday of the week
+      const getMonday = (d: Date) => {
+        const date = new Date(d);
+        const day = date.getDay();
+        const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+        return new Date(date.setDate(diff));
+      };
+
+      // Helper to get Sunday of the week
+      const getSunday = (d: Date) => {
+        const monday = getMonday(d);
+        return new Date(monday.setDate(monday.getDate() + 6));
+      };
+
+      orders.forEach(order => {
+        const date = new Date(order.date);
+        const dateStr = order.date.split('T')[0];
+        if (dateStr < startDate || dateStr > endDate) return;
+
+        const w = getISOWeek(date);
+        const y = getISOWeekYear(date);
+        const key = `${y}-W${w.toString().padStart(2, '0')}`;
+
+        if (!weeklyData[key]) {
+          const mon = getMonday(date);
+          const sun = getSunday(date);
+          weeklyData[key] = {
+            totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0,
+            totalCogs: 0, dineInCogs: 0, takeawayCogs: 0,
+            totalOrders: 0, dineInOrders: 0, takeawayOrders: 0,
+            weekNum: w,
+            year: y,
+            monday: mon.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+            sunday: sun.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
+          };
+        }
+
+        const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
+        weeklyData[key].totalRevenue += order.total;
+        weeklyData[key].totalOrders += 1;
+        weeklyData[key].totalCogs += totalCost;
 
         if (order.type === 'DINE_IN') {
-          dailyData[dateStr].dineInRevenue += order.total;
-          dailyData[dateStr].dineInOrders += 1;
-          dailyData[dateStr].dineInCogs += totalCost;
+          weeklyData[key].dineInRevenue += order.total;
+          weeklyData[key].dineInOrders += 1;
+          weeklyData[key].dineInCogs += totalCost;
         } else if (order.type === 'TAKEAWAY') {
-          dailyData[dateStr].takeawayRevenue += order.total;
-          dailyData[dateStr].takeawayOrders += 1;
-          dailyData[dateStr].takeawayCogs += totalCost;
+          weeklyData[key].takeawayRevenue += order.total;
+          weeklyData[key].takeawayOrders += 1;
+          weeklyData[key].takeawayCogs += totalCost;
         }
-      }
-    });
+      });
 
-    const fullSortedData = Object.entries(dailyData)
-      .map(([date, values]) => {
-        let revenue = values.totalRevenue;
-        let cogs = values.totalCogs;
-        let count = values.totalOrders;
+      return Object.entries(weeklyData)
+        .map(([key, values]) => {
+          let revenue = values.totalRevenue;
+          let cogs = values.totalCogs;
+          let count = values.totalOrders;
 
-        if (revenueType === 'DINE_IN') {
-          revenue = values.dineInRevenue;
-          cogs = values.dineInCogs;
-          count = values.dineInOrders;
-        } else if (revenueType === 'TAKEAWAY') {
-          revenue = values.takeawayRevenue;
-          cogs = values.takeawayCogs;
-          count = values.takeawayOrders;
+          if (revenueType === 'DINE_IN') {
+            revenue = values.dineInRevenue;
+            cogs = values.dineInCogs;
+            count = values.dineInOrders;
+          } else if (revenueType === 'TAKEAWAY') {
+            revenue = values.takeawayRevenue;
+            cogs = values.takeawayCogs;
+            count = values.takeawayOrders;
+          }
+
+          return {
+            date: key,
+            formattedDate: `W${values.weekNum}`,
+            fullDate: `Week ${values.weekNum} (${values.monday} - ${values.sunday})`,
+            revenue,
+            profit: revenue - cogs,
+            avgTicket: count > 0 ? revenue / count : 0,
+            orderCount: count,
+            revenueSMA: 0, // SMA not supported in weekly view yet
+            profitSMA: 0,
+            ticketSMA: 0
+          };
+        })
+        .sort((a, b) => a.date.localeCompare(b.date));
+    } else {
+      // Monthly view
+      const monthlyData: Record<string, { 
+        totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; 
+        totalCogs: number; dineInCogs: number; takeawayCogs: number; 
+        totalOrders: number; dineInOrders: number; takeawayOrders: number;
+        month: string;
+        year: number;
+      }> = {};
+
+      orders.forEach(order => {
+        const date = new Date(order.date);
+        const dateStr = order.date.split('T')[0];
+        if (dateStr < startDate || dateStr > endDate) return;
+
+        const month = date.getMonth();
+        const year = date.getFullYear();
+        const key = `${year}-${(month + 1).toString().padStart(2, '0')}`;
+
+        if (!monthlyData[key]) {
+          monthlyData[key] = {
+            totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0,
+            totalCogs: 0, dineInCogs: 0, takeawayCogs: 0,
+            totalOrders: 0, dineInOrders: 0, takeawayOrders: 0,
+            month: date.toLocaleDateString('en-GB', { month: 'short' }),
+            year: year
+          };
         }
 
-        return {
-          date,
-          formattedDate: new Date(date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
-          fullDate: new Date(date).toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short' }),
-          revenue,
-          profit: revenue - cogs,
-          avgTicket: count > 0 ? revenue / count : 0,
-          orderCount: count
-        };
-      })
-      .sort((a, b) => a.date.localeCompare(b.date));
+        const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
+        monthlyData[key].totalRevenue += order.total;
+        monthlyData[key].totalOrders += 1;
+        monthlyData[key].totalCogs += totalCost;
 
-    // Calculate SMA on the full dataset (trailing 30 days)
-    const windowSize = 30;
-    const dataWithSMA = fullSortedData.map((day, idx, arr) => {
-      const window = arr.slice(Math.max(0, idx - windowSize + 1), idx + 1);
-      const actualSize = window.length;
-      
-      return {
-        ...day,
-        revenueSMA: window.reduce((sum, d) => sum + d.revenue, 0) / actualSize,
-        profitSMA: window.reduce((sum, d) => sum + d.profit, 0) / actualSize,
-        ticketSMA: window.reduce((sum, d) => sum + d.avgTicket, 0) / actualSize,
-      };
-    });
+        if (order.type === 'DINE_IN') {
+          monthlyData[key].dineInRevenue += order.total;
+          monthlyData[key].dineInOrders += 1;
+          monthlyData[key].dineInCogs += totalCost;
+        } else if (order.type === 'TAKEAWAY') {
+          monthlyData[key].takeawayRevenue += order.total;
+          monthlyData[key].takeawayOrders += 1;
+          monthlyData[key].takeawayCogs += totalCost;
+        }
+      });
 
-    // Finally, filter to only return the visible range [startDate, endDate]
-    return dataWithSMA.filter(d => d.date >= startDate && d.date <= endDate);
-  }, [orders, startDate, endDate, showSMA, revenueType]);
+      return Object.entries(monthlyData)
+        .map(([key, values]) => {
+          let revenue = values.totalRevenue;
+          let cogs = values.totalCogs;
+          let count = values.totalOrders;
+
+          if (revenueType === 'DINE_IN') {
+            revenue = values.dineInRevenue;
+            cogs = values.dineInCogs;
+            count = values.dineInOrders;
+          } else if (revenueType === 'TAKEAWAY') {
+            revenue = values.takeawayRevenue;
+            cogs = values.takeawayCogs;
+            count = values.takeawayOrders;
+          }
+
+          return {
+            date: key,
+            formattedDate: `${values.month} ${values.year.toString().slice(-2)}`,
+            fullDate: `${new Date(key + '-01').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}`,
+            revenue,
+            profit: revenue - cogs,
+            avgTicket: count > 0 ? revenue / count : 0,
+            orderCount: count,
+            revenueSMA: 0,
+            profitSMA: 0,
+            ticketSMA: 0
+          };
+        })
+        .sort((a, b) => a.date.localeCompare(b.date));
+    }
+  }, [orders, startDate, endDate, showSMA, revenueType, viewType]);
 
   const stats = useMemo(() => {
     const totalRevenue = chartData.reduce((sum, d) => sum + d.revenue, 0);
@@ -135,19 +349,36 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
             Performance Trends
           </h3>
           <p className="text-sm text-brand-brown/60">Revenue, Profit, and Average Order Value</p>
-          <div className="flex items-center gap-2 mt-2 bg-brand-brown/5 p-1 rounded-full w-fit">
-            <button 
-              onClick={() => setRevenueType('ALL')}
-              className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${revenueType === 'ALL' ? 'bg-brand-brown text-brand-yellow' : 'text-brand-brown/40'}`}
-            >All</button>
-            <button 
-              onClick={() => setRevenueType('DINE_IN')}
-              className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${revenueType === 'DINE_IN' ? 'bg-brand-red text-white' : 'text-brand-brown/40'}`}
-            >Dine-In</button>
-            <button 
-              onClick={() => setRevenueType('TAKEAWAY')}
-              className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${revenueType === 'TAKEAWAY' ? 'bg-indigo-600 text-white' : 'text-brand-brown/40'}`}
-            >Takeaway</button>
+          <div className="flex items-center gap-4 mt-2">
+            <div className="flex items-center gap-2 bg-brand-brown/5 p-1 rounded-full w-fit">
+              <button 
+                onClick={() => setRevenueType('ALL')}
+                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${revenueType === 'ALL' ? 'bg-brand-brown text-brand-yellow' : 'text-brand-brown/40'}`}
+              >All</button>
+              <button 
+                onClick={() => setRevenueType('DINE_IN')}
+                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${revenueType === 'DINE_IN' ? 'bg-brand-red text-white' : 'text-brand-brown/40'}`}
+              >Dine-In</button>
+              <button 
+                onClick={() => setRevenueType('TAKEAWAY')}
+                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${revenueType === 'TAKEAWAY' ? 'bg-indigo-600 text-white' : 'text-brand-brown/40'}`}
+              >Takeaway</button>
+            </div>
+
+            <div className="flex items-center gap-2 bg-brand-brown/5 p-1 rounded-full w-fit">
+              <button 
+                onClick={() => setViewType('daily')}
+                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${viewType === 'daily' ? 'bg-brand-brown text-brand-yellow shadow-sm' : 'text-brand-brown/40'}`}
+              >Daily</button>
+              <button 
+                onClick={() => setViewType('weekly')}
+                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${viewType === 'weekly' ? 'bg-brand-brown text-brand-yellow shadow-sm' : 'text-brand-brown/40'}`}
+              >Weekly</button>
+              <button 
+                onClick={() => setViewType('monthly')}
+                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${viewType === 'monthly' ? 'bg-brand-brown text-brand-yellow shadow-sm' : 'text-brand-brown/40'}`}
+              >Monthly</button>
+            </div>
           </div>
         </div>
         
@@ -182,21 +413,24 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
             <span className="text-[10px] font-black uppercase tracking-wider">Ticket</span>
           </button>
 
-          <div className="w-[1px] h-4 bg-brand-brown/10 mx-1 hidden md:block" />
-
-          <button 
-            onClick={() => setShowSMA(!showSMA)}
-            className="flex items-center gap-2 group outline-none"
-          >
-            <span className={`text-[10px] font-black uppercase tracking-wider transition-colors ${showSMA ? 'text-brand-red' : 'text-brand-brown/30'}`}>SMA (30d)</span>
-            <div className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
-              showSMA ? 'bg-brand-red' : 'bg-gray-200'
-            }`}>
-              <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                showSMA ? 'translate-x-5' : 'translate-x-1'
-              }`} />
-            </div>
-          </button>
+          {viewType === 'daily' && (
+            <>
+              <div className="w-[1px] h-4 bg-brand-brown/10 mx-1 hidden md:block" />
+              <button 
+                onClick={() => setShowSMA(!showSMA)}
+                className="flex items-center gap-2 group outline-none"
+              >
+                <span className={`text-[10px] font-black uppercase tracking-wider transition-colors ${showSMA ? 'text-brand-red' : 'text-brand-brown/30'}`}>WMA (28d)</span>
+                <div className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
+                   showSMA ? 'bg-brand-red' : 'bg-gray-200'
+                }`}>
+                  <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                     showSMA ? 'translate-x-5' : 'translate-x-1'
+                  }`} />
+                </div>
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -283,7 +517,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
                      yAxisId="left"
                      type="monotone" 
                      dataKey="revenueSMA" 
-                     name="Revenue (SMA)" 
+                     name="Revenue (WMA)" 
                      stroke="#B91C1C" 
                      strokeWidth={2}
                      strokeDasharray="5 5"
@@ -295,7 +529,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
                      yAxisId="left"
                      type="monotone" 
                      dataKey="profitSMA" 
-                     name="Profit (SMA)" 
+                     name="Profit (WMA)" 
                      stroke="#047857" 
                      strokeWidth={2}
                      strokeDasharray="5 5"
@@ -307,7 +541,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
                      yAxisId="right"
                      type="monotone" 
                      dataKey="ticketSMA" 
-                     name="Ticket (SMA)" 
+                     name="Ticket (WMA)" 
                      stroke="#4338CA" 
                      strokeWidth={2}
                      strokeDasharray="5 5"

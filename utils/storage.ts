@@ -15,11 +15,76 @@ export function setCurrentUser(user: User | null): void {
   else localStorage.removeItem(AUTH_KEY);
 }
 
+// --- TIMEZONE HELPERS ---
+export function getISTDate(date?: string | number | Date): Date {
+  if (date) return new Date(date);
+  return new Date();
+}
+
+export function getISTDateString(date?: string | number | Date): string {
+  const d = date ? new Date(date) : new Date();
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(d);
+}
+
+export function getISTFullDateTime(date?: string | number | Date): string {
+  const d = date ? new Date(date) : new Date();
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true
+  }).format(d);
+}
+
+export function getISTTimeString(date?: string | number | Date): string {
+  const d = date ? new Date(date) : new Date();
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true
+  }).format(d);
+}
+
+export function getISTISOString(): string {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+  
+  const parts = formatter.formatToParts(now);
+  const getPart = (type: string) => parts.find(p => p.type === type)?.value;
+  
+  // Include the +05:30 offset so Supabase treats it as IST correctly
+  const isoStr = `${getPart('year')}-${getPart('month')}-${getPart('day')}T${getPart('hour')}:${getPart('minute')}:${getPart('second')}+05:30`;
+  return isoStr;
+}
+
 // --- MENU MANAGEMENT ---
 
 export async function fetchMenuItems(): Promise<{ data: MenuItem[], error: any }> {
   const { data, error } = await supabase.from('menu_items').select('*').order('name');
-  return { data: data || [], error };
+  const mappedData = data?.map(item => ({
+    ...item,
+    minCoinsPrices: item.min_coins_prices || item.minCoinsPrices || {}
+  })) || [];
+  return { data: mappedData, error };
 }
 
 export async function upsertMenuItem(item: MenuItem): Promise<void> {
@@ -28,6 +93,7 @@ export async function upsertMenuItem(item: MenuItem): Promise<void> {
     name: item.name,
     image: item.image,
     category: item.category,
+    min_coins_prices: item.minCoinsPrices,
     preparations: item.preparations,
     costs: item.costs,
     recipe: item.recipe,
@@ -58,8 +124,8 @@ export async function fetchProcurements(startDate: string, endDate: string): Pro
   const { data, error } = await supabase
     .from('procurements')
     .select('*')
-    .gte('date', `${startDate}T00:00:00`)
-    .lte('date', `${endDate}T23:59:59`)
+    .gte('date', `${startDate}T00:00:00+05:30`)
+    .lte('date', `${endDate}T23:59:59+05:30`)
     .order('date', { ascending: false });
   return { data: data || [], error };
 }
@@ -70,13 +136,42 @@ export async function fetchAllocations(startDate: string, endDate: string): Prom
   const { data, error } = await supabase
     .from('stock_allocations')
     .select('*')
-    .gte('date', `${startDate}T00:00:00`)
-    .lte('date', `${endDate}T23:59:59`)
+    .gte('date', `${startDate}T00:00:00+05:30`)
+    .lte('date', `${endDate}T23:59:59+05:30`)
     .order('date', { ascending: false });
   return { data: (data as StockAllocation[]) || [], error };
 }
 
 // --- ORDERING & INVENTORY DEDUCTION ---
+
+function mapDatabaseOrderToType(o: any): CompletedOrder {
+  // Supabase might return items under 'order_items' or 'items' depending on alias/join
+  const rawItems = o.order_items || o.items || o.order_item || [];
+  
+  return {
+    id: o.id, 
+    billNumber: o.bill_number, 
+    type: o.type, 
+    status: o.status, 
+    total: o.total, 
+    date: o.date, 
+    paymentMethod: o.payment_method, 
+    branchName: o.branch_name,
+    customerPhone: o.customer_phone,
+    customerId: o.customer_id,
+    deletionInfo: o.deletion_info,
+    items: rawItems.map((i: any) => ({ 
+      id: i.id, 
+      menuItemId: i.menu_item_id, 
+      name: i.name, 
+      price: i.price, 
+      cost: i.cost, 
+      quantity: i.quantity,
+      paidWithCoins: i.paid_with_coins,
+      coinsPrice: i.coins_price
+    }))
+  };
+}
 
 export async function saveOrder(
   orderItems: OrderItem[], 
@@ -114,8 +209,6 @@ export async function saveOrder(
           customerId = newCustomer.id;
         } else if (createError) {
           console.warn("Could not register customer, proceeding with phone only:", createError.message);
-          // If insert fails (maybe already exists but SELECT policy race condition), 
-          // we still try to get the ID one last time
           const { data: secondTry } = await supabase
             .from('customers')
             .select('id')
@@ -126,9 +219,12 @@ export async function saveOrder(
       }
     }
 
+    // Round total and individual items to nearest integer for consistency
+    const roundedTotal = Math.round(total);
+
     const { data: orderData, error: orderError } = await supabase.from('orders').insert({
       bill_number: nextBillNumber, 
-      total, 
+      total: roundedTotal, 
       payment_method: paymentMethod || null, 
       branch_name: branchName, 
       type, 
@@ -136,7 +232,7 @@ export async function saveOrder(
       table_id: tableId || null, 
       customer_id: customerId,
       customer_phone: customerPhone || null,
-      date: new Date().toISOString()
+      date: getISTISOString()
     }).select().single();
     
     if (orderError) {
@@ -144,15 +240,51 @@ export async function saveOrder(
       throw orderError;
     }
 
-    const itemsToInsert = orderItems.map(item => ({
-      order_id: orderData.id, 
-      menu_item_id: item.menuItemId, 
-      name: item.name, 
-      price: item.price, 
-      cost: item.cost, 
-      quantity: item.quantity
-    }));
-    await supabase.from('order_items').insert(itemsToInsert);
+    const itemsToInsert = orderItems.map(item => {
+      const row: any = {
+        order_id: orderData.id, 
+        name: item.name, 
+        price: Math.round(item.price), // Round price to handle fractional discounts
+        cost: Math.round(item.cost || 0), 
+        quantity: item.quantity,
+        paid_with_coins: item.paidWithCoins || false,
+        coins_price: item.coinsPrice || 0,
+        menu_item_id: null // Explicitly handle null
+      };
+      
+      if (item.menuItemId && 
+          item.menuItemId !== 'discount' && 
+          item.menuItemId !== 'registration' && 
+          item.menuItemId.length > 5) { // Basic UUID check
+        row.menu_item_id = item.menuItemId;
+      }
+      
+      return row;
+    });
+
+    const { error: itemsError } = await supabase.from('order_items').insert(itemsToInsert);
+    if (itemsError) {
+      console.error("Order Items Batch Insert Failed, trying individual items:", itemsError);
+      // Try individual inserts to identify or bypass a single bad record
+      for (const row of itemsToInsert) {
+        try {
+          const { error: singleError } = await supabase.from('order_items').insert(row);
+          if (singleError) console.error("Individual Item Insert Error:", singleError, "Row:", row);
+        } catch (e) {
+          console.error("Fatal individual insert error:", e);
+        }
+      }
+    }
+
+    // 1.5 Update Customer LTV and Total Orders
+    if (customerId) {
+        await syncCustomerStats(customerId, customerPhone);
+        
+        const usesWelcomeDiscount = orderItems.some(i => i.id === 'welcome-discount');
+        if (usesWelcomeDiscount) {
+          await supabase.from('customers').update({ welcome_coupon_used: true }).eq('id', customerId);
+        }
+    }
 
     const { data: menuItems } = await fetchMenuItems();
     
@@ -260,7 +392,7 @@ export async function createCentralItem(
   const { error } = await supabase.from('central_inventory').upsert({
     id, name, unit, category, current_stock: initialQty, 
     last_purchase_cost: costPerUnit,
-    last_purchase_date: new Date().toISOString(), is_finished: false
+    last_purchase_date: getISTISOString(), is_finished: false
   });
   if (error) throw error;
 }
@@ -288,7 +420,7 @@ export async function recordCentralPurchase(id: string, qty: number, totalCost: 
   const { error: updateError } = await supabase.from('central_inventory').update({
     current_stock: newStock, 
     last_purchase_cost: totalCost, 
-    last_purchase_date: new Date().toISOString(), 
+    last_purchase_date: getISTISOString(), 
     is_finished: false
   }).eq('id', id);
 
@@ -320,7 +452,7 @@ export async function allocateStock(materialId: string, stationName: string, qty
     station_name: stationName,
     quantity: qty,
     unit: central.unit,
-    date: new Date().toISOString()
+    date: getISTISOString()
   });
   if (logError) throw logError;
 }
@@ -350,53 +482,110 @@ export async function getInventory(branchName: string): Promise<RawMaterial[]> {
 export async function getOrdersForDateRange(startDate: string, endDate: string): Promise<CompletedOrder[]> {
   const { data } = await supabase
     .from('orders')
-    .select(`*, order_items (*)`)
-    .gte('date', `${startDate}T00:00:00`)
-    .lte('date', `${endDate}T23:59:59`)
+    .select(`*, items:order_items (*)`)
+    .gte('date', `${startDate}T00:00:00+05:30`)
+    .lte('date', `${endDate}T23:59:59+05:30`)
     .is('deletion_info', null)
     .order('bill_number', { ascending: false });
+  
   if (!data) return [];
-  return data.map(o => ({
-    id: o.id, billNumber: o.bill_number, type: o.type, status: o.status, total: o.total, date: o.date, paymentMethod: o.payment_method, branchName: o.branch_name,
-    customerPhone: o.customer_phone,
-    customerId: o.customer_id,
-    items: o.order_items.map((i: any) => ({ id: i.id, menuItemId: i.menu_item_id, name: i.name, price: i.price, cost: i.cost, quantity: i.quantity }))
+
+  // For orders missing items, try a fallback fetch (though this is more common for single orders due to RLS/join limits)
+  const results = await Promise.all(data.map(async (o) => {
+    // If Supabase didn't join items (aliased as 'items' now)
+    if (!o.items || o.items.length === 0) {
+       const { data: fallbackItems } = await supabase.from('order_items').select('*').eq('order_id', o.id);
+       if (fallbackItems && fallbackItems.length > 0) {
+         o.items = fallbackItems;
+       }
+    }
+    return mapDatabaseOrderToType(o);
   }));
+
+  return results;
 }
 
 export async function getOrderByBillNumber(billNumber: number): Promise<CompletedOrder | null> {
   const { data } = await supabase
     .from('orders')
-    .select(`*, order_items (*)`)
+    .select(`*, items:order_items (*)`)
     .eq('bill_number', billNumber)
     .maybeSingle();
+  
   if (!data) return null;
-  return {
-    id: data.id, billNumber: data.bill_number, type: data.type, status: data.status, total: data.total, date: data.date, paymentMethod: data.payment_method, branchName: data.branch_name, deletionInfo: data.deletion_info,
-    customerPhone: data.customer_phone,
-    customerId: data.customer_id,
-    items: data.order_items.map((i: any) => ({ id: i.id, menuItemId: i.menu_item_id, name: i.name, price: i.price, cost: i.cost, quantity: i.quantity }))
-  };
+
+  // Fallback: if items are missing from the join (sometimes happens with RLS or complex joins), try direct fetch
+  if (!data.items || data.items.length === 0) {
+    const { data: directItems } = await supabase
+      .from('order_items')
+      .select('*')
+      .eq('order_id', data.id);
+    if (directItems && directItems.length > 0) {
+      data.items = directItems;
+    }
+  }
+
+  return mapDatabaseOrderToType(data);
 }
 
 export async function getDeletedOrdersForDateRange(startDate: string, endDate: string): Promise<CompletedOrder[]> {
   const { data } = await supabase
     .from('orders')
-    .select(`*, order_items (*)`)
-    .gte('date', `${startDate}T00:00:00`)
-    .lte('date', `${endDate}T23:59:59`)
+    .select(`*, items:order_items (*)`)
+    .gte('date', `${startDate}T00:00:00+05:30`)
+    .lte('date', `${endDate}T23:59:59+05:30`)
     .not('deletion_info', 'is', null)
     .order('bill_number', { ascending: false });
+  
   if (!data) return [];
-  return data.map(o => ({
-    id: o.id, billNumber: o.bill_number, type: o.type, status: o.status, total: o.total, date: o.date, paymentMethod: o.payment_method, branchName: o.branch_name, deletionInfo: o.deletion_info,
-    items: o.order_items.map((i: any) => ({ id: i.id, menuItemId: i.menu_item_id, name: i.name, price: i.price, cost: i.cost, quantity: i.quantity }))
+
+  const results = await Promise.all(data.map(async (o) => {
+    if (!o.items || o.items.length === 0) {
+       const { data: fallbackItems } = await supabase.from('order_items').select('*').eq('order_id', o.id);
+       if (fallbackItems && fallbackItems.length > 0) o.items = fallbackItems;
+    }
+    return mapDatabaseOrderToType(o);
   }));
+
+  return results;
+}
+
+export async function syncCustomerStats(customerId: string, phone?: string): Promise<void> {
+  const { data: stats } = await supabase.rpc('get_customer_stats');
+  const customerStats = stats?.find((c: any) => c.id === customerId || (phone && c.phone === phone));
+  
+  await supabase.from('customers').update({
+      total_orders: customerStats?.total_orders || 0,
+      ltv: customerStats?.total_spent || 0
+  }).eq('id', customerId);
 }
 
 export async function deleteOrderByBillNumber(billNumber: number, reason: string): Promise<void> {
-  const deletionInfo = { reason, date: new Date().toISOString() };
+  const { data: order } = await supabase
+    .from('orders')
+    .select('id, customer_id, customer_phone, order_items(name)')
+    .eq('bill_number', billNumber)
+    .single();
+  
+  const deletionInfo = { reason, date: getISTISOString() };
   await supabase.from('orders').update({ deletion_info: deletionInfo }).eq('bill_number', billNumber);
+
+  if (order) {
+    // If the order contained the 15% Welcome Discount, reactivate it for the customer
+    const hasCoupon = order.order_items?.some((item: any) => 
+      item.name === '15% Welcome Discount' || item.name.includes('Welcome Discount')
+    );
+
+    if (hasCoupon && order.customer_id) {
+      await supabase.from('customers')
+        .update({ welcome_coupon_used: false })
+        .eq('id', order.customer_id);
+    }
+
+    if (order.customer_id) {
+      await syncCustomerStats(order.customer_id, order.customer_phone);
+    }
+  }
 }
 
 export async function updateTableStatus(tableId: string, status: string): Promise<void> {
@@ -407,7 +596,58 @@ export async function updateOrderStatus(orderId: string, status: OrderStatus): P
   await supabase.from('orders').update({ status }).eq('id', orderId);
 }
 
+export const CUSTOMER_TIERS = [
+  { name: 'Base Camp', min: 0, rate: 0.08 },
+  { name: 'Camp 1', min: 501, rate: 0.10 },
+  { name: 'Camp 2', min: 2001, rate: 0.12 },
+  { name: 'Camp 3', min: 5001, rate: 0.14 },
+  { name: 'Summit', min: 10001, rate: 0.16 },
+];
+
+export function getTierInfo(spent: number) {
+  for (let i = CUSTOMER_TIERS.length - 1; i >= 0; i--) {
+    if (spent >= CUSTOMER_TIERS[i].min) {
+      return {
+        ...CUSTOMER_TIERS[i],
+        next: CUSTOMER_TIERS[i + 1] || null
+      };
+    }
+  }
+  return { ...CUSTOMER_TIERS[0], next: CUSTOMER_TIERS[1] };
+}
+
+export function calculateProgressiveEarned(spent: number): number {
+  let total = 0;
+  for (let i = 0; i < CUSTOMER_TIERS.length; i++) {
+    const tier = CUSTOMER_TIERS[i];
+    const nextTier = CUSTOMER_TIERS[i + 1];
+    const upperLimit = nextTier ? nextTier.min : Infinity;
+    
+    if (spent > tier.min) {
+      const amountInThisTier = Math.min(spent, upperLimit) - tier.min;
+      total += amountInThisTier * tier.rate;
+    }
+  }
+  return Math.floor(total);
+}
+
+export function calculateTotalMinCoins(totalSpent: number, redeemedCoins: number) {
+  return Math.max(0, calculateProgressiveEarned(totalSpent) - redeemedCoins);
+}
+
 // --- CUSTOMER MANAGEMENT ---
+
+async function getRedeemedCoins(phone: string): Promise<number> {
+  const { data } = await supabase
+    .from('order_items')
+    .select('coins_price, quantity, orders!inner(customer_phone, deletion_info)')
+    .eq('paid_with_coins', true)
+    .eq('orders.customer_phone', phone)
+    .is('orders.deletion_info', null);
+  
+  if (!data) return 0;
+  return data.reduce((acc, item) => acc + (item.coins_price * item.quantity), 0);
+}
 
 export async function getCustomerByPhone(phone: string): Promise<Customer | null> {
   const { data } = await supabase.rpc('get_customer_stats');
@@ -416,50 +656,158 @@ export async function getCustomerByPhone(phone: string): Promise<Customer | null
   if (!match) return null;
   
   const totalSpent = Number(match.total_spent || 0);
+  const redeemedCoins = await getRedeemedCoins(phone);
+  
   return {
     id: match.id,
     phone: match.phone,
+    name: match.name,
+    email: match.email,
+    birthday: match.birthday,
+    note: match.note,
     totalOrders: Number(match.total_orders || 0),
     totalSpent: totalSpent,
-    minCoins: Math.floor(totalSpent * 0.1),
+    minCoins: calculateTotalMinCoins(totalSpent, redeemedCoins),
     lastVisit: match.last_visit,
-    joinedDate: match.joined_date
+    joinedDate: match.joined_date,
+    welcomeCouponUsed: match.welcome_coupon_used || false,
+    welcomeCouponCode: match.welcome_coupon_code
   };
 }
 
-export async function fetchCustomers(): Promise<Customer[]> {
-  const { data } = await supabase
-    .rpc('get_customer_stats'); 
+export async function searchCustomers(query: string): Promise<Customer[]> {
+  if (query.length < 3) return [];
   
+  const { data, error } = await supabase
+    .from('customers')
+    .select('*')
+    .ilike('phone', `%${query}%`)
+    .limit(5);
+
+  if (error) return [];
+  
+  return data.map(d => ({
+    id: d.id,
+    phone: d.phone,
+    name: d.name,
+    totalOrders: d.total_orders || 0,
+    totalSpent: d.ltv || 0,
+    minCoins: d.min_coins || 0,
+    joinedDate: d.created_at,
+    lastVisit: d.last_visit,
+    welcomeCouponUsed: d.welcome_coupon_used || false,
+    welcomeCouponCode: d.welcome_coupon_code
+  }));
+}
+
+export async function registerCustomer(phone: string, name: string): Promise<Customer> {
+  const couponCode = `MOMO-${Math.random().toString(36).substring(2, 6).toUpperCase()}-${phone.slice(-4)}`;
+  const { data, error } = await supabase
+    .from('customers')
+    .upsert({ phone, name, welcome_coupon_code: couponCode }, { onConflict: 'phone' })
+    .select()
+    .single();
+
+  if (error) throw error;
+  
+  return {
+    id: data.id,
+    phone: data.phone,
+    name: data.name,
+    totalOrders: 0,
+    totalSpent: 0,
+    minCoins: 0,
+    joinedDate: data.created_at,
+    lastVisit: null,
+    welcomeCouponUsed: false,
+    welcomeCouponCode: data.welcome_coupon_code
+  };
+}
+
+export async function updateCustomer(id: string, updates: Partial<Customer>): Promise<void> {
+  const { error } = await supabase
+    .from('customers')
+    .update({
+      name: updates.name,
+      email: updates.email,
+      birthday: updates.birthday,
+      note: updates.note,
+      welcome_coupon_used: updates.welcomeCouponUsed,
+      welcome_coupon_code: updates.welcomeCouponCode
+    })
+    .eq('id', id);
+  if (error) throw error;
+}
+
+export async function fetchUsualOrder(phone: string): Promise<{ name: string, quantity: number } | null> {
+  const history = await fetchCustomerHistory(phone);
+  if (history.length <= 3) return null;
+
+  const itemCounts: { [key: string]: number } = {};
+  history.forEach(order => {
+    order.items.forEach(item => {
+      itemCounts[item.name] = (itemCounts[item.name] || 0) + item.quantity;
+    });
+  });
+
+  let topItem = null;
+  let maxCount = 0;
+
+  for (const [name, count] of Object.entries(itemCounts)) {
+    if (count > maxCount) {
+      maxCount = count;
+      topItem = { name, quantity: count };
+    }
+  }
+
+  return topItem;
+}
+
+export async function fetchCustomers(branchFilter?: string): Promise<Customer[]> {
+  const { data } = await supabase.rpc('get_customer_stats', { branch_filter: branchFilter || null }); 
   if (!data) return [];
   
-  return data.map((c: any) => {
+  const customers = await Promise.all(data.map(async (c: any) => {
     const totalSpent = Number(c.total_spent || 0);
+    const redeemedCoins = await getRedeemedCoins(c.phone);
+    
     return {
       id: c.id,
       phone: c.phone,
+      name: c.name,
+      email: c.email,
+      birthday: c.birthday,
+      note: c.note,
       totalOrders: Number(c.total_orders || 0),
       totalSpent: totalSpent,
-      minCoins: Math.floor(totalSpent * 0.1),
+      minCoins: calculateTotalMinCoins(totalSpent, redeemedCoins),
       lastVisit: c.last_visit,
-      joinedDate: c.joined_date
+      joinedDate: c.joined_date,
+      welcomeCouponUsed: c.welcome_coupon_used || false,
+      welcomeCouponCode: c.welcome_coupon_code
     };
-  });
+  }));
+
+  return customers;
 }
 
 export async function fetchCustomerHistory(phone: string): Promise<CompletedOrder[]> {
   const { data } = await supabase
     .from('orders')
-    .select(`*, order_items (*)`)
+    .select(`*, items:order_items (*)`)
     .eq('customer_phone', phone)
     .is('deletion_info', null)
     .order('date', { ascending: false });
   
   if (!data) return [];
-  return data.map(o => ({
-    id: o.id, billNumber: o.bill_number, type: o.type, status: o.status, total: o.total, date: o.date, paymentMethod: o.payment_method, branchName: o.branch_name,
-    customerPhone: o.customer_phone,
-    customerId: o.customer_id,
-    items: o.order_items.map((i: any) => ({ id: i.id, menuItemId: i.menu_item_id, name: i.name, price: i.price, cost: i.cost, quantity: i.quantity }))
+
+  const results = await Promise.all(data.map(async (o) => {
+    if (!o.items || o.items.length === 0) {
+       const { data: fallbackItems } = await supabase.from('order_items').select('*').eq('order_id', o.id);
+       if (fallbackItems && fallbackItems.length > 0) o.items = fallbackItems;
+    }
+    return mapDatabaseOrderToType(o);
   }));
+
+  return results;
 }

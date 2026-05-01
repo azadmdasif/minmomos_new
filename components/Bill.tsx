@@ -1,8 +1,11 @@
 
 import React from 'react';
-import { OrderItem, OrderType } from '../types';
+import { OrderItem, OrderType, Customer, MenuItem } from '../types';
 import BillItem from './BillItem';
-import { MENU_ITEMS } from '../constants';
+import { GIFT_CAMPA_COLA } from '../constants';
+import { fetchUsualOrder, getCustomerByPhone, getTierInfo, registerCustomer, searchCustomers, updateCustomer, fetchMenuItems } from '../utils/storage';
+import CelebrationOverlay from './CelebrationOverlay';
+import NewCustomerModal from './NewCustomerModal';
 
 interface BillProps {
   orderItems: OrderItem[];
@@ -31,6 +34,181 @@ const Bill: React.FC<BillProps> = ({
 }) => {
   const total = orderItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
 
+  const [customer, setCustomer] = React.useState<Customer | null>(null);
+  const [usualOrder, setUsualOrder] = React.useState<{ name: string, quantity: number } | null>(null);
+  const [showCelebration, setShowCelebration] = React.useState(false);
+  const [celebratedTier, setCelebratedTier] = React.useState<string | null>(null);
+  const [showNewCustomerPrompt, setShowNewCustomerPrompt] = React.useState(false);
+  const [isPromptForExisting, setIsPromptForExisting] = React.useState(false);
+  
+  const [menuItems, setMenuItems] = React.useState<MenuItem[]>([]);
+  const [searchResults, setSearchResults] = React.useState<Customer[]>([]);
+  const [showSearchResults, setShowSearchResults] = React.useState(false);
+  const lastCheckedPhone = React.useRef<string | null>(null);
+
+  // Load Menu Items for reward logic
+  React.useEffect(() => {
+    fetchMenuItems().then(res => {
+      if (res.data) setMenuItems(res.data);
+    });
+  }, []);
+
+  // Reward Suggestions Logic
+  const rewardSuggestion = React.useMemo(() => {
+    if (!customer || !customer.minCoins || customer.minCoins <= 0) return null;
+
+    const possibleRewards: { name: string, coinsNeeded: number, gap: number }[] = [];
+
+    menuItems.forEach(item => {
+      if (item.minCoinsPrices) {
+        Object.entries(item.minCoinsPrices).forEach(([_prep, sizes]) => {
+          if (sizes && typeof sizes === 'object') {
+            Object.entries(sizes).forEach(([size, coins]) => {
+              const coinValue = Number(coins);
+              if (coinValue && (customer.minCoins ?? 0) >= coinValue && total < coinValue) {
+                possibleRewards.push({
+                  name: `${item.name}${size !== 'normal' ? ` (${size.charAt(0).toUpperCase() + size.slice(1)})` : ''}`,
+                  coinsNeeded: coinValue,
+                  gap: coinValue - total
+                });
+              }
+            });
+          }
+        });
+      }
+    });
+
+    if (possibleRewards.length === 0) return null;
+
+    // Return the one with smallest gap
+    return possibleRewards.sort((a, b) => a.gap - b.gap)[0];
+  }, [customer, total, menuItems]);
+
+  // Search Logic
+  React.useEffect(() => {
+    if (customerPhone.length >= 3 && customerPhone.length < 10) {
+      const search = async () => {
+        const results = await searchCustomers(customerPhone);
+        setSearchResults(results);
+        setShowSearchResults(true);
+      };
+      search();
+    } else {
+      setSearchResults([]);
+      setShowSearchResults(false);
+    }
+  }, [customerPhone]);
+
+  React.useEffect(() => {
+    if (customerPhone && customerPhone.length === 10) {
+      if (customerPhone === lastCheckedPhone.current) return;
+      
+      const loadCustomer = async () => {
+        const cust = await getCustomerByPhone(customerPhone);
+        setCustomer(cust);
+        lastCheckedPhone.current = customerPhone;
+
+        if (cust) {
+          const usual = await fetchUsualOrder(cust.phone);
+          setUsualOrder(usual);
+          
+          // MISSING NAME Logic
+          if (!cust.name) {
+            setIsPromptForExisting(true);
+            setShowNewCustomerPrompt(true);
+          }
+        } else {
+          setUsualOrder(null);
+          // NEW CUSTOMER Logic
+          setIsPromptForExisting(false);
+          setShowNewCustomerPrompt(true);
+        }
+      };
+      loadCustomer();
+    } else {
+      setCustomer(null);
+      setUsualOrder(null);
+      setCelebratedTier(null);
+      lastCheckedPhone.current = null;
+      setShowNewCustomerPrompt(false);
+      setIsPromptForExisting(false);
+    }
+  }, [customerPhone]);
+
+  const handleRegisterCustomer = async (name: string) => {
+    try {
+      if (isPromptForExisting && customer) {
+        await updateCustomer(customer.id, { name });
+        setCustomer({ ...customer, name });
+      } else {
+        const newCust = await registerCustomer(customerPhone, name);
+        setCustomer(newCust);
+        // Welcome Gift logic
+        const hasGift = orderItems.some(item => item.id === GIFT_CAMPA_COLA.id);
+        if (!hasGift) {
+          onAddItem([{ ...GIFT_CAMPA_COLA, id: `welcome-gift-${Date.now()}` }]);
+        }
+      }
+      setShowNewCustomerPrompt(false);
+    } catch (err) {
+      console.error("Registration failed", err);
+    }
+  };
+
+  // Auto-update discount if items change
+  React.useEffect(() => {
+    const discountItem = orderItems.find(i => i.id === 'welcome-discount');
+    if (discountItem) {
+      const subtotal = orderItems.reduce((acc, i) => acc + (i.id !== 'welcome-discount' && i.price > 0 ? i.price * i.quantity : 0), 0);
+      const expectedDiscount = -(subtotal * 0.15);
+      if (Math.abs(discountItem.price - expectedDiscount) > 0.01) {
+        onUpdateQuantity('welcome-discount', 1); // Trigger update with same quantity but we need a way to update price
+        // Actually onUpdateQuantity only takes quantity. 
+        // I might need to remove and re-add or change Bill.tsx to support price updates.
+        // Let's just fix the price by calling onAddItem with the same ID (handleAddItem handles existing items)
+        if (subtotal > 0) {
+          onAddItem([{
+            ...discountItem,
+            price: expectedDiscount
+          }]);
+        } else {
+          onUpdateQuantity('welcome-discount', 0); // Remove if subtotal is 0
+        }
+      }
+    }
+  }, [orderItems, onAddItem, onUpdateQuantity]);
+
+  const tier = customer ? getTierInfo(customer.totalSpent) : null;
+  const isStale = customer?.lastVisit ? (new Date().getTime() - new Date(customer.lastVisit).getTime()) > 30 * 24 * 60 * 60 * 1000 : false;
+  
+  const canRedeemWelcomeCoupon = customer && customer.totalOrders === 1 && !customer.welcomeCouponUsed;
+  const hasAppliedWelcomeDiscount = orderItems.some(item => item.id === 'welcome-discount');
+
+  const canRedeemSomething = customer && (customer.minCoins || 0) >= 100;
+  const projectedTotal = (customer?.totalSpent || 0) + total;
+  const projectedTier = getTierInfo(projectedTotal);
+  const nextTarget = projectedTier?.next?.min;
+  const isCloseToNextTier = nextTarget !== undefined && customer !== null && (nextTarget - projectedTotal) <= 100;
+
+  // Tier Climb Logic
+  React.useEffect(() => {
+    if (customer && total > 0) {
+      const currentTierInfo = getTierInfo(customer.totalSpent);
+
+      if (projectedTier.min > currentTierInfo.min && projectedTier.name !== celebratedTier) {
+        // We have a climb!
+        setCelebratedTier(projectedTier.name);
+        setShowCelebration(true);
+        
+        // Add Campa Cola if not already added as gift
+        const hasGift = orderItems.some(item => item.id === GIFT_CAMPA_COLA.id);
+        if (!hasGift) {
+          onAddItem([GIFT_CAMPA_COLA]);
+        }
+      }
+    }
+  }, [customer, total, celebratedTier, onAddItem, orderItems]);
+
   return (
     <div className="flex flex-col h-full bg-white lg:bg-transparent">
       {/* Settings / Meta Section */}
@@ -53,15 +231,153 @@ const Bill: React.FC<BillProps> = ({
           ))}
         </div>
         
-        <div className="space-y-1">
-          <label className="text-[9px] font-black uppercase text-brand-brown/30 lg:text-brand-cream/40 tracking-[0.2em] ml-1">Customer Contact</label>
-          <input 
-            type="tel"
-            placeholder="Enter Phone Number..."
-            value={customerPhone}
-            onChange={(e) => setCustomerPhone(e.target.value)}
-            className="w-full bg-white/10 lg:bg-white/10 border border-brand-brown/10 lg:border-white/10 rounded-xl p-3 text-sm font-bold text-brand-brown lg:text-brand-cream outline-none focus:border-brand-yellow transition-colors placeholder:text-stone-400 lg:placeholder:text-white/20"
-          />
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <div className="flex justify-between items-end px-1">
+              <label className="text-[9px] font-black uppercase text-brand-brown/30 lg:text-brand-cream/60 tracking-[0.2em]">Customer Contact</label>
+              {customer && (
+                <div className="text-right">
+                  <span className="text-[10px] font-black text-brand-yellow uppercase tracking-widest animate-in fade-in slide-in-from-right-2 block drop-shadow-sm">
+                    {customer.name || 'Anonymous Explorer'} • {tier?.name} Stage • {customer.totalOrders} Visits
+                  </span>
+                  {nextTarget && (
+                    <div className="mt-1">
+                      <div className="w-28 h-1.5 bg-white/10 rounded-full overflow-hidden ml-auto border border-white/5">
+                        <div 
+                          className="h-full bg-brand-yellow transition-all duration-1000 shadow-[0_0_8px_rgba(251,191,36,0.5)]"
+                          style={{ width: `${Math.min(100, (projectedTotal / nextTarget) * 100)}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="relative group">
+              <input 
+                type="tel"
+                placeholder="Enter Phone Number..."
+                value={customerPhone}
+                onChange={(e) => setCustomerPhone(e.target.value)}
+                className="w-full bg-black/20 lg:bg-white/10 border border-brand-brown/10 lg:border-white/10 rounded-2xl p-4 text-sm font-bold text-brand-brown lg:text-brand-cream outline-none focus:border-brand-yellow focus:ring-2 focus:ring-brand-yellow/20 transition-all placeholder:text-stone-400 lg:placeholder:text-white/20 shadow-inner"
+              />
+              
+              {/* Search Suggestions Dropdown */}
+              {showSearchResults && searchResults.length > 0 && (
+                <div className="absolute top-full left-0 right-0 mt-2 bg-brand-brown/95 lg:bg-stone-900/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl z-[50] overflow-hidden animate-in fade-in slide-in-from-top-2 ring-1 ring-white/10">
+                  {searchResults.map((res) => (
+                    <button
+                      key={res.id}
+                      onClick={() => {
+                        setCustomerPhone(res.phone);
+                        setShowSearchResults(false);
+                      }}
+                      className="w-full px-5 py-4 flex items-center justify-between hover:bg-white/5 transition-all border-b border-white/5 last:border-b-0"
+                    >
+                      <div className="text-left">
+                        <p className="text-[10px] font-black text-brand-yellow uppercase tracking-widest leading-none mb-1.5">
+                          {res.name || 'Unknown Explorer'}
+                        </p>
+                        <p className="text-sm font-bold text-white tracking-tight">{res.phone}</p>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[8px] font-black text-zinc-500 uppercase tracking-widest mb-1">Spent</div>
+                        <span className="text-xs font-black text-white px-2 py-0.5 bg-black/20 rounded-lg">
+                          ₹{Math.round(res.totalSpent)}
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {customer && (
+                <div className="absolute right-3 top-1/2 -translate-y-1/2 bg-brand-yellow text-brand-brown px-4 py-2 rounded-xl text-[11px] font-black flex items-center gap-2 shadow-xl shadow-yellow-900/30 animate-in zoom-in-95 group-hover:scale-105 transition-transform">
+                  <span className="text-sm">🪙</span>
+                  <span>{customer.minCoins || 0}</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {customer && (usualOrder || canRedeemSomething || isCloseToNextTier || isStale || (customer.totalOrders === 0 && !hasAppliedWelcomeDiscount)) && (
+            <div className="flex flex-wrap gap-2 animate-in fade-in slide-in-from-top-2 duration-500">
+               {canRedeemWelcomeCoupon && !hasAppliedWelcomeDiscount && (
+                 <div className="flex items-center gap-2 w-full lg:w-auto">
+                    <button 
+                      onClick={() => {
+                        const subtotal = orderItems.reduce((acc, i) => acc + (i.price > 0 ? i.price * i.quantity : 0), 0);
+                        if (subtotal > 0) {
+                           onAddItem([{
+                             id: 'welcome-discount',
+                             menuItemId: 'discount',
+                             name: '15% Welcome Discount',
+                             price: -(subtotal * 0.15),
+                             quantity: 1,
+                             cost: 0
+                           }]);
+                        }
+                      }}
+                      className="bg-brand-red px-3 py-1.5 rounded-xl flex items-center gap-3 shadow-lg shadow-red-900/20 text-white animate-bounce-subtle group border border-white/10 hover:scale-105 active:scale-95 transition-all"
+                    >
+                      <div className="flex flex-col items-start leading-none py-0.5">
+                        <span className="text-[7px] font-black opacity-60 uppercase tracking-[0.2em] mb-1">{customer?.welcomeCouponCode}</span>
+                        <span className="text-[10px] font-black uppercase tracking-wider">Apply 15% OFF</span>
+                      </div>
+                      <div className="w-6 h-6 bg-white/20 rounded-lg flex items-center justify-center">
+                        <span className="text-[12px]">🎟️</span>
+                      </div>
+                    </button>
+                    
+                    {/* Keep hidden UI section for structure but it's empty now */}
+                    <div className="hidden"></div>
+                 </div>
+               )}
+               {customer && customer.totalOrders === 0 && (
+                 <div className="bg-brand-yellow px-4 py-2 rounded-xl flex items-center gap-2 shadow-lg shadow-yellow-900/20 border-2 border-brand-brown/10 animate-in zoom-in-95">
+                   <span className="text-[12px]">✨</span>
+                   <span className="text-[10px] font-black text-brand-brown uppercase tracking-widest leading-none">
+                     <span className="block text-[7px] opacity-40">Special Offer</span>
+                     Get 15% OFF Next Visit!
+                   </span>
+                 </div>
+               )}
+               {usualOrder && (
+                  <div className="bg-white/10 px-3 py-1.5 rounded-xl border border-white/10 flex items-center gap-2 backdrop-blur-sm">
+                    <span className="text-[8px] font-black text-brand-yellow uppercase tracking-widest">Usual</span>
+                    <span className="w-1 h-1 rounded-full bg-white/20" />
+                    <span className="text-[9px] font-bold text-white truncate max-w-[120px]">{usualOrder.name}</span>
+                  </div>
+               )}
+               {rewardSuggestion && (
+                 <div className="bg-white px-3 py-1.5 rounded-lg flex items-center gap-2 shadow-lg shadow-black/20 animate-pulse border border-peak-amber/20">
+                   <span className="text-[10px]">🎁</span>
+                   <span className="text-[9px] font-black text-peak-amber uppercase tracking-wider">
+                     Add ₹{Math.ceil(rewardSuggestion.gap)} more for FREE {rewardSuggestion.name}
+                   </span>
+                 </div>
+               )}
+               {canRedeemSomething && !rewardSuggestion && (
+                 <div className="bg-emerald-500/20 border border-emerald-500/30 px-3 py-1.5 rounded-xl flex items-center gap-2">
+                   <span className="text-[10px]">✨</span>
+                   <span className="text-[9px] font-black text-emerald-400 uppercase tracking-widest">Reward Ready</span>
+                 </div>
+               )}
+               {isCloseToNextTier && projectedTier?.next && customer && (
+                 <div className="bg-brand-yellow px-3 py-1.5 rounded-xl flex items-center gap-2 shadow-lg shadow-yellow-900/20 text-brand-brown">
+                   <span className="text-[10px]">⚡</span>
+                   <span className="text-[9px] font-black uppercase tracking-wider">
+                     Next Stage in ₹{Math.ceil(nextTarget - projectedTotal)}
+                   </span>
+                 </div>
+               )}
+               {isStale && (
+                 <div className="bg-brand-red/20 border border-brand-red/30 px-3 py-1.5 rounded-xl flex items-center gap-1.5">
+                   <span className="text-[10px]">👋</span>
+                   <span className="text-[9px] font-black text-red-400 uppercase tracking-widest">Inactive</span>
+                 </div>
+               )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -80,8 +396,6 @@ const Bill: React.FC<BillProps> = ({
           </div>
         ) : (
           orderItems.map(item => {
-            const menuItem = MENU_ITEMS.find(mi => mi.id === item.menuItemId);
-            const isMomo = menuItem?.category === 'momo';
             if (item.parentItemId) return null;
 
             return (
@@ -89,9 +403,6 @@ const Bill: React.FC<BillProps> = ({
                 key={item.id} 
                 item={item} 
                 onUpdateQuantity={onUpdateQuantity}
-                isMomo={isMomo}
-                onAddItem={onAddItem}
-                orderItems={orderItems}
               />
             )
           })
@@ -120,6 +431,18 @@ const Bill: React.FC<BillProps> = ({
           </button>
         </div>
       </div>
+      <CelebrationOverlay 
+        isVisible={showCelebration} 
+        tierName={celebratedTier || ''} 
+        onClose={() => setShowCelebration(false)} 
+      />
+      <NewCustomerModal 
+        isOpen={showNewCustomerPrompt}
+        phone={customerPhone}
+        isExisting={isPromptForExisting}
+        onRegister={handleRegisterCustomer}
+        onCancel={() => setShowNewCustomerPrompt(false)}
+      />
     </div>
   );
 };

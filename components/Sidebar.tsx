@@ -13,6 +13,7 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ activeView, onViewChange, branchName, role, onLogout }) => {
+  const [isCollapsed, setIsCollapsed] = React.useState(false);
   const isAdmin = role === 'ADMIN';
 
   const navItems: { id: View; label: string; icon: string; role: 'ADMIN' | 'MANAGER' | 'BOTH' }[] = [
@@ -34,34 +35,62 @@ const Sidebar: React.FC<SidebarProps> = ({ activeView, onViewChange, branchName,
   return (
     <>
       {/* Desktop Sidebar */}
-      <aside className="hidden lg:flex w-64 bg-brand-brown h-full flex-col text-brand-cream shadow-2xl z-20">
-        <div className="p-8 border-b border-white/10">
-          <h1 className="text-2xl font-black text-brand-yellow uppercase tracking-tighter italic">minmomos</h1>
-          <p className="text-[9px] uppercase font-bold tracking-[0.3em] text-brand-yellow/50 mt-1">{branchName}</p>
+      <aside className={`hidden lg:flex ${isCollapsed ? 'w-20' : 'w-64'} transition-all duration-500 ease-in-out bg-brand-brown h-full flex-col text-brand-cream shadow-2xl z-20 relative group/sidebar`}>
+        {/* Toggle Button */}
+        <button 
+          onClick={() => setIsCollapsed(!isCollapsed)}
+          className="absolute -right-3 top-10 bg-brand-yellow text-brand-brown w-6 h-6 rounded-full flex items-center justify-center shadow-xl opacity-0 group-hover/sidebar:opacity-100 transition-opacity z-30 hover:scale-110 active:scale-95"
+        >
+          <svg className={`w-4 h-4 transition-transform duration-500 ${isCollapsed ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M15 19l-7-7 7-7" />
+          </svg>
+        </button>
+
+        <div className={`p-8 border-b border-white/10 overflow-hidden transition-all duration-500 ${isCollapsed ? 'px-4' : 'px-8'}`}>
+          {!isCollapsed ? (
+            <>
+              <h1 className="text-2xl font-black text-brand-yellow uppercase tracking-tighter italic whitespace-nowrap">minmomos</h1>
+              <p className="text-[9px] uppercase font-bold tracking-[0.3em] text-brand-yellow/50 mt-1 truncate">{branchName}</p>
+            </>
+          ) : (
+            <h1 className="text-xl font-black text-brand-yellow uppercase tracking-tighter italic text-center">M</h1>
+          )}
         </div>
 
-        <nav className="flex-1 p-3 space-y-2 mt-6 overflow-y-auto no-scrollbar">
+        <nav className={`flex-1 p-3 space-y-2 mt-6 overflow-y-auto no-scrollbar transition-all duration-500 ${isCollapsed ? 'px-2' : 'p-3'}`}>
           {filteredNav.map((item) => (
             <button
               key={item.id}
               onClick={() => onViewChange(item.id)}
-              className={`w-full flex items-center gap-4 p-4 px-5 rounded-2xl transition-all duration-300 ${
+              title={isCollapsed ? item.label : ''}
+              className={`w-full flex items-center transition-all duration-300 ${
+                isCollapsed ? 'justify-center p-3 px-3' : 'gap-4 p-4 px-5'
+              } rounded-2xl ${
                 activeView === item.id 
                   ? 'bg-brand-yellow text-brand-brown shadow-xl' 
                   : 'text-white/40 hover:bg-white/5 hover:text-white'
               }`}
             >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="w-5 h-5 min-w-[20px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d={item.icon} />
               </svg>
-              <span className="text-[10px] font-black uppercase tracking-widest">{item.label}</span>
+              {!isCollapsed && <span className="text-[10px] font-black uppercase tracking-widest whitespace-nowrap animate-in fade-in slide-in-from-left-2 duration-300">{item.label}</span>}
             </button>
           ))}
         </nav>
 
-        <div className="p-6 mt-auto">
-          <button onClick={onLogout} className="w-full flex items-center justify-center gap-2 p-3 bg-brand-red/20 hover:bg-brand-red/40 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors">
-            Logout
+        <div className={`p-6 mt-auto transition-all duration-500 ${isCollapsed ? 'p-3' : 'p-6'}`}>
+          <button 
+            onClick={onLogout} 
+            title={isCollapsed ? 'Logout' : ''}
+            className={`w-full flex items-center justify-center transition-all duration-300 bg-brand-red/20 hover:bg-brand-red/40 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors ${
+              isCollapsed ? 'p-3' : 'p-3 gap-2'
+            }`}
+          >
+            <svg className="w-5 h-5 min-w-[20px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17 16l4-4m0 0l-4-4m4 4H7" />
+            </svg>
+            {!isCollapsed && <span className="animate-in fade-in slide-in-from-left-2 duration-300">Logout</span>}
           </button>
         </div>
       </aside>

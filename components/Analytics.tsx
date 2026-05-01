@@ -1,27 +1,74 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { getOrdersForDateRange, getOrderByBillNumber, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchProcurements, getCentralInventory, fetchCustomers, fetchCustomerHistory } from '../utils/storage';
+import { getOrdersForDateRange, getOrderByBillNumber, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchProcurements, getCentralInventory, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime } from '../utils/storage';
 import { CompletedOrder, PaymentMethod, Station, User, CentralMaterial, Customer } from '../types';
 import PrintReceipt from './PrintReceipt';
 import DeleteBillModal from './DeleteBillModal';
 import ItemSalesReport from './ItemSalesReport';
 import PerformanceChart from './PerformanceChart';
 import TimeWiseRevenueChart from './TimeWiseRevenueChart';
-import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare } from 'lucide-react';
+import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star } from 'lucide-react';
 
-const getTodaysDateString = () => new Date().toISOString().split('T')[0];
-const getDateString = (date: Date) => date.toISOString().split('T')[0];
+const getTodaysDateString = () => {
+  return getISTDateString();
+};
+
+const getDateString = (date: Date) => {
+  return getISTDateString(date);
+};
+
 const getHistoricalStartDate = (dateStr: string, daysToSubtract: number) => {
   const d = new Date(dateStr);
   d.setDate(d.getDate() - daysToSubtract);
-  return d.toISOString().split('T')[0];
+  return getDateString(d);
 };
+
+const colorStops = [
+  { p: 0.0, r: 79, g: 70, b: 229 },   // Indigo
+  { p: 0.1, r: 37, g: 99, b: 235 },   // Blue
+  { p: 0.2, r: 2, g: 132, b: 199 },    // Sky
+  { p: 0.3, r: 8, g: 145, b: 178 },    // Cyan
+  { p: 0.4, r: 13, g: 148, b: 136 },   // Teal
+  { p: 0.5, r: 22, g: 163, b: 74 },    // Green
+  { p: 0.6, r: 101, g: 163, b: 13 },   // Lime
+  { p: 0.7, r: 202, g: 138, b: 4 },    // Yellow
+  { p: 0.8, r: 234, g: 88, b: 12 },    // Orange
+  { p: 0.9, r: 220, g: 38, b: 38 },    // Red
+  { p: 1.0, r: 153, g: 27, b: 27 }     // Deep Red
+];
+
+const getHeatmapColor = (intensity: number) => {
+  if (intensity <= 0) return 'rgba(0,0,0,0.03)';
+  const t = Math.min(1, Math.max(0, intensity));
+  
+  let lower = colorStops[0];
+  let upper = colorStops[colorStops.length - 1];
+  
+  for (let i = 0; i < colorStops.length - 1; i++) {
+    if (t >= colorStops[i].p && t <= colorStops[i+1].p) {
+      lower = colorStops[i];
+      upper = colorStops[i+1];
+      break;
+    }
+  }
+  
+  const range = upper.p - lower.p;
+  const factor = range <= 0 ? 0 : (t - lower.p) / range;
+  
+  const r = Math.round(lower.r + factor * (upper.r - lower.r));
+  const g = Math.round(lower.g + factor * (upper.g - lower.g));
+  const b = Math.round(lower.b + factor * (upper.b - lower.b));
+  
+  return `rgb(${r}, ${g}, ${b})`;
+};
+
+const heatmapGradient = `linear-gradient(to right, ${colorStops.map(s => `rgb(${s.r}, ${s.g}, ${s.b}) ${s.p * 100}%`).join(', ')})`;
 
 interface AnalyticsProps {
   user: User;
 }
 
-type DatePreset = 'today' | 'yesterday' | 'last7' | 'last14' | 'last30' | 'lastMonth' | 'custom';
+type DatePreset = 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'last7' | 'last14' | 'last30' | 'thisMonth' | 'lastMonth' | 'custom';
 type ActiveTab = 'active' | 'deleted';
 type ReportView = 'revenue' | 'trends' | 'itemSales' | 'comparison' | 'profitability' | 'customers';
 
@@ -46,11 +93,24 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [selectedCustomerHistory, setSelectedCustomerHistory] = useState<CompletedOrder[]>([]);
   const [customMessage, setCustomMessage] = useState('');
   const [activeCustomer, setActiveCustomer] = useState<Customer | null>(null);
+  const [usualOrder, setUsualOrder] = useState<{ name: string, quantity: number } | null>(null);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [editedProfile, setEditedProfile] = useState<Partial<Customer>>({});
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
   
   const [searchTerm, setSearchTerm] = useState('');
   const [foundOrder, setFoundOrder] = useState<CompletedOrder | null>(null);
+  const [foundOrderInitialBalance, setFoundOrderInitialBalance] = useState<number | undefined>(undefined);
+  const [foundOrderFinalBalance, setFoundOrderFinalBalance] = useState<number | undefined>(undefined);
   const [searchMessage, setSearchMessage] = useState('');
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
+  const [customerSortField, setCustomerSortField] = useState<'totalSpent' | 'joinedDate' | 'totalOrders'>('totalSpent');
+  const [customerSortOrder, setCustomerSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [minLtv, setMinLtv] = useState<string>('');
+  const [maxLtv, setMaxLtv] = useState<string>('');
+  const [minOrders, setMinOrders] = useState<string>('');
+  const [maxOrders, setMaxOrders] = useState<string>('');
+  const [selectedDayInsights, setSelectedDayInsights] = useState<number | null>(null);
 
   // Fixed Costs (Persisted in localStorage for convenience)
   const [salaryRate, setSalaryRate] = useState<number>(Number(localStorage.getItem('momo_salary_rate') || 1200));
@@ -60,13 +120,19 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [orderToDelete, setOrderToDelete] = useState<CompletedOrder | null>(null);
 
   const fetchStaticData = useCallback(async () => {
+    const [s, c] = isAdmin ? await Promise.all([getStations(), getCentralInventory()]) : [[], []];
+    
+    // Fetch customers for both Admin and Manager
+    // Managers only see their own branch customers
+    const custFilter = isAdmin ? undefined : user.stationName;
+    const cust = await fetchCustomers(custFilter);
+    
     if (isAdmin) {
-      const [s, c, cust] = await Promise.all([getStations(), getCentralInventory(), fetchCustomers()]);
       setAvailableStations(s);
       setCentralInv(c);
-      setCustomers(cust);
     }
-  }, [isAdmin]);
+    setCustomers(cust);
+  }, [isAdmin, user.stationName, user.role]);
 
   const fetchOrders = useCallback(async () => {
     // Expand start date by 32 days to ensure 30-day SMA is accurate for the start of the visible range
@@ -85,7 +151,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
     // Process View Data (Visible range ONLY, Station Filtered)
     const inRange = stationFiltered.filter(o => {
-      const d = o.date.split('T')[0];
+      const d = getISTDateString(o.date);
       return d >= startDate && d <= endDate;
     });
       
@@ -99,18 +165,61 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   }, [isAdmin, startDate, endDate]);
 
   const fetchDeletedOrders = useCallback(async () => {
-    const fetchedOrders = await getDeletedOrdersForDateRange(startDate, endDate);
+    const expandedStart = getHistoricalStartDate(startDate, 32);
+    const fetchedOrders = await getDeletedOrdersForDateRange(expandedStart, endDate);
+    
+    // Filter by store - Managers only see their own
     const storeToFilter = isAdmin ? selectedStore : (user.stationName || 'All');
-    const filtered = storeToFilter === 'All' 
+    const stationFiltered = storeToFilter === 'All' 
       ? fetchedOrders 
       : fetchedOrders.filter(o => o.branchName === storeToFilter);
-    setDeletedOrders([...filtered].sort((a, b) => b.billNumber - a.billNumber));
+
+    // Process View Data (Visible range ONLY)
+    const inVisibleRange = stationFiltered.filter(o => {
+      const d = getISTDateString(o.date);
+      return d >= startDate && d <= endDate;
+    });
+    
+    setDeletedOrders([...inVisibleRange].sort((a, b) => b.billNumber - a.billNumber));
   }, [startDate, endDate, selectedStore, isAdmin, user.stationName]);
 
   const handleCustomerClick = async (customer: Customer) => {
     setActiveCustomer(customer);
-    const history = await fetchCustomerHistory(customer.phone);
+    setIsEditingProfile(false);
+    setEditedProfile({
+      name: customer.name,
+      email: customer.email,
+      birthday: customer.birthday,
+      note: customer.note
+    });
+    
+    // Fetch parallelly
+    const [history, usual] = await Promise.all([
+      fetchCustomerHistory(customer.phone),
+      fetchUsualOrder(customer.phone)
+    ]);
+    
     setSelectedCustomerHistory(history);
+    setUsualOrder(usual);
+  };
+
+  const handleSaveProfile = async () => {
+    if (!activeCustomer) return;
+    setIsSavingProfile(true);
+    try {
+      await updateCustomer(activeCustomer.id, editedProfile);
+      
+      // Update local state
+      const updatedCustomer = { ...activeCustomer, ...editedProfile };
+      setActiveCustomer(updatedCustomer);
+      setCustomers(prev => prev.map(c => c.id === updatedCustomer.id ? updatedCustomer : c));
+      setIsEditingProfile(false);
+    } catch (err) {
+      console.error("Failed to update customer profile:", err);
+      alert("Failed to save profile changes.");
+    } finally {
+      setIsSavingProfile(false);
+    }
   };
 
   useEffect(() => {
@@ -125,9 +234,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
   const handlePresetChange = (preset: DatePreset) => {
     setActivePreset(preset);
-    const today = new Date();
-    let start = new Date();
-    let end = new Date();
+    const today = getISTDate();
+    let start = getISTDate();
+    let end = getISTDate();
 
     switch (preset) {
       case 'today':
@@ -135,32 +244,58 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         end = today;
         break;
       case 'yesterday':
-        const yesterday = new Date();
+        const yesterday = getISTDate();
         yesterday.setDate(today.getDate() - 1);
         start = yesterday;
         end = yesterday;
         break;
       case 'last7':
-        const weekAgo = new Date();
+        const weekAgo = getISTDate();
         weekAgo.setDate(today.getDate() - 6);
         start = weekAgo;
         end = today;
         break;
       case 'last14':
-        const twoWeeksAgo = new Date();
+        const twoWeeksAgo = getISTDate();
         twoWeeksAgo.setDate(today.getDate() - 13);
         start = twoWeeksAgo;
         end = today;
         break;
       case 'last30':
-        const monthAgo = new Date();
+        const monthAgo = getISTDate();
         monthAgo.setDate(today.getDate() - 29);
         start = monthAgo;
         end = today;
         break;
+      case 'thisMonth':
+        const tmStart = new Date(today.getFullYear(), today.getMonth(), 1);
+        start = new Date(getDateString(tmStart));
+        end = today;
+        break;
       case 'lastMonth':
-        start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-        end = new Date(today.getFullYear(), today.getMonth(), 0);
+        const lmStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        const lmEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+        start = new Date(getDateString(lmStart));
+        end = new Date(getDateString(lmEnd));
+        end.setHours(23, 59, 59, 999);
+        break;
+      case 'thisWeek':
+        const day = today.getDay();
+        const diff = today.getDate() - day + (day === 0 ? -6 : 1); // Monday
+        const thisMon = new Date(today);
+        thisMon.setDate(diff);
+        start = thisMon;
+        end = getISTDate();
+        break;
+      case 'lastWeek':
+        const lDay = today.getDay();
+        const lDiff = today.getDate() - lDay + (lDay === 0 ? -13 : -6);
+        const lastMon = new Date(today);
+        lastMon.setDate(lDiff);
+        start = lastMon;
+        const lastSun = new Date(start);
+        lastSun.setDate(start.getDate() + 6);
+        end = lastSun;
         break;
     }
     setStartDate(getDateString(start));
@@ -169,6 +304,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
   const handleSearch = async (forcedBillNum?: number) => {
     setFoundOrder(null);
+    setFoundOrderInitialBalance(undefined);
+    setFoundOrderFinalBalance(undefined);
     setSearchMessage('');
     
     const query = forcedBillNum?.toString() || searchTerm;
@@ -183,6 +320,29 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     const order = await getOrderByBillNumber(billNum);
     if (order) {
       setFoundOrder(order);
+      
+      // Calculate historical balance at the time of this order
+      if (order.customerPhone) {
+        const history = await fetchCustomerHistory(order.customerPhone);
+        const orderDate = new Date(order.date).getTime();
+        
+        // Orders strictly before
+        const pastOrders = history.filter(h => new Date(h.date).getTime() < orderDate);
+        const spentBefore = pastOrders.reduce((acc, o) => acc + o.total, 0);
+        const redeemedBefore = pastOrders.reduce((acc, o) => {
+          return acc + o.items.reduce((sum, item) => sum + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
+        }, 0);
+        
+        // This order
+        const currentRedeemed = order.items.reduce((acc, item) => acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
+        const currentTotal = order.total;
+
+        const initialBal = calculateTotalMinCoins(spentBefore, redeemedBefore);
+        const finalBal = calculateTotalMinCoins(spentBefore + currentTotal, redeemedBefore + currentRedeemed);
+
+        setFoundOrderInitialBalance(initialBal);
+        setFoundOrderFinalBalance(finalBal);
+      }
     } else {
       setSearchMessage(`Bill #${billNum} was not found in the records.`);
     }
@@ -203,14 +363,15 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     const breakdown: Record<PaymentMethod, number> = { 'Cash': 0, 'UPI': 0, 'Card': 0 };
 
     orders.forEach(order => {
-      revenue += order.total;
+      const roundedTotal = Math.round(order.total);
+      revenue += roundedTotal;
       const orderCogs = order.items.reduce((acc, item) => acc + (item.cost ?? 0) * item.quantity, 0);
-      cogs += orderCogs;
+      cogs += Math.round(orderCogs);
       if (order.paymentMethod && order.paymentMethod in breakdown) {
-        breakdown[order.paymentMethod as PaymentMethod] += order.total;
+        breakdown[order.paymentMethod as PaymentMethod] += roundedTotal;
       }
     });
-    
+
     const grossProfit = revenue - cogs;
     return { 
       totalRevenue: revenue, 
@@ -263,18 +424,107 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     });
 
     visibleRaw.forEach(order => {
+      const roundedTotal = Math.round(order.total);
       if (!stores[order.branchName]) stores[order.branchName] = { revenue: 0, orders: 0, profit: 0 };
-      stores[order.branchName].revenue += order.total;
+      stores[order.branchName].revenue += roundedTotal;
       stores[order.branchName].orders += 1;
       const orderCogs = order.items.reduce((acc, item) => acc + (item.cost ?? 0) * item.quantity, 0);
-      stores[order.branchName].profit += (order.total - orderCogs);
+      stores[order.branchName].profit += (roundedTotal - Math.round(orderCogs));
     });
     return Object.entries(stores).map(([name, stats]) => ({ name, ...stats })).sort((a, b) => b.revenue - a.revenue);
   }, [isAdmin, allOrdersRaw]);
 
+  const realBalance = useMemo(() => {
+    if (!activeCustomer) return 0;
+    const spent = selectedCustomerHistory.reduce((acc, order) => {
+      return acc + order.items.reduce((sum, item) => sum + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
+    }, 0);
+    return Math.round(calculateTotalMinCoins(activeCustomer.totalSpent || 0, spent));
+  }, [selectedCustomerHistory, activeCustomer]);
+
+  const insightData = useMemo(() => {
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const heatmap: Record<number, Record<number, { revenue: number, orders: number }>> = {};
+    
+    // Initialize heatmap
+    for (let d = 0; d < 7; d++) {
+      heatmap[d] = {};
+      for (let h = 0; h < 24; h++) {
+        heatmap[d][h] = { revenue: 0, orders: 0 };
+      }
+    }
+
+    orders.forEach(o => {
+      const date = new Date(o.date);
+      const day = date.getDay();
+      const hour = date.getHours();
+      if (heatmap[day] && heatmap[day][hour]) {
+        heatmap[day][hour].revenue += o.total;
+        heatmap[day][hour].orders += 1;
+      }
+    });
+
+    // Summary Stats
+    let bestDayIdx = 0;
+    let maxDayRev = 0;
+    let bestSlot = { day: 0, hour: 0, rev: 0 };
+    let busiestDayIdx = 0;
+    let maxOrdersCount = 0;
+
+    for (let d = 0; d < 7; d++) {
+      let dayTotal = 0;
+      let dayOrders = 0;
+      for (let h = 0; h < 24; h++) {
+        dayTotal += heatmap[d][h].revenue;
+        dayOrders += heatmap[d][h].orders;
+        if (heatmap[d][h].revenue > bestSlot.rev) {
+          bestSlot = { day: d, hour: h, rev: heatmap[d][h].revenue };
+        }
+      }
+      if (dayTotal > maxDayRev) {
+        maxDayRev = dayTotal;
+        bestDayIdx = d;
+      }
+      if (dayOrders > maxOrdersCount) {
+        maxOrdersCount = dayOrders;
+        busiestDayIdx = d;
+      }
+    }
+
+    return {
+      heatmap,
+      bestDay: days[bestDayIdx],
+      bestSlot: `${days[bestSlot.day]} @ ${bestSlot.hour}:00`,
+      busiestDay: days[busiestDayIdx],
+      days
+    };
+  }, [orders]);
+
   const filteredCustomers = useMemo(() => {
-    return customers.filter(c => c.phone.includes(customerSearchTerm));
-  }, [customers, customerSearchTerm]);
+    let filtered = customers.filter(c => c.phone.includes(customerSearchTerm));
+    
+    // Range Filters
+    if (minLtv) filtered = filtered.filter(c => (c.totalSpent ?? 0) >= Number(minLtv));
+    if (maxLtv) filtered = filtered.filter(c => (c.totalSpent ?? 0) <= Number(maxLtv));
+    if (minOrders) filtered = filtered.filter(c => (c.totalOrders ?? 0) >= Number(minOrders));
+    if (maxOrders) filtered = filtered.filter(c => (c.totalOrders ?? 0) <= Number(maxOrders));
+
+    // Sorting
+    return filtered.sort((a, b) => {
+      let valA: any = a[customerSortField];
+      let valB: any = b[customerSortField];
+
+      if (customerSortField === 'joinedDate') {
+        valA = new Date(valA || 0).getTime();
+        valB = new Date(valB || 0).getTime();
+      } else {
+        valA = Number(valA || 0);
+        valB = Number(valB || 0);
+      }
+
+      return customerSortOrder === 'desc' ? valB - valA : valA - valB;
+    });
+  }, [customers, customerSearchTerm, customerSortField, customerSortOrder, minLtv, maxLtv, minOrders, maxOrders]);
 
   const SummaryCard = ({ title, value, sub, color, textWhite }: any) => (
     <div className={`${color} p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-sm relative overflow-hidden group border border-black/5`}>
@@ -307,7 +557,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 bg-white/50 p-2 rounded-2xl lg:rounded-3xl border border-brand-stone">
-              {(['today', 'yesterday', 'last7', 'last14', 'last30', 'lastMonth', 'custom'] as DatePreset[]).map(p => (
+              {(['today', 'yesterday', 'thisWeek', 'lastWeek', 'last7', 'last14', 'last30', 'thisMonth', 'lastMonth', 'custom'] as DatePreset[]).map(p => (
                 <button key={p} onClick={() => handlePresetChange(p)} className={`px-3 lg:px-4 py-2 text-[8px] lg:text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${activePreset === p ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/10'}`}>{p}</button>
               ))}
               {activePreset === 'custom' && (
@@ -370,14 +620,24 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                    <div className="mt-10 space-y-3">
                       <p className="text-[10px] font-black uppercase text-brand-brown/30 tracking-widest px-1">Order Breakdown</p>
                       <div className="max-h-[250px] overflow-y-auto no-scrollbar pr-2">
-                        {foundOrder.items.map((it, idx) => (
-                          <div key={idx} className="flex justify-between items-center border-b border-brand-stone/50 py-3 group/item">
-                              <div>
-                                <span className="font-black text-brand-brown uppercase text-xs lg:text-sm block">x{it.quantity} {it.name}</span>
-                              </div>
-                              <span className="font-black text-brand-brown text-xs lg:text-sm">₹{(it.price * it.quantity).toLocaleString()}</span>
+                        {foundOrder.items.length > 0 ? (
+                          foundOrder.items.map((it, idx) => (
+                            <div key={idx} className="flex justify-between items-center border-b border-brand-stone/50 py-3 group/item">
+                                <div>
+                                  <span className="font-black text-brand-brown uppercase text-xs lg:text-sm block">x{it.quantity} {it.name}</span>
+                                  {it.paidWithCoins && <span className="text-[8px] font-black text-indigo-600 uppercase tracking-widest leading-none">Redeemed with Coins</span>}
+                                </div>
+                                <span className="font-black text-brand-brown text-xs lg:text-sm">
+                                  {it.paidWithCoins ? '0 (Coins)' : `₹${(it.price * it.quantity).toLocaleString()}`}
+                                </span>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="py-10 text-center bg-brand-brown/5 rounded-2xl border-2 border-dashed border-brand-stone/30">
+                            <p className="text-xs font-black text-brand-brown/40 uppercase tracking-widest">Item details missing from record</p>
+                            <p className="text-[10px] font-bold text-brand-brown/20 uppercase mt-2">Total amount ₹{(foundOrder.total ?? 0).toLocaleString()} confirmed</p>
                           </div>
-                        ))}
+                        )}
                       </div>
                    </div>
 
@@ -386,7 +646,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                          <p className="text-[10px] font-black text-brand-red uppercase mb-2 tracking-widest">Deletion Record</p>
                          <p className="text-xs font-bold text-brand-brown italic">" {foundOrder.deletionInfo.reason} "</p>
                          <div className="flex justify-between items-center mt-3 pt-3 border-t border-brand-red/10">
-                           <p className="text-[9px] font-black text-brand-brown/40 uppercase">Timestamp: {foundOrder.deletionInfo.date ? new Date(foundOrder.deletionInfo.date).toLocaleString() : 'N/A'}</p>
+                           <p className="text-[9px] font-black text-brand-brown/40 uppercase">Timestamp: {foundOrder.deletionInfo.date ? getISTFullDateTime(foundOrder.deletionInfo.date) : 'N/A'}</p>
                          </div>
                       </div>
                    )}
@@ -405,15 +665,18 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                    <div className="mb-4 text-center">
                      <p className="text-[10px] font-black text-brand-brown/30 uppercase tracking-widest">Digital Copy</p>
                    </div>
-                   <PrintReceipt 
-                    orderItems={foundOrder.items} 
-                    billNumber={foundOrder.billNumber} 
-                    branchName={foundOrder.branchName} 
-                    date={foundOrder.date} 
-                    paymentMethod={foundOrder.paymentMethod}
-                    customerPhone={foundOrder.customerPhone}
-                    orderType={foundOrder.type}
-                   />
+                    <PrintReceipt 
+                     orderItems={foundOrder.items} 
+                     billNumber={foundOrder.billNumber} 
+                     branchName={foundOrder.branchName} 
+                     date={foundOrder.date} 
+                     paymentMethod={foundOrder.paymentMethod}
+                     customerPhone={foundOrder.customerPhone}
+                     customerInitialBalance={foundOrderInitialBalance}
+                     customerFinalBalance={foundOrderFinalBalance}
+                     orderType={foundOrder.type}
+                     totalValue={foundOrder.total}
+                    />
                 </div>
              </div>
           </div>
@@ -429,14 +692,185 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
           <button onClick={() => setReportView('revenue')} className={`flex-1 min-w-[33%] lg:min-w-0 py-3 lg:py-4 text-[10px] font-black uppercase tracking-widest transition-all ${reportView === 'revenue' ? 'bg-brand-brown text-brand-yellow' : 'bg-white text-brand-brown/40 hover:bg-brand-brown/5'}`}>Revenue</button>
           <button onClick={() => setReportView('trends')} className={`flex-1 min-w-[33%] lg:min-w-0 py-3 lg:py-4 text-[10px] font-black uppercase tracking-widest transition-all ${reportView === 'trends' ? 'bg-brand-brown text-brand-yellow' : 'bg-white text-brand-brown/40 hover:bg-brand-brown/5'}`}>Trends</button>
           <button onClick={() => setReportView('itemSales')} className={`flex-1 min-w-[33%] lg:min-w-0 py-3 lg:py-4 text-[10px] font-black uppercase tracking-widest transition-all ${reportView === 'itemSales' ? 'bg-brand-brown text-brand-yellow' : 'bg-white text-brand-brown/40 hover:bg-brand-brown/5'}`}>Items</button>
+          {(isAdmin || user.role === 'STORE_MANAGER') && (
+            <button onClick={() => setReportView('customers')} className={`flex-1 min-w-[33%] lg:min-w-0 py-3 lg:py-4 text-[10px] font-black uppercase tracking-widest transition-all ${reportView === 'customers' ? 'bg-brand-brown text-brand-yellow' : 'bg-white text-brand-brown/40 hover:bg-brand-brown/5'}`}>Customers</button>
+          )}
           {isAdmin && (
             <>
-              <button onClick={() => setReportView('customers')} className={`flex-1 min-w-[33%] lg:min-w-0 py-3 lg:py-4 text-[10px] font-black uppercase tracking-widest transition-all ${reportView === 'customers' ? 'bg-brand-brown text-brand-yellow' : 'bg-white text-brand-brown/40 hover:bg-brand-brown/5'}`}>Customers</button>
               <button onClick={() => setReportView('comparison')} className={`flex-1 min-w-[33%] lg:min-w-0 py-3 lg:py-4 text-[10px] font-black uppercase tracking-widest transition-all ${reportView === 'comparison' ? 'bg-brand-brown text-brand-yellow' : 'bg-white text-brand-brown/40 hover:bg-brand-brown/5'}`}>Compare</button>
               <button onClick={() => setReportView('profitability')} className={`flex-1 min-w-[33%] lg:min-w-0 py-3 lg:py-4 text-[10px] font-black uppercase tracking-widest transition-all ${reportView === 'profitability' ? 'bg-brand-red text-white' : 'bg-white text-brand-brown/40 hover:bg-brand-brown/5'}`}>P&L</button>
             </>
           )}
         </div>
+
+        {reportView === 'trends' && (
+          <div className="space-y-12 animate-in fade-in duration-700">
+            {/* 1. Main Line Chart */}
+            <PerformanceChart orders={chartOrders} startDate={startDate} endDate={endDate} />
+
+            {/* 2. Insight Summary Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+              <div className="bg-brand-brown p-8 rounded-[2.5rem] shadow-xl text-white relative overflow-hidden group">
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40 mb-3 text-brand-yellow">Strongest Day</p>
+                <div className="flex items-end justify-between">
+                  <h3 className="text-3xl font-black italic uppercase italic tracking-tighter">{insightData.bestDay}</h3>
+                  <Star className="w-10 h-10 text-brand-yellow/20" />
+                </div>
+              </div>
+              <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border border-brand-stone group">
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-brand-brown/30 mb-3">Peak Performance Slot</p>
+                <div className="flex items-end justify-between">
+                  <h3 className="text-3xl font-black text-brand-brown tracking-tighter">{insightData.bestSlot}</h3>
+                </div>
+              </div>
+              <div className="bg-brand-red p-8 rounded-[2.5rem] shadow-xl text-white group">
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40 mb-3 text-brand-yellow">Highest Footfall Day</p>
+                <div className="flex items-end justify-between">
+                  <h3 className="text-3xl font-black uppercase italic tracking-tighter">{insightData.busiestDay}</h3>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Improved Rainbow Heatmap */}
+            <div className="bg-white rounded-[3rem] p-8 shadow-2xl border border-brand-stone">
+              <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-6">
+                <div>
+                  <h3 className="text-2xl font-black text-brand-brown uppercase italic">Strategic <span className="text-brand-red">Heatmap</span></h3>
+                  <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">Revenue distribution by day and hour</p>
+                </div>
+
+                {/* Color Legend Bar */}
+                <div className="flex flex-col gap-2 bg-brand-brown/5 p-4 rounded-3xl border border-brand-stone/30">
+                  <div className="flex items-center justify-between text-[8px] font-black text-brand-brown/60 uppercase tracking-widest mb-1 px-1">
+                    <span>MIN (LOW)</span>
+                    <span>MAX (HIGH REV)</span>
+                  </div>
+                  <div className="h-3 w-48 lg:w-64 rounded-full" style={{ background: heatmapGradient }} />
+                  <div className="flex justify-between px-1">
+                     <span className="text-[8px] font-bold text-brand-brown/30">₹0</span>
+                     <span className="text-[8px] font-bold text-brand-brown/30">₹{Math.round(Math.max(...Object.values(insightData.heatmap).flatMap(d => Object.values(d).map(v => v.revenue)))).toLocaleString()}</span>
+                  </div>
+                </div>
+
+                {selectedDayInsights !== null && (
+                  <button 
+                    onClick={() => setSelectedDayInsights(null)}
+                    className="flex items-center gap-2 bg-brand-brown text-brand-yellow px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg hover:bg-brand-red hover:text-white transition-all active:scale-95"
+                  >
+                    Back to Overview
+                  </button>
+                )}
+              </div>
+
+              {selectedDayInsights === null ? (
+                <div className="overflow-x-auto no-scrollbar pb-4">
+                  <div className="min-w-[800px]">
+                    <div className="flex mb-4">
+                      <div className="w-24 shrink-0" />
+                      <div className="flex-1 flex">
+                        {[5, 6, 7, 8, 9].map(h => (
+                          <div key={h} className="flex-1 text-center text-[9px] font-black uppercase text-brand-brown/30">{h} PM</div>
+                        ))}
+                        <div className="flex-1 text-center text-[9px] font-black uppercase text-brand-brown/30">Other</div>
+                      </div>
+                    </div>
+                    {insightData.days.map((dayName, dIdx) => {
+                      const daySlotData = insightData.heatmap[dIdx];
+                      const slots = [{ h: 17 }, { h: 18 }, { h: 19 }, { h: 20 }, { h: 21 }];
+                      const otherRev = Object.entries(daySlotData)
+                        .filter(([h]) => !slots.map(s => s.h).includes(parseInt(h)))
+                        .reduce((sum, [_, data]) => sum + data.revenue, 0);
+
+                      const maxGlobalSlotRev = Math.max(...Object.values(insightData.heatmap).flatMap(d => Object.values(d).map(v => v.revenue)), 1);
+
+                      return (
+                        <div 
+                          key={dayName} 
+                          className="flex items-center gap-2 mb-3 group/row cursor-pointer"
+                          onClick={() => setSelectedDayInsights(dIdx)}
+                        >
+                          <div className="w-24 shrink-0 text-[11px] font-black uppercase text-brand-brown group-hover/row:text-brand-red transition-colors">{dayName}</div>
+                          <div className="flex-1 flex gap-2 h-14">
+                            {slots.map(s => {
+                              const rev = daySlotData[s.h].revenue;
+                              const intensity = rev / maxGlobalSlotRev;
+                              const bg = getHeatmapColor(intensity);
+                              return (
+                                <div 
+                                  key={s.h}
+                                  className="flex-1 rounded-2xl relative group/slot transition-all hover:scale-[1.03] border border-black/5 shadow-sm"
+                                  style={{ 
+                                    backgroundColor: bg
+                                  }}
+                                >
+                                  <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/slot:opacity-100 transition-opacity z-10 pointer-events-none">
+                                    <span className="text-[10px] font-black text-white px-3 py-1.5 bg-brand-brown rounded-xl shadow-2xl ring-2 ring-white/10">₹{Math.round(rev).toLocaleString()}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            <div 
+                              className="flex-1 rounded-2xl relative group/slot transition-all hover:scale-[1.03] border border-black/5 shadow-sm"
+                              style={{ 
+                                backgroundColor: getHeatmapColor(otherRev / maxGlobalSlotRev)
+                              }}
+                            >
+                               <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/slot:opacity-100 transition-opacity z-10 pointer-events-none">
+                                    <span className="text-[10px] font-black text-white px-3 py-1.5 bg-brand-brown rounded-xl shadow-2xl ring-2 ring-white/10">₹{Math.round(otherRev).toLocaleString()}</span>
+                                </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="animate-in fade-in slide-in-from-right-4 duration-500">
+                  <h4 className="text-sm font-black uppercase tracking-widest text-brand-brown mb-8 flex items-center gap-3">
+                    <div className="p-2 bg-brand-red rounded-xl shadow-lg ring-4 ring-brand-red/10">
+                      <Calendar className="w-5 h-5 text-white" />
+                    </div>
+                    {insightData.days[selectedDayInsights]} Hourly Breakdown
+                  </h4>
+                  <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-12 gap-4">
+                    {Object.entries(insightData.heatmap[selectedDayInsights]).map(([h, data]) => {
+                      const hour = parseInt(h);
+                      const displayHour = hour === 0 ? '12 AM' : hour === 12 ? '12 PM' : hour > 12 ? `${hour - 12} PM` : `${hour} AM`;
+                      const maxGlobalSlotRev = Math.max(...Object.values(insightData.heatmap).flatMap(d => Object.values(d).map(v => v.revenue)), 1);
+                      const intensity = data.revenue / maxGlobalSlotRev;
+                      const bg = getHeatmapColor(intensity);
+
+                      return (
+                        <div key={h} className="group/hour relative">
+                          <div 
+                            className="aspect-square rounded-[1.5rem] flex flex-col items-center justify-center border transition-all hover:scale-105 hover:shadow-xl group-hover/hour:ring-4 group-hover/hour:ring-brand-brown/5"
+                            style={{ 
+                              backgroundColor: bg,
+                              borderColor: data.revenue > 0 ? 'transparent' : 'rgba(0,0,0,0.05)'
+                            }}
+                          >
+                            <span className={`text-[9px] font-black uppercase text-center ${intensity > 0.4 ? 'text-white' : 'text-brand-brown/40'}`}>{displayHour}</span>
+                            {data.revenue > 0 && (
+                              <span className={`text-[11px] font-black mt-1 ${intensity > 0.4 ? 'text-white' : 'text-brand-brown'}`}>₹{Math.round(data.revenue / 1000)}k</span>
+                            )}
+                          </div>
+                          {data.revenue > 0 && (
+                             <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 opacity-0 group-hover/hour:opacity-100 transition-opacity pointer-events-none z-10">
+                               <div className="bg-brand-brown text-white text-[10px] font-black px-4 py-2 rounded-xl shadow-2xl whitespace-nowrap ring-2 ring-white/10">
+                                  {data.orders} Orders • ₹{Math.round(data.revenue).toLocaleString()}
+                               </div>
+                             </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {reportView === 'revenue' && (
           <div className="space-y-6 lg:space-y-8 animate-in fade-in duration-500">
@@ -463,7 +897,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                     {(activeTab === 'active' ? orders : deletedOrders).map(o => (
                       <tr key={o.id} className="hover:bg-brand-cream/50 transition-colors group">
                         <td className="px-4 lg:px-8 py-4 font-black text-xs lg:text-sm">#{o.billNumber}</td>
-                        <td className="px-4 lg:px-8 py-4 text-[10px] lg:text-xs">{new Date(o.date).toLocaleDateString()}</td>
+                        <td className="px-4 lg:px-8 py-4 text-[10px] lg:text-xs">{getISTFullDateTime(o.date)}</td>
                         <td className="px-4 lg:px-8 py-4 text-[9px] lg:text-[10px] font-bold uppercase">{o.branchName}</td>
                         <td className="px-4 lg:px-8 py-4">
                            <span className="px-2 py-0.5 bg-brand-brown/5 rounded text-[8px] font-black uppercase text-brand-brown/40">{o.type.replace('_', ' ')}</span>
@@ -486,27 +920,89 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
           </div>
         )}
 
-        {reportView === 'trends' && (
-          <div className="animate-in fade-in duration-500">
-            <PerformanceChart orders={chartOrders} startDate={startDate} endDate={endDate} />
-          </div>
-        )}
 
-        {reportView === 'customers' && isAdmin && (
+        {reportView === 'customers' && (isAdmin || user.role === 'STORE_MANAGER') && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in fade-in duration-500">
             {/* Customer List */}
             <div className="lg:col-span-1 bg-white rounded-[2.5rem] p-6 shadow-xl border border-brand-stone flex flex-col h-[700px]">
-              <div className="mb-6">
-                <h3 className="text-xl font-black text-brand-brown uppercase italic mb-4">Customer <span className="text-brand-red">Base</span></h3>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-brand-brown/30" />
-                  <input 
-                    type="tel"
-                    placeholder="Search Phone..."
-                    value={customerSearchTerm}
-                    onChange={e => setCustomerSearchTerm(e.target.value)}
-                    className="w-full pl-10 pr-4 py-3 bg-brand-brown/5 rounded-xl text-xs font-black uppercase outline-none focus:ring-2 ring-brand-yellow/50 transition-all"
-                  />
+              <div className="mb-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xl font-black text-brand-brown uppercase italic">Customer <span className="text-brand-red">Base</span></h3>
+                  <span className="text-[10px] font-black text-brand-brown/40 uppercase tracking-widest">{filteredCustomers.length} Found</span>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-brand-brown/30" />
+                    <input 
+                      type="tel"
+                      placeholder="Search Phone..."
+                      value={customerSearchTerm}
+                      onChange={e => setCustomerSearchTerm(e.target.value)}
+                      className="w-full pl-10 pr-4 py-3 bg-brand-brown/5 rounded-xl text-xs font-black uppercase outline-none focus:ring-2 ring-brand-yellow/50 transition-all"
+                    />
+                  </div>
+
+                  {/* Sorting Controls */}
+                  <div className="flex gap-2">
+                    <select 
+                      value={customerSortField}
+                      onChange={(e) => setCustomerSortField(e.target.value as any)}
+                      className="flex-1 bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none cursor-pointer"
+                    >
+                      <option value="totalSpent">Sort by LTV</option>
+                      <option value="totalOrders">Sort by Orders</option>
+                      <option value="joinedDate">Sort by Joined Date</option>
+                    </select>
+                    <button 
+                      onClick={() => setCustomerSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+                      className="bg-brand-brown/5 p-2 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-brand-brown/10 transition-all"
+                    >
+                      {customerSortOrder === 'asc' ? 'ASC' : 'DESC'}
+                    </button>
+                  </div>
+
+                  {/* Range Filters */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <p className="text-[8px] font-black uppercase text-brand-brown/30 tracking-widest ml-1">LTV Range</p>
+                      <div className="flex items-center gap-1">
+                        <input 
+                          type="number" 
+                          placeholder="Min" 
+                          value={minLtv} 
+                          onChange={e => setMinLtv(e.target.value)}
+                          className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
+                        />
+                        <input 
+                          type="number" 
+                          placeholder="Max" 
+                          value={maxLtv} 
+                          onChange={e => setMaxLtv(e.target.value)}
+                          className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[8px] font-black uppercase text-brand-brown/30 tracking-widest ml-1">Orders Range</p>
+                      <div className="flex items-center gap-1">
+                        <input 
+                          type="number" 
+                          placeholder="Min" 
+                          value={minOrders} 
+                          onChange={e => setMinOrders(e.target.value)}
+                          className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
+                        />
+                        <input 
+                          type="number" 
+                          placeholder="Max" 
+                          value={maxOrders} 
+                          onChange={e => setMaxOrders(e.target.value)}
+                          className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
               
@@ -519,7 +1015,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                   >
                     <div className="text-left">
                       <p className="text-sm font-black tracking-tight">{c.phone}</p>
-                      <p className={`text-[9px] font-bold uppercase tracking-widest ${activeCustomer?.id === c.id ? 'text-brand-yellow/60' : 'text-brand-brown/40'}`}>Joined {c.joinedDate ? new Date(c.joinedDate).toLocaleDateString() : 'N/A'}</p>
+                      <p className={`text-[9px] font-bold uppercase tracking-widest ${activeCustomer?.id === c.id ? 'text-brand-yellow/60' : 'text-brand-brown/40'}`}>Joined {c.joinedDate ? getISTDateString(c.joinedDate) : 'N/A'}</p>
                     </div>
                     <div className="text-right">
                       <p className="text-xs font-black">LTV: ₹{(c.totalSpent ?? 0).toLocaleString()}</p>
@@ -537,8 +1033,105 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                   <div className="bg-brand-brown rounded-[2.5rem] p-8 text-white relative overflow-hidden shadow-2xl">
                     <UserIcon className="absolute -right-10 -bottom-10 w-64 h-64 text-white/5" />
                     <div className="relative z-10">
-                      <p className="text-[10px] font-black uppercase text-brand-yellow tracking-[0.3em] mb-2 font-primary">Profile Record</p>
-                      <h2 className="text-4xl font-black italic uppercase tracking-tighter mb-8 font-primary">{activeCustomer.phone}</h2>
+                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-2">
+                        <p className="text-[10px] font-black uppercase text-brand-yellow tracking-[0.3em] font-primary">Profile Record</p>
+                        <div className="flex items-center gap-2">
+                          {!isEditingProfile ? (
+                            <button 
+                              onClick={() => setIsEditingProfile(true)}
+                              className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition-all border border-white/10 group"
+                            >
+                              <Edit3 className="w-4 h-4 text-brand-yellow" />
+                              <span className="text-[9px] font-black uppercase tracking-widest">Edit Profile</span>
+                            </button>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <button 
+                                onClick={() => setIsEditingProfile(false)}
+                                className="flex items-center gap-2 bg-white/5 hover:bg-white/10 px-4 py-2 rounded-xl transition-all text-white/40"
+                              >
+                                <span className="text-[9px] font-black uppercase tracking-widest">Cancel</span>
+                              </button>
+                              <button 
+                                onClick={handleSaveProfile}
+                                disabled={isSavingProfile}
+                                className="flex items-center gap-2 bg-brand-yellow text-brand-brown px-6 py-2 rounded-xl transition-all shadow-lg active:scale-95 disabled:opacity-50"
+                              >
+                                <Save className="w-4 h-4" />
+                                <span className="text-[9px] font-black uppercase tracking-widest">{isSavingProfile ? 'Saving...' : 'Save Changes'}</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="mb-8">
+                        {isEditingProfile ? (
+                          <div className="space-y-4 max-w-lg mt-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div className="space-y-1">
+                                <label className="text-[8px] font-black uppercase text-white/40 tracking-widest ml-1">Full Name</label>
+                                <input 
+                                  value={editedProfile.name || ''} 
+                                  onChange={e => setEditedProfile(prev => ({ ...prev, name: e.target.value }))}
+                                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-sm font-bold focus:outline-none focus:border-brand-yellow"
+                                  placeholder="John Doe"
+                                />
+                                <p className="text-[10px] font-black text-white italic">{activeCustomer.phone}</p>
+                              </div>
+                              <div className="space-y-1">
+                                <label className="text-[8px] font-black uppercase text-white/40 tracking-widest ml-1">Email Address</label>
+                                <input 
+                                  value={editedProfile.email || ''} 
+                                  onChange={e => setEditedProfile(prev => ({ ...prev, email: e.target.value }))}
+                                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-sm font-bold focus:outline-none focus:border-brand-yellow"
+                                  placeholder="john@example.com"
+                                  type="email"
+                                />
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div className="space-y-1">
+                                <label className="text-[8px] font-black uppercase text-white/40 tracking-widest ml-1">Birthday</label>
+                                <input 
+                                  type="date"
+                                  value={editedProfile.birthday || ''} 
+                                  onChange={e => setEditedProfile(prev => ({ ...prev, birthday: e.target.value }))}
+                                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-sm font-bold focus:outline-none focus:border-brand-yellow"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <label className="text-[8px] font-black uppercase text-white/40 tracking-widest ml-1">Customer Note</label>
+                                <textarea 
+                                  value={editedProfile.note || ''} 
+                                  onChange={e => setEditedProfile(prev => ({ ...prev, note: e.target.value }))}
+                                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-2 text-sm font-bold focus:outline-none focus:border-brand-yellow h-10 resize-none"
+                                  placeholder="e.g. VIP guest, likes extra spice..."
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-1">
+                            <h2 className="text-4xl font-black italic uppercase tracking-tighter font-primary leading-none">
+                              {activeCustomer.name || 'Anonymous Guest'}
+                            </h2>
+                            <p className="text-brand-yellow font-black text-xs tracking-widest flex items-center gap-2">
+                              {activeCustomer.phone}
+                              <span className="text-white/20">•</span>
+                              <span className="text-[10px] uppercase font-black px-2 py-0.5 bg-brand-yellow/20 rounded border border-brand-yellow/30 text-brand-yellow">
+                                {getTierInfo(activeCustomer.totalSpent || 0).name} Stage
+                              </span>
+                              {activeCustomer.email && (
+                                <>
+                                  <span className="text-white/20">•</span>
+                                  <span className="flex items-center gap-1 text-[10px] text-white/60 lowercase font-bold tracking-normal"><Mail className="w-3 h-3" /> {activeCustomer.email}</span>
+                                </>
+                              )}
+                            </p>
+                          </div>
+                        )}
+                      </div>
                       
                       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
                         <div className="bg-brand-yellow/20 p-4 rounded-2xl backdrop-blur-md border border-brand-yellow/30">
@@ -551,23 +1144,59 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         </div>
                         <div className="bg-brand-yellow p-4 rounded-2xl backdrop-blur-md border border-brand-brown/20 shadow-lg">
                           <p className="text-[8px] font-black uppercase text-brand-brown/60 tracking-widest mb-1">MinCoins Balance</p>
-                          <p className="text-lg font-black text-brand-brown">🪙 {activeCustomer.minCoins || 0}</p>
+                          <p className="text-lg font-black text-brand-brown">🪙 {realBalance}</p>
                         </div>
                         <div className="bg-white/10 p-4 rounded-2xl backdrop-blur-md">
                           <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-1">Last Seen</p>
-                          <p className="text-xs font-black uppercase">{activeCustomer.lastVisit ? new Date(activeCustomer.lastVisit).toLocaleDateString() : 'N/A'}</p>
+                          <p className="text-xs font-black uppercase">{activeCustomer.lastVisit ? getISTFullDateTime(activeCustomer.lastVisit) : 'N/A'}</p>
+                        </div>
+                        <div className="bg-white/10 p-4 rounded-2xl backdrop-blur-md">
+                          <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-1">Coupon</p>
+                          {activeCustomer.welcomeCouponUsed ? (
+                            <p className="text-[10px] font-black text-white/60 uppercase">Used</p>
+                          ) : activeCustomer.totalOrders >= 1 ? (
+                            <div className="space-y-1">
+                              <p className="text-[10px] font-black text-brand-yellow uppercase">🔥 {activeCustomer.welcomeCouponCode || 'Avail'}</p>
+                            </div>
+                          ) : (
+                            <p className="text-[10px] font-black text-white/30 uppercase tracking-tighter italic">Earn next</p>
+                          )}
                         </div>
                         <div className="bg-white/10 p-4 rounded-2xl backdrop-blur-md">
                           <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-1">Member Since</p>
-                          <p className="text-xs font-black uppercase">{activeCustomer.joinedDate ? new Date(activeCustomer.joinedDate).toLocaleDateString() : 'N/A'}</p>
+                          <p className="text-xs font-black uppercase">{activeCustomer.joinedDate ? getISTDateString(activeCustomer.joinedDate) : 'N/A'}</p>
                         </div>
                       </div>
+
+                      {/* Info Bar */}
+                      {!isEditingProfile && (
+                        <div className="flex flex-wrap gap-4 mb-8">
+                          {activeCustomer.birthday && (
+                             <div className="flex items-center gap-2 bg-white/5 px-4 py-2 rounded-xl border border-white/10">
+                               <Calendar className="w-3.5 h-3.5 text-brand-yellow" />
+                               <span className="text-[9px] font-black uppercase tracking-widest">DOB: {getISTDateString(activeCustomer.birthday)}</span>
+                             </div>
+                          )}
+                          {activeCustomer.note && (
+                             <div className="flex items-center gap-2 bg-white/5 px-4 py-2 rounded-xl border border-white/10">
+                               <FileText className="w-3.5 h-3.5 text-brand-yellow" />
+                               <span className="text-[9px] font-black uppercase tracking-widest italic truncate max-w-[200px]">"{activeCustomer.note}"</span>
+                             </div>
+                          )}
+                          {usualOrder && (
+                            <div className="flex items-center gap-2 bg-brand-yellow text-brand-brown px-4 py-2 rounded-xl shadow-lg animate-in fade-in zoom-in-95 duration-500">
+                               <Star className="w-3.5 h-3.5 fill-current" />
+                               <span className="text-[9px] font-black uppercase tracking-widest">Usual: {usualOrder.name}</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       {/* Messaging Widget */}
                       <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-lg">
                         <div className="flex items-center gap-2 mb-4">
                            <MessageSquare className="w-4 h-4 text-brand-yellow" />
-                           <h4 className="text-[10px] font-black uppercase text-white tracking-[0.2em]">Message Customer</h4>
+                           <h4 className="text-[10px] font-black uppercase text-white tracking-[0.2em]">Quick Connect</h4>
                         </div>
                         <div className="flex flex-col sm:flex-row gap-3">
                           <textarea 
@@ -610,7 +1239,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                             <div className="flex items-center gap-4">
                               <div className="bg-white shadow-sm w-12 h-12 rounded-xl flex items-center justify-center font-black text-brand-brown text-xs border border-brand-stone">#{o.billNumber}</div>
                               <div>
-                                <p className="text-sm font-black text-brand-brown uppercase">{new Date(o.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
+                                <p className="text-sm font-black text-brand-brown uppercase">{getISTFullDateTime(o.date)}</p>
                                 <div className="flex items-center gap-3 mt-2">
                                   <span className="flex items-center gap-1 text-[8px] font-black uppercase text-brand-brown/40 tracking-widest">
                                     <MapPin className="w-2.5 h-2.5" /> {o.branchName}
@@ -625,6 +1254,11 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                             <div className="flex items-center gap-6">
                               <div className="text-right hidden sm:block">
                                 <p className="text-lg font-black text-brand-brown">₹{(o.total ?? 0).toLocaleString()}</p>
+                                {o.items.some(i => i.paidWithCoins) && (
+                                  <p className="text-[8px] font-black uppercase text-indigo-600 tracking-tighter mt-1">
+                                     -{o.items.reduce((sum, item) => sum + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0)} Coins
+                                  </p>
+                                )}
                                 <p className="text-[8px] font-black uppercase text-emerald-600 tracking-tighter">Verified Order</p>
                               </div>
                               <button 
