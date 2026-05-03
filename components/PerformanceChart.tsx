@@ -182,17 +182,17 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
       };
 
       orders.forEach(order => {
-        const date = new Date(order.date);
-        const dateStr = order.date.split('T')[0];
+        const dateStr = getISTDateString(order.date);
         if (dateStr < startDate || dateStr > endDate) return;
 
-        const w = getISOWeek(date);
-        const y = getISOWeekYear(date);
+        const w = getISOWeek(getISTDate(order.date));
+        const y = getISOWeekYear(getISTDate(order.date));
         const key = `${y}-W${w.toString().padStart(2, '0')}`;
 
         if (!weeklyData[key]) {
-          const mon = getMonday(date);
-          const sun = getSunday(date);
+          const orderDate = getISTDate(order.date);
+          const mon = getMonday(orderDate);
+          const sun = getSunday(orderDate);
           weeklyData[key] = {
             totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0,
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0,
@@ -261,20 +261,23 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
       }> = {};
 
       orders.forEach(order => {
-        const date = new Date(order.date);
-        const dateStr = order.date.split('T')[0];
+        const dateStr = getISTDateString(order.date);
         if (dateStr < startDate || dateStr > endDate) return;
 
-        const month = date.getMonth();
-        const year = date.getFullYear();
-        const key = `${year}-${(month + 1).toString().padStart(2, '0')}`;
+        // Use IST date parts for monthly grouping
+        const date = getISTDate(order.date);
+        const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', month: 'numeric', year: 'numeric' });
+        const parts = formatter.formatToParts(date);
+        const month = parseInt(parts.find(p => p.type === 'month')?.value || '1');
+        const year = parseInt(parts.find(p => p.type === 'year')?.value || '2024');
+        const key = `${year}-${month.toString().padStart(2, '0')}`;
 
         if (!monthlyData[key]) {
           monthlyData[key] = {
             totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0,
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0,
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0,
-            month: date.toLocaleDateString('en-GB', { month: 'short' }),
+            month: new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', month: 'short' }).format(date),
             year: year
           };
         }

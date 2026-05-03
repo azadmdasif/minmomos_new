@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { getOrdersForDateRange, getOrderByBillNumber, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchProcurements, getCentralInventory, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime } from '../utils/storage';
+import { getOrdersForDateRange, getOrderByBillNumber, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchProcurements, getCentralInventory, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay } from '../utils/storage';
 import { CompletedOrder, PaymentMethod, Station, User, CentralMaterial, Customer } from '../types';
 import PrintReceipt from './PrintReceipt';
 import DeleteBillModal from './DeleteBillModal';
@@ -419,7 +419,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     if (!isAdmin) return [];
     const stores: Record<string, { revenue: number, orders: number, profit: number }> = {};
     const visibleRaw = allOrdersRaw.filter(o => {
-      const d = o.date.split('T')[0];
+      const d = getISTDateString(o.date);
       return d >= startDate && d <= endDate;
     });
 
@@ -455,9 +455,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     }
 
     orders.forEach(o => {
-      const date = new Date(o.date);
-      const day = date.getDay();
-      const hour = date.getHours();
+      const day = getISTDay(o.date);
+      const hour = getISTHour(o.date);
       if (heatmap[day] && heatmap[day][hour]) {
         heatmap[day][hour].revenue += o.total;
         heatmap[day][hour].orders += 1;

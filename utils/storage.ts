@@ -55,25 +55,31 @@ export function getISTTimeString(date?: string | number | Date): string {
   }).format(d);
 }
 
-export function getISTISOString(): string {
-  const now = new Date();
-  const formatter = new Intl.DateTimeFormat('en-CA', {
+export function getISTHour(date?: string | number | Date): number {
+  const d = date ? new Date(date) : new Date();
+  const options: Intl.DateTimeFormatOptions = {
     timeZone: 'Asia/Kolkata',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
+    hour: 'numeric',
     hour12: false
+  };
+  return parseInt(new Intl.DateTimeFormat('en-US', options).format(d), 10);
+}
+
+export function getISTDay(date?: string | number | Date): number {
+  const d = date ? new Date(date) : new Date();
+  // Using 'en-US' and extracting weekday. 0 = Sunday, ..., 6 = Saturday
+  // Unfortunately Intl doesn't easily return day index, so we'll use a safer part-based approach
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata',
+    weekday: 'short'
   });
-  
-  const parts = formatter.formatToParts(now);
-  const getPart = (type: string) => parts.find(p => p.type === type)?.value;
-  
-  // Include the +05:30 offset so Supabase treats it as IST correctly
-  const isoStr = `${getPart('year')}-${getPart('month')}-${getPart('day')}T${getPart('hour')}:${getPart('minute')}:${getPart('second')}+05:30`;
-  return isoStr;
+  const dayStr = formatter.format(d);
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return days.indexOf(dayStr);
+}
+
+export function getISTISOString(): string {
+  return new Date().toISOString();
 }
 
 // --- MENU MANAGEMENT ---

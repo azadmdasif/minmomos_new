@@ -11,6 +11,7 @@ import {
   Cell
 } from 'recharts';
 import { CompletedOrder } from '../types';
+import { getISTHour, getISTDay } from '../utils/storage';
 
 interface TimeWiseRevenueChartProps {
   orders: CompletedOrder[];
@@ -31,8 +32,7 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
 
       orders.forEach(order => {
         try {
-          const date = new Date(order.date);
-          const h = date.getHours();
+          const h = getISTHour(order.date);
           if (h >= 0 && h < 24) {
             hours[h].revenue += (order.total || 0);
             hours[h].orders += 1;
@@ -66,8 +66,7 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
 
       orders.forEach(order => {
         try {
-          const date = new Date(order.date);
-          const d = date.getDay();
+          const d = getISTDay(order.date);
           const day = days.find(day => day.key === d);
           if (day) {
             day.revenue += (order.total || 0);

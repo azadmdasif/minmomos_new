@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { fetchProcurements, logProcurement, getCentralInventory, getISTDate, getISTDateString, getISTISOString } from '../utils/storage';
+import { fetchProcurements, logProcurement, getCentralInventory, getISTDateString, getISTISOString } from '../utils/storage';
 
 const ProcurementManager: React.FC = () => {
   const [procurements, setProcurements] = useState<any[]>([]);
