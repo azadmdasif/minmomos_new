@@ -7,7 +7,8 @@ import DeleteBillModal from './DeleteBillModal';
 import ItemSalesReport from './ItemSalesReport';
 import PerformanceChart from './PerformanceChart';
 import TimeWiseRevenueChart from './TimeWiseRevenueChart';
-import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star } from 'lucide-react';
+import RevenueBreakdownChart from './RevenueBreakdownChart';
+import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star, Users, TrendingUp as TrendingUpIcon, Gift } from 'lucide-react';
 
 const getTodaysDateString = () => {
   return getISTDateString();
@@ -104,12 +105,14 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [foundOrderFinalBalance, setFoundOrderFinalBalance] = useState<number | undefined>(undefined);
   const [searchMessage, setSearchMessage] = useState('');
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
-  const [customerSortField, setCustomerSortField] = useState<'totalSpent' | 'joinedDate' | 'totalOrders'>('totalSpent');
+  const [customerSortField, setCustomerSortField] = useState<'totalSpent' | 'joinedDate' | 'totalOrders' | 'lastVisit'>('totalSpent');
   const [customerSortOrder, setCustomerSortOrder] = useState<'asc' | 'desc'>('desc');
   const [minLtv, setMinLtv] = useState<string>('');
   const [maxLtv, setMaxLtv] = useState<string>('');
   const [minOrders, setMinOrders] = useState<string>('');
   const [maxOrders, setMaxOrders] = useState<string>('');
+  const [customerActivityStart, setCustomerActivityStart] = useState<string>('');
+  const [customerActivityEnd, setCustomerActivityEnd] = useState<string>('');
   const [selectedDayInsights, setSelectedDayInsights] = useState<number | null>(null);
 
   // Fixed Costs (Persisted in localStorage for convenience)
@@ -432,7 +435,30 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       stores[order.branchName].profit += (roundedTotal - Math.round(orderCogs));
     });
     return Object.entries(stores).map(([name, stats]) => ({ name, ...stats })).sort((a, b) => b.revenue - a.revenue);
-  }, [isAdmin, allOrdersRaw]);
+  }, [isAdmin, allOrdersRaw, startDate, endDate]);
+
+  const customerOverview = useMemo(() => {
+    const totalCount = customers.length;
+    const totalLTV = customers.reduce((acc, c) => acc + (c.totalSpent || 0), 0);
+    const avgLTV = totalCount > 0 ? totalLTV / totalCount : 0;
+    const repeatCount = customers.filter(c => (c.totalOrders || 0) > 1).length;
+    const retentionRate = totalCount > 0 ? (repeatCount / totalCount) * 100 : 0;
+    
+    // New customers in range
+    const newInRange = customers.filter(c => {
+      if (!c.joinedDate) return false;
+      const d = getISTDateString(c.joinedDate);
+      return d >= startDate && d <= endDate;
+    }).length;
+
+    return {
+      totalCount,
+      totalLTV,
+      avgLTV,
+      retentionRate,
+      newInRange
+    };
+  }, [customers, startDate, endDate]);
 
   const realBalance = useMemo(() => {
     if (!activeCustomer) return 0;
@@ -508,12 +534,27 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     if (minOrders) filtered = filtered.filter(c => (c.totalOrders ?? 0) >= Number(minOrders));
     if (maxOrders) filtered = filtered.filter(c => (c.totalOrders ?? 0) <= Number(maxOrders));
 
+    // Ordered Between Dates Filter
+    if (customerActivityStart || customerActivityEnd) {
+      const activePhones = new Set<string>();
+      allOrdersRaw.forEach(o => {
+        if (!o.customerPhone) return;
+        const d = getISTDateString(o.date);
+        const startMatch = customerActivityStart ? d >= customerActivityStart : true;
+        const endMatch = customerActivityEnd ? d <= customerActivityEnd : true;
+        if (startMatch && endMatch) {
+          activePhones.add(o.customerPhone);
+        }
+      });
+      filtered = filtered.filter(c => activePhones.has(c.phone));
+    }
+
     // Sorting
     return filtered.sort((a, b) => {
       let valA: any = a[customerSortField];
       let valB: any = b[customerSortField];
 
-      if (customerSortField === 'joinedDate') {
+      if (customerSortField === 'joinedDate' || customerSortField === 'lastVisit') {
         valA = new Date(valA || 0).getTime();
         valB = new Date(valB || 0).getTime();
       } else {
@@ -523,7 +564,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
       return customerSortOrder === 'desc' ? valB - valA : valA - valB;
     });
-  }, [customers, customerSearchTerm, customerSortField, customerSortOrder, minLtv, maxLtv, minOrders, maxOrders]);
+  }, [customers, customerSearchTerm, customerSortField, customerSortOrder, minLtv, maxLtv, minOrders, maxOrders, customerActivityStart, customerActivityEnd, allOrdersRaw]);
 
   const SummaryCard = ({ title, value, sub, color, textWhite }: any) => (
     <div className={`${color} p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-sm relative overflow-hidden group border border-black/5`}>
@@ -705,7 +746,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         {reportView === 'trends' && (
           <div className="space-y-12 animate-in fade-in duration-700">
             {/* 1. Main Line Chart */}
-            <PerformanceChart orders={chartOrders} startDate={startDate} endDate={endDate} />
+            <PerformanceChart orders={chartOrders} customers={customers} startDate={startDate} endDate={endDate} />
+
+            <RevenueBreakdownChart orders={orders} customers={customers} />
 
             {/* 2. Insight Summary Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
@@ -921,7 +964,52 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
 
         {reportView === 'customers' && (isAdmin || user.role === 'STORE_MANAGER') && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in fade-in duration-500">
+          <div className="space-y-8 animate-in fade-in duration-500">
+            {/* Customer Overview Bar */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+               <div className="bg-white p-6 rounded-[2rem] border border-brand-stone shadow-xl group">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Users className="w-4 h-4 text-brand-red" />
+                    <p className="text-[10px] font-black uppercase text-brand-brown/40 tracking-widest">Base</p>
+                  </div>
+                  <h4 className="text-3xl font-black text-brand-brown tracking-tighter">{customerOverview.totalCount}</h4>
+                  <p className="text-[9px] font-bold text-brand-brown/30 uppercase mt-1">Total Profiles</p>
+               </div>
+               <div className="bg-brand-brown p-6 rounded-[2rem] shadow-xl text-white">
+                  <div className="flex items-center gap-2 mb-3">
+                    <History className="w-4 h-4 text-brand-yellow" />
+                    <p className="text-[10px] font-black uppercase text-white/40 tracking-widest">System LTV</p>
+                  </div>
+                  <h4 className="text-3xl font-black text-brand-yellow tracking-tighter">₹{Math.round(customerOverview.totalLTV).toLocaleString()}</h4>
+                  <p className="text-[9px] font-bold text-white/40 uppercase mt-1">Lifetime Value</p>
+               </div>
+               <div className="bg-white p-6 rounded-[2rem] border border-brand-stone shadow-xl">
+                  <div className="flex items-center gap-2 mb-3">
+                    <TrendingUpIcon className="w-4 h-4 text-emerald-500" />
+                    <p className="text-[10px] font-black uppercase text-brand-brown/40 tracking-widest">Avg LTV</p>
+                  </div>
+                  <h4 className="text-3xl font-black text-brand-brown tracking-tighter">₹{Math.round(customerOverview.avgLTV).toLocaleString()}</h4>
+                  <p className="text-[9px] font-bold text-brand-brown/30 uppercase mt-1">Per Profile</p>
+               </div>
+               <div className="bg-white p-6 rounded-[2rem] border border-brand-stone shadow-xl">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Star className="w-4 h-4 text-indigo-500" />
+                    <p className="text-[10px] font-black uppercase text-brand-brown/40 tracking-widest">Retention</p>
+                  </div>
+                  <h4 className="text-3xl font-black text-brand-brown tracking-tighter">{customerOverview.retentionRate.toFixed(1)}%</h4>
+                  <p className="text-[9px] font-bold text-brand-brown/30 uppercase mt-1">Repeat Rate</p>
+               </div>
+               <div className="bg-brand-red p-6 rounded-[2rem] shadow-xl text-white">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Gift className="w-4 h-4 text-brand-yellow" />
+                    <p className="text-[10px] font-black uppercase text-white/40 tracking-widest">New Signups</p>
+                  </div>
+                  <h4 className="text-3xl font-black text-white tracking-tighter">{customerOverview.newInRange}</h4>
+                  <p className="text-[9px] font-bold text-brand-yellow/60 uppercase mt-1">This Period</p>
+               </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Customer List */}
             <div className="lg:col-span-1 bg-white rounded-[2.5rem] p-6 shadow-xl border border-brand-stone flex flex-col h-[700px]">
               <div className="mb-6 space-y-4">
@@ -952,6 +1040,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                       <option value="totalSpent">Sort by LTV</option>
                       <option value="totalOrders">Sort by Orders</option>
                       <option value="joinedDate">Sort by Joined Date</option>
+                      <option value="lastVisit">Sort by Recently Ordered</option>
                     </select>
                     <button 
                       onClick={() => setCustomerSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
@@ -962,43 +1051,72 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                   </div>
 
                   {/* Range Filters */}
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="space-y-1">
-                      <p className="text-[8px] font-black uppercase text-brand-brown/30 tracking-widest ml-1">LTV Range</p>
-                      <div className="flex items-center gap-1">
-                        <input 
-                          type="number" 
-                          placeholder="Min" 
-                          value={minLtv} 
-                          onChange={e => setMinLtv(e.target.value)}
-                          className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
-                        />
-                        <input 
-                          type="number" 
-                          placeholder="Max" 
-                          value={maxLtv} 
-                          onChange={e => setMaxLtv(e.target.value)}
-                          className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
-                        />
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <p className="text-[8px] font-black uppercase text-brand-brown/30 tracking-widest ml-1">LTV Range</p>
+                        <div className="flex items-center gap-1">
+                          <input 
+                            type="number" 
+                            placeholder="Min" 
+                            value={minLtv} 
+                            onChange={e => setMinLtv(e.target.value)}
+                            className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
+                          />
+                          <input 
+                            type="number" 
+                            placeholder="Max" 
+                            value={maxLtv} 
+                            onChange={e => setMaxLtv(e.target.value)}
+                            className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-[8px] font-black uppercase text-brand-brown/30 tracking-widest ml-1">Orders Range</p>
+                        <div className="flex items-center gap-1">
+                          <input 
+                            type="number" 
+                            placeholder="Min" 
+                            value={minOrders} 
+                            onChange={e => setMinOrders(e.target.value)}
+                            className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
+                          />
+                          <input 
+                            type="number" 
+                            placeholder="Max" 
+                            value={maxOrders} 
+                            onChange={e => setMaxOrders(e.target.value)}
+                            className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
+                          />
+                        </div>
                       </div>
                     </div>
+
                     <div className="space-y-1">
-                      <p className="text-[8px] font-black uppercase text-brand-brown/30 tracking-widest ml-1">Orders Range</p>
+                      <p className="text-[8px] font-black uppercase text-brand-brown/30 tracking-widest ml-1">Ordered Between Dates</p>
                       <div className="flex items-center gap-1">
                         <input 
-                          type="number" 
-                          placeholder="Min" 
-                          value={minOrders} 
-                          onChange={e => setMinOrders(e.target.value)}
+                          type="date" 
+                          value={customerActivityStart} 
+                          onChange={e => setCustomerActivityStart(e.target.value)}
                           className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
                         />
+                        <span className="text-brand-brown/20">-</span>
                         <input 
-                          type="number" 
-                          placeholder="Max" 
-                          value={maxOrders} 
-                          onChange={e => setMaxOrders(e.target.value)}
+                          type="date" 
+                          value={customerActivityEnd} 
+                          onChange={e => setCustomerActivityEnd(e.target.value)}
                           className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
                         />
+                        {(customerActivityStart || customerActivityEnd) && (
+                          <button 
+                            onClick={() => { setCustomerActivityStart(''); setCustomerActivityEnd(''); }}
+                            className="p-2 bg-brand-red/10 text-brand-red rounded-lg"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1284,6 +1402,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
               )}
             </div>
           </div>
+        </div>
         )}
 
         {reportView === 'comparison' && isAdmin && (

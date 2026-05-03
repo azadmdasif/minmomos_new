@@ -10,18 +10,20 @@ import {
   Area,
   ComposedChart
 } from 'recharts';
-import { CompletedOrder } from '../types';
-import { TrendingUp, DollarSign, ShoppingBag, BarChart2 } from 'lucide-react';
+import { CompletedOrder, Customer } from '../types';
+import { TrendingUp, DollarSign, ShoppingBag, BarChart2, Users } from 'lucide-react';
 import { getISTDate, getISTDateString } from '../utils/storage';
 
 interface PerformanceChartProps {
   orders: CompletedOrder[];
+  customers: Customer[];
   startDate: string;
   endDate: string;
 }
 
-const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, endDate }) => {
+const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, startDate, endDate }) => {
   const [showSMA, setShowSMA] = useState(false);
+  const [showSegments, setShowSegments] = useState(false);
   const [showRevenue, setShowRevenue] = useState(true);
   const [showProfit, setShowProfit] = useState(true);
   const [showAvgTicket, setShowAvgTicket] = useState(true);
@@ -39,7 +41,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
       const dailyData: Record<string, { 
         totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; 
         totalCogs: number; dineInCogs: number; takeawayCogs: number; 
-        totalOrders: number; dineInOrders: number; takeawayOrders: number 
+        totalOrders: number; dineInOrders: number; takeawayOrders: number;
+        repeatRev: number; newRegRev: number; unregRev: number;
       }> = {};
       
       // Initialize all dates in range to 0
@@ -49,7 +52,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
           dailyData[ds] = { 
             totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, 
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, 
-            totalOrders: 0, dineInOrders: 0, takeawayOrders: 0 
+            totalOrders: 0, dineInOrders: 0, takeawayOrders: 0,
+            repeatRev: 0, newRegRev: 0, unregRev: 0,
           };
           curr.setDate(curr.getDate() + 1);
       }
@@ -63,6 +67,24 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
           dailyData[dateStr].totalRevenue += order.total;
           dailyData[dateStr].totalOrders += 1;
           dailyData[dateStr].totalCogs += totalCost;
+
+          // Segment Breakdown logic
+          if (!order.customerPhone) {
+            dailyData[dateStr].unregRev += order.total;
+          } else {
+            const cust = customers.find(c => c.phone === order.customerPhone);
+            if (cust) {
+              const joinDateStr = getISTDateString(cust.joinedDate);
+              const orderDateStr = getISTDateString(order.date);
+              if (joinDateStr === orderDateStr) {
+                dailyData[dateStr].newRegRev += order.total;
+              } else {
+                dailyData[dateStr].repeatRev += order.total;
+              }
+            } else {
+              dailyData[dateStr].newRegRev += order.total;
+            }
+          }
 
           if (order.type === 'DINE_IN') {
             dailyData[dateStr].dineInRevenue += order.total;
@@ -99,7 +121,10 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
             revenue,
             profit: revenue - cogs,
             avgTicket: count > 0 ? revenue / count : 0,
-            orderCount: count
+            orderCount: count,
+            repeatRev: values.repeatRev,
+            newRegRev: values.newRegRev,
+            unregRev: values.unregRev
           };
         })
         .sort((a, b) => a.date.localeCompare(b.date));
@@ -161,6 +186,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
         totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; 
         totalCogs: number; dineInCogs: number; takeawayCogs: number; 
         totalOrders: number; dineInOrders: number; takeawayOrders: number;
+        repeatRev: number; newRegRev: number; unregRev: number;
         weekNum: number;
         year: number;
         monday: string;
@@ -197,6 +223,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
             totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0,
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0,
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0,
+            repeatRev: 0, newRegRev: 0, unregRev: 0,
             weekNum: w,
             year: y,
             monday: mon.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
@@ -208,6 +235,24 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
         weeklyData[key].totalRevenue += order.total;
         weeklyData[key].totalOrders += 1;
         weeklyData[key].totalCogs += totalCost;
+
+        // Segment Breakdown
+        if (!order.customerPhone) {
+          weeklyData[key].unregRev += order.total;
+        } else {
+          const cust = customers.find(c => c.phone === order.customerPhone);
+          if (cust) {
+            const joinDateStr = getISTDateString(cust.joinedDate);
+            const orderDateStr = getISTDateString(order.date);
+            if (joinDateStr === orderDateStr) {
+              weeklyData[key].newRegRev += order.total;
+            } else {
+              weeklyData[key].repeatRev += order.total;
+            }
+          } else {
+            weeklyData[key].newRegRev += order.total;
+          }
+        }
 
         if (order.type === 'DINE_IN') {
           weeklyData[key].dineInRevenue += order.total;
@@ -244,6 +289,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
             profit: revenue - cogs,
             avgTicket: count > 0 ? revenue / count : 0,
             orderCount: count,
+            repeatRev: values.repeatRev,
+            newRegRev: values.newRegRev,
+            unregRev: values.unregRev,
             revenueSMA: 0, // SMA not supported in weekly view yet
             profitSMA: 0,
             ticketSMA: 0
@@ -256,6 +304,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
         totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; 
         totalCogs: number; dineInCogs: number; takeawayCogs: number; 
         totalOrders: number; dineInOrders: number; takeawayOrders: number;
+        repeatRev: number; newRegRev: number; unregRev: number;
         month: string;
         year: number;
       }> = {};
@@ -277,6 +326,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
             totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0,
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0,
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0,
+            repeatRev: 0, newRegRev: 0, unregRev: 0,
             month: new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', month: 'short' }).format(date),
             year: year
           };
@@ -286,6 +336,24 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
         monthlyData[key].totalRevenue += order.total;
         monthlyData[key].totalOrders += 1;
         monthlyData[key].totalCogs += totalCost;
+
+        // Segment Breakdown
+        if (!order.customerPhone) {
+          monthlyData[key].unregRev += order.total;
+        } else {
+          const cust = customers.find(c => c.phone === order.customerPhone);
+          if (cust) {
+            const joinDateStr = getISTDateString(cust.joinedDate);
+            const orderDateStr = getISTDateString(order.date);
+            if (joinDateStr === orderDateStr) {
+              monthlyData[key].newRegRev += order.total;
+            } else {
+              monthlyData[key].repeatRev += order.total;
+            }
+          } else {
+            monthlyData[key].newRegRev += order.total;
+          }
+        }
 
         if (order.type === 'DINE_IN') {
           monthlyData[key].dineInRevenue += order.total;
@@ -322,6 +390,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
             profit: revenue - cogs,
             avgTicket: count > 0 ? revenue / count : 0,
             orderCount: count,
+            repeatRev: values.repeatRev,
+            newRegRev: values.newRegRev,
+            unregRev: values.unregRev,
             revenueSMA: 0,
             profitSMA: 0,
             ticketSMA: 0
@@ -416,6 +487,16 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
             <span className="text-[10px] font-black uppercase tracking-wider">Ticket</span>
           </button>
 
+          <button 
+            onClick={() => setShowSegments(!showSegments)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
+              showSegments ? 'bg-amber-500 border-amber-600 text-white shadow-amber-200' : 'bg-white border-brand-stone/50 text-brand-brown/40'
+            }`}
+          >
+            <Users className="w-3 h-3" />
+            <span className="text-[10px] font-black uppercase tracking-wider">Segments</span>
+          </button>
+
           {viewType === 'daily' && (
             <>
               <div className="w-[1px] h-4 bg-brand-brown/10 mx-1 hidden md:block" />
@@ -436,6 +517,23 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
           )}
         </div>
       </div>
+
+      {showSegments && (
+        <div className="flex flex-wrap gap-6 px-6 py-3 bg-brand-brown/5 rounded-2xl border border-brand-brown/10 mb-6 animate-in fade-in slide-in-from-top-2 duration-500">
+          <div className="flex items-center gap-2.5">
+            <div className="w-3 h-3 rounded-full bg-[#10B981] shadow-sm" />
+            <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Repeat Customers</span>
+          </div>
+          <div className="flex items-center gap-2.5">
+            <div className="w-3 h-3 rounded-full bg-[#F59E0B] shadow-sm" />
+            <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">New Registered</span>
+          </div>
+          <div className="flex items-center gap-2.5">
+            <div className="w-3 h-3 rounded-full bg-[#6B7280] shadow-sm" />
+            <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Unregistered</span>
+          </div>
+        </div>
+      )}
 
       <div className="h-[400px] w-full">
         <ResponsiveContainer width="100%" height="100%">
@@ -463,19 +561,49 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
                tickFormatter={(value) => `₹${value}`}
             />
             <Tooltip 
-              contentStyle={{ 
-                borderRadius: '12px', 
-                border: 'none', 
-                boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
-                padding: '12px' 
-              }}
-              labelFormatter={(_, payload) => {
-                if (payload && payload.length > 0) {
-                  return <span className="text-brand-brown font-black italic">{payload[0].payload.fullDate}</span>;
+              content={({ active, payload }) => {
+                if (active && payload && payload.length) {
+                  const data = payload[0].payload;
+                  const totalRevenue = data.revenue;
+                  
+                  return (
+                    <div className="bg-white p-4 rounded-xl shadow-xl border border-brand-brown/10 min-w-[180px]">
+                      <p className="text-brand-brown font-black italic mb-3 border-b border-brand-brown/5 pb-2 text-sm">{data.fullDate}</p>
+                      <div className="space-y-2">
+                        {payload.map((entry: any, index: number) => {
+                          if (!entry || entry.value === undefined) return null;
+                          const isSegment = ['repeatRev', 'newRegRev', 'unregRev'].includes(entry.dataKey);
+                          const percentage = isSegment && totalRevenue > 0 
+                            ? ((entry.value / totalRevenue) * 100).toFixed(1)
+                            : null;
+
+                          return (
+                            <div key={`tooltip-${index}`} className="flex items-center justify-between gap-4">
+                              <div className="flex items-center gap-2">
+                                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
+                                <span className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider whitespace-nowrap">
+                                  {entry.name}
+                                </span>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-xs font-black text-brand-brown tracking-tighter">
+                                  ₹{typeof entry.value === 'number' ? entry.value.toLocaleString(undefined, { minimumFractionDigits: 2 }) : '0.00'}
+                                </p>
+                                {percentage && (
+                                  <p className="text-[8px] font-black text-brand-brown/40 uppercase tracking-tighter">
+                                    {percentage}% of revenue
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
                 }
-                return '';
+                return null;
               }}
-              formatter={(value: any) => [`₹${Number(value).toFixed(2)}`, '']}
             />
             {/* Legend removed in favor of custom interactive toggles above */}
             
@@ -489,6 +617,38 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, startDate, 
                  fill="#FEE2E2" 
                  strokeWidth={3}
               />
+            )}
+            
+            {showSegments && (
+              <>
+                <Line 
+                   yAxisId="left"
+                   type="monotone" 
+                   dataKey="repeatRev" 
+                   name="Repeat Customers" 
+                   stroke="#10B981" 
+                   strokeWidth={3}
+                   dot={{ r: 3, fill: '#10B981' }}
+                />
+                <Line 
+                   yAxisId="left"
+                   type="monotone" 
+                   dataKey="newRegRev" 
+                   name="New Registered" 
+                   stroke="#F59E0B" 
+                   strokeWidth={3}
+                   dot={{ r: 3, fill: '#F59E0B' }}
+                />
+                <Line 
+                   yAxisId="left"
+                   type="monotone" 
+                   dataKey="unregRev" 
+                   name="Unregistered" 
+                   stroke="#6B7280" 
+                   strokeWidth={3}
+                   dot={{ r: 3, fill: '#6B7280' }}
+                />
+              </>
             )}
             {showProfit && (
               <Area 

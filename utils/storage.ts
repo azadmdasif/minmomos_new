@@ -237,8 +237,7 @@ export async function saveOrder(
       status, 
       table_id: tableId || null, 
       customer_id: customerId,
-      customer_phone: customerPhone || null,
-      date: getISTISOString()
+      customer_phone: customerPhone || null
     }).select().single();
     
     if (orderError) {

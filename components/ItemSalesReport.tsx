@@ -1,6 +1,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { CompletedOrder } from '../types';
+import ItemCategoryPieChart from './ItemCategoryPieChart';
 
 interface ItemSalesReportProps {
   orders: CompletedOrder[];
@@ -101,7 +102,13 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({ orders }) => {
   );
 
   return (
-    <div className="bg-white rounded-[3rem] shadow-xl p-10 mt-6 border border-brand-stone overflow-hidden">
+    <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-1000">
+      {/* Visual Analytics */}
+      <div className="grid grid-cols-1 gap-6">
+        <ItemCategoryPieChart orders={orders} />
+      </div>
+
+      <div className="bg-white rounded-[3rem] shadow-xl p-10 border border-brand-stone overflow-hidden">
       <h3 className="text-2xl font-black text-brand-brown italic uppercase mb-8 tracking-tighter">Inventory <span className="text-brand-red">Velocity</span></h3>
       <div className="overflow-x-auto no-scrollbar">
         <table className="w-full text-sm text-left border-collapse">
@@ -132,6 +139,7 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({ orders }) => {
           </div>
         )}
       </div>
+    </div>
     </div>
   );
 };
