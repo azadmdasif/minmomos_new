@@ -219,7 +219,10 @@ export const MENU_ITEMS: MenuItem[] = [
     costs: {
       normal: { small: 25, medium: 35, large: 45 },
     },
-    recipe: []
+    recipe: [
+      { materialId: 'momo-veg', quantity: 1 },
+      { materialId: 'pkt-oil', quantity: 0.05 } 
+    ]
   }
 ];
 

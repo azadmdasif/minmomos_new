@@ -107,13 +107,14 @@ const MenuManager: React.FC = () => {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Permanently delete this item?')) return;
+    if (!confirm('Permanently delete this item? This action cannot be undone.')) return;
     setIsDeleting(id);
     try {
       await deleteMenuItem(id);
       await loadItems();
     } catch (e: any) {
-      alert(`Delete Failed: ${e.message}`);
+      console.error("Delete handler error:", e);
+      alert(`Delete Failed: ${e.message}\n\nNote: If this item has been ordered before, the database preserves it for history. Consider renaming it or setting its price to 0/marking out of stock instead of deleting.`);
     } finally {
       setIsDeleting(null);
     }
@@ -261,37 +262,57 @@ const MenuManager: React.FC = () => {
         </div>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 pb-12">
-        {items.map(item => (
-          <div key={item.id} className="bg-white rounded-[3rem] p-6 shadow-sm border border-brand-stone group hover:shadow-2xl transition-all flex flex-col">
-            <div className="aspect-square rounded-[2rem] overflow-hidden mb-6 bg-brand-cream border border-brand-stone">
-               <img src={item.image || 'https://via.placeholder.com/300?text=No+Image'} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
-            </div>
-            <div className="mb-6 px-2">
-              <h3 className="text-xl font-black text-brand-brown leading-tight mb-1">{item.name}</h3>
-              <div className="flex items-center gap-2">
-                <span className="text-[9px] font-black uppercase tracking-widest text-brand-red px-2 py-0.5 bg-brand-red/5 rounded-full">{item.category}</span>
-                {(item.recipe?.length || 0) > 0 || Object.keys(item.sizeRecipes || {}).length > 0 ? (
-                    <span className="text-[8px] font-bold text-emerald-600 uppercase tracking-widest">Tracked Stock 🔗</span>
-                ) : null}
+      <div className="space-y-16 pb-12">
+        {CATEGORIES.map(category => {
+          const categoryItems = items.filter(i => i.category === category);
+          if (categoryItems.length === 0) return null;
+          
+          return (
+            <div key={category} id={`category-${category}`}>
+              <div className="flex items-center gap-4 mb-8">
+                <span className="w-12 h-1.5 bg-brand-yellow rounded-full" />
+                <h3 className="text-2xl font-black text-brand-brown uppercase italic tracking-tighter">{category}s</h3>
+                <span className="text-[10px] font-bold text-brand-brown/30 bg-brand-stone/20 px-3 py-1 rounded-full uppercase tracking-widest">{categoryItems.length} Items</span>
+              </div>
+              
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-6">
+                {categoryItems.map(item => (
+                  <div key={item.id} className="bg-white rounded-[2rem] p-4 shadow-sm border border-brand-stone group hover:shadow-xl transition-all flex flex-col">
+                    <div className="aspect-square rounded-[1.5rem] overflow-hidden mb-4 bg-brand-cream border border-brand-stone relative">
+                      <img src={item.image || 'https://via.placeholder.com/300?text=No+Image'} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
+                      <div className="absolute inset-0 bg-brand-brown/0 group-hover:bg-brand-brown/5 transition-colors" />
+                    </div>
+                    <div className="mb-4 px-1">
+                      <h3 className="text-sm font-black text-brand-brown leading-tight mb-1 truncate" title={item.name}>{item.name}</h3>
+                      <div className="flex items-center gap-2">
+                        {(item.recipe?.length || 0) > 0 || Object.keys(item.sizeRecipes || {}).length > 0 ? (
+                            <span className="text-[7px] font-bold text-emerald-600 uppercase tracking-widest flex items-center gap-1">
+                              <span className="w-1 h-1 bg-emerald-600 rounded-full animate-pulse" />
+                              Tracked
+                            </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="flex gap-2 mt-auto">
+                      <button onClick={() => { setEditingItem(item); setIsModalOpen(true); }} className="flex-1 py-3 bg-brand-brown text-brand-yellow rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-brand-brown/90 transition-colors">Edit</button>
+                      <button 
+                        onClick={() => handleDelete(item.id)} 
+                        disabled={isDeleting === item.id}
+                        className="px-4 py-3 rounded-xl bg-red-50 text-brand-red hover:bg-brand-red hover:text-white transition-all disabled:opacity-50"
+                      >
+                        {isDeleting === item.id ? (
+                          <div className="w-3 h-3 border-2 border-brand-red border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-            <div className="flex gap-2 mt-auto">
-              <button onClick={() => { setEditingItem(item); setIsModalOpen(true); }} className="flex-1 py-4 bg-brand-brown text-brand-yellow rounded-2xl text-[10px] font-black uppercase tracking-widest">Edit</button>
-              <button 
-                onClick={() => handleDelete(item.id)} 
-                disabled={isDeleting === item.id}
-                className="px-5 py-4 rounded-2xl bg-red-50 text-brand-red hover:bg-brand-red hover:text-white transition-all disabled:opacity-50"
-              >
-                {isDeleting === item.id ? (
-                  <div className="w-4 h-4 border-2 border-brand-red border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                )}
-              </button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {isModalOpen && editingItem && (
@@ -324,7 +345,7 @@ const MenuManager: React.FC = () => {
                 </div>
               </div>
 
-              <div className="lg:col-span-3 space-y-10">
+                  <div className="lg:col-span-3 space-y-10">
                 <div className="bg-white rounded-[2.5rem] border-2 border-brand-stone overflow-hidden shadow-sm">
                    <div className="p-6 bg-brand-brown/5 border-b border-brand-stone flex justify-between items-center">
                       <h4 className="text-[10px] font-black uppercase tracking-widest text-brand-brown">Variant Pricing Matrix</h4>
@@ -403,16 +424,38 @@ const MenuManager: React.FC = () => {
                   </table>
                 </div>
 
-                <div className="p-10 bg-brand-stone/10 rounded-[4rem] border-4 border-white space-y-10">
-                   <h4 className="text-2xl font-black text-brand-brown italic uppercase tracking-tighter">Stock Deductions</h4>
+                <div className="p-10 bg-brand-stone/5 rounded-[4rem] border-4 border-white space-y-10">
+                   <div className="flex justify-between items-center bg-white p-6 rounded-[2rem] border-2 border-brand-stone shadow-sm">
+                      <div>
+                        <h4 className="text-2xl font-black text-brand-brown italic uppercase tracking-tighter">Stock Deductions</h4>
+                        <p className="text-[9px] font-black text-brand-brown/30 uppercase tracking-widest mt-1">Specify ingredients destroyed per order</p>
+                      </div>
+                      <div className="flex gap-2">
+                         <button 
+                           onClick={() => setEditingItem({ ...editingItem, sizeRecipes: {} })}
+                           className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${(!editingItem.sizeRecipes || Object.keys(editingItem.sizeRecipes).length === 0) ? 'bg-emerald-600 text-white shadow-lg' : 'bg-brand-stone/20 text-brand-brown/50'}`}
+                         >
+                           Global
+                         </button>
+                         <button 
+                           onClick={() => setEditingItem({ ...editingItem, sizeRecipes: { small: [], medium: [], large: [], ...(editingItem.sizeRecipes || {}) } })}
+                           className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${(editingItem.sizeRecipes && Object.keys(editingItem.sizeRecipes).length > 0) ? 'bg-emerald-600 text-white shadow-lg' : 'bg-brand-stone/20 text-brand-brown/50'}`}
+                         >
+                           Per Size
+                         </button>
+                      </div>
+                   </div>
                    
-                   {editingItem.category === 'combo' ? (
+                   {(editingItem.sizeRecipes && Object.keys(editingItem.sizeRecipes).length > 0) ? (
                      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                        {SIZES.map(size => (
-                         <div key={size} className="bg-white rounded-[3rem] p-8 border-2 border-brand-stone shadow-xl flex flex-col">
+                         <div key={size} className="bg-white rounded-[3rem] p-8 border-2 border-brand-stone shadow-sm flex flex-col hover:border-brand-yellow transition-all">
                            <div className="flex justify-between items-center mb-6">
-                             <h5 className="text-[10px] font-black uppercase text-brand-brown/40 tracking-widest">{size.charAt(0)} Size Recipe</h5>
-                             <button onClick={() => addRecipeRow(size)} className="bg-brand-brown text-brand-yellow px-6 py-2 rounded-full text-[9px] font-black uppercase tracking-widest">+ Add</button>
+                             <div className="flex items-center gap-2">
+                               <span className="w-2 h-2 bg-brand-yellow rounded-full" />
+                               <h5 className="text-[10px] font-black uppercase text-brand-brown tracking-widest">{size} Size Recipe</h5>
+                             </div>
+                             <button onClick={() => addRecipeRow(size)} className="bg-brand-brown text-brand-yellow px-4 py-2 rounded-full text-[8px] font-black uppercase tracking-widest shadow-md">+ Add</button>
                            </div>
                            <div className="flex-1">
                              {renderRecipeSection(editingItem.sizeRecipes?.[size] || [], size)}
@@ -421,10 +464,13 @@ const MenuManager: React.FC = () => {
                        ))}
                      </div>
                    ) : (
-                     <div className="bg-white rounded-[3rem] p-10 border-2 border-brand-stone shadow-xl">
+                     <div className="bg-white rounded-[3rem] p-10 border-2 border-brand-stone shadow-sm hover:border-brand-yellow transition-all">
                         <div className="flex justify-between items-center mb-10">
-                           <h5 className="text-[10px] font-black uppercase text-brand-brown/40 tracking-widest">Global Recipe (All Sizes)</h5>
-                           <button onClick={() => addRecipeRow()} className="bg-brand-brown text-brand-yellow px-8 py-3 rounded-full text-[10px] font-black uppercase tracking-widest">Link Material</button>
+                           <div className="flex items-center gap-2">
+                              <span className="w-2 h-2 bg-brand-yellow rounded-full" />
+                              <h5 className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Global Recipe (All Sizes)</h5>
+                           </div>
+                           <button onClick={() => addRecipeRow()} className="bg-brand-brown text-brand-yellow px-8 py-3 rounded-full text-[10px] font-black uppercase tracking-widest shadow-md">Add Ingredient</button>
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                            {renderRecipeSection(editingItem.recipe || [])}

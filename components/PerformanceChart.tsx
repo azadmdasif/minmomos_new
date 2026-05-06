@@ -24,10 +24,10 @@ interface PerformanceChartProps {
 const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, startDate, endDate }) => {
   const [showSMA, setShowSMA] = useState(false);
   const [showSegments, setShowSegments] = useState(false);
+  const [showSitTake, setShowSitTake] = useState(false);
   const [showRevenue, setShowRevenue] = useState(true);
   const [showProfit, setShowProfit] = useState(true);
   const [showAvgTicket, setShowAvgTicket] = useState(true);
-  const [revenueType, setRevenueType] = useState<'ALL' | 'DINE_IN' | 'TAKEAWAY'>('ALL');
   const [viewType, setViewType] = useState<'daily' | 'weekly' | 'monthly'>('daily');
 
   const chartData = useMemo(() => {
@@ -43,6 +43,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         totalCogs: number; dineInCogs: number; takeawayCogs: number; 
         totalOrders: number; dineInOrders: number; takeawayOrders: number;
         repeatRev: number; newRegRev: number; unregRev: number;
+        repeatOrders: number; newRegOrders: number; unregOrders: number;
       }> = {};
       
       // Initialize all dates in range to 0
@@ -54,6 +55,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, 
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0,
             repeatRev: 0, newRegRev: 0, unregRev: 0,
+            repeatOrders: 0, newRegOrders: 0, unregOrders: 0,
           };
           curr.setDate(curr.getDate() + 1);
       }
@@ -71,6 +73,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           // Segment Breakdown logic
           if (!order.customerPhone) {
             dailyData[dateStr].unregRev += order.total;
+            dailyData[dateStr].unregOrders += 1;
           } else {
             const cust = customers.find(c => c.phone === order.customerPhone);
             if (cust) {
@@ -78,11 +81,14 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
               const orderDateStr = getISTDateString(order.date);
               if (joinDateStr === orderDateStr) {
                 dailyData[dateStr].newRegRev += order.total;
+                dailyData[dateStr].newRegOrders += 1;
               } else {
                 dailyData[dateStr].repeatRev += order.total;
+                dailyData[dateStr].repeatOrders += 1;
               }
             } else {
               dailyData[dateStr].newRegRev += order.total;
+              dailyData[dateStr].newRegOrders += 1;
             }
           }
 
@@ -100,19 +106,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
 
       const fullSortedData = Object.entries(dailyData)
         .map(([date, values]) => {
-          let revenue = values.totalRevenue;
-          let cogs = values.totalCogs;
-          let count = values.totalOrders;
-
-          if (revenueType === 'DINE_IN') {
-            revenue = values.dineInRevenue;
-            cogs = values.dineInCogs;
-            count = values.dineInOrders;
-          } else if (revenueType === 'TAKEAWAY') {
-            revenue = values.takeawayRevenue;
-            cogs = values.takeawayCogs;
-            count = values.takeawayOrders;
-          }
+          const revenue = values.totalRevenue;
+          const cogs = values.totalCogs;
+          const count = values.totalOrders;
 
           return {
             date,
@@ -122,9 +118,18 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             profit: revenue - cogs,
             avgTicket: count > 0 ? revenue / count : 0,
             orderCount: count,
+            dineInRev: values.dineInRevenue,
+            takeawayRev: values.takeawayRevenue,
+            dineInProfit: values.dineInRevenue - values.dineInCogs,
+            takeawayProfit: values.takeawayRevenue - values.takeawayCogs,
+            dineInAOV: values.dineInOrders > 0 ? values.dineInRevenue / values.dineInOrders : 0,
+            takeawayAOV: values.takeawayOrders > 0 ? values.takeawayRevenue / values.takeawayOrders : 0,
             repeatRev: values.repeatRev,
             newRegRev: values.newRegRev,
-            unregRev: values.unregRev
+            unregRev: values.unregRev,
+            repeatAOV: values.repeatOrders > 0 ? values.repeatRev / values.repeatOrders : 0,
+            newRegAOV: values.newRegOrders > 0 ? values.newRegRev / values.newRegOrders : 0,
+            unregAOV: values.unregOrders > 0 ? values.unregRev / values.unregOrders : 0
           };
         })
         .sort((a, b) => a.date.localeCompare(b.date));
@@ -162,6 +167,20 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           revenueSMA: calculateWMA(arr, idx, 'revenue'),
           profitSMA: calculateWMA(arr, idx, 'profit'),
           ticketSMA: calculateWMA(arr, idx, 'avgTicket'),
+          // Segments WMA
+          repeatRevSMA: calculateWMA(arr, idx, 'repeatRev'),
+          newRegRevSMA: calculateWMA(arr, idx, 'newRegRev'),
+          unregRevSMA: calculateWMA(arr, idx, 'unregRev'),
+          repeatAOVSMA: calculateWMA(arr, idx, 'repeatAOV'),
+          newRegAOVSMA: calculateWMA(arr, idx, 'newRegAOV'),
+          unregAOVSMA: calculateWMA(arr, idx, 'unregAOV'),
+          // Sit-Take WMA
+          dineInRevSMA: calculateWMA(arr, idx, 'dineInRev'),
+          takeawayRevSMA: calculateWMA(arr, idx, 'takeawayRev'),
+          dineInProfitSMA: calculateWMA(arr, idx, 'dineInProfit'),
+          takeawayProfitSMA: calculateWMA(arr, idx, 'takeawayProfit'),
+          dineInAOVSMA: calculateWMA(arr, idx, 'dineInAOV'),
+          takeawayAOVSMA: calculateWMA(arr, idx, 'takeawayAOV'),
         };
       });
 
@@ -187,6 +206,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         totalCogs: number; dineInCogs: number; takeawayCogs: number; 
         totalOrders: number; dineInOrders: number; takeawayOrders: number;
         repeatRev: number; newRegRev: number; unregRev: number;
+        repeatOrders: number; newRegOrders: number; unregOrders: number;
         weekNum: number;
         year: number;
         monday: string;
@@ -224,6 +244,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0,
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0,
             repeatRev: 0, newRegRev: 0, unregRev: 0,
+            repeatOrders: 0, newRegOrders: 0, unregOrders: 0,
             weekNum: w,
             year: y,
             monday: mon.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
@@ -239,6 +260,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         // Segment Breakdown
         if (!order.customerPhone) {
           weeklyData[key].unregRev += order.total;
+          weeklyData[key].unregOrders += 1;
         } else {
           const cust = customers.find(c => c.phone === order.customerPhone);
           if (cust) {
@@ -246,11 +268,14 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             const orderDateStr = getISTDateString(order.date);
             if (joinDateStr === orderDateStr) {
               weeklyData[key].newRegRev += order.total;
+              weeklyData[key].newRegOrders += 1;
             } else {
               weeklyData[key].repeatRev += order.total;
+              weeklyData[key].repeatOrders += 1;
             }
           } else {
             weeklyData[key].newRegRev += order.total;
+            weeklyData[key].newRegOrders += 1;
           }
         }
 
@@ -267,19 +292,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
 
       return Object.entries(weeklyData)
         .map(([key, values]) => {
-          let revenue = values.totalRevenue;
-          let cogs = values.totalCogs;
-          let count = values.totalOrders;
-
-          if (revenueType === 'DINE_IN') {
-            revenue = values.dineInRevenue;
-            cogs = values.dineInCogs;
-            count = values.dineInOrders;
-          } else if (revenueType === 'TAKEAWAY') {
-            revenue = values.takeawayRevenue;
-            cogs = values.takeawayCogs;
-            count = values.takeawayOrders;
-          }
+          const revenue = values.totalRevenue;
+          const cogs = values.totalCogs;
+          const count = values.totalOrders;
 
           return {
             date: key,
@@ -289,9 +304,18 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             profit: revenue - cogs,
             avgTicket: count > 0 ? revenue / count : 0,
             orderCount: count,
+            dineInRev: values.dineInRevenue,
+            takeawayRev: values.takeawayRevenue,
+            dineInProfit: values.dineInRevenue - values.dineInCogs,
+            takeawayProfit: values.takeawayRevenue - values.takeawayCogs,
+            dineInAOV: values.dineInOrders > 0 ? values.dineInRevenue / values.dineInOrders : 0,
+            takeawayAOV: values.takeawayOrders > 0 ? values.takeawayRevenue / values.takeawayOrders : 0,
             repeatRev: values.repeatRev,
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
+            repeatAOV: values.repeatOrders > 0 ? values.repeatRev / values.repeatOrders : 0,
+            newRegAOV: values.newRegOrders > 0 ? values.newRegRev / values.newRegOrders : 0,
+            unregAOV: values.unregOrders > 0 ? values.unregRev / values.unregOrders : 0,
             revenueSMA: 0, // SMA not supported in weekly view yet
             profitSMA: 0,
             ticketSMA: 0
@@ -305,6 +329,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         totalCogs: number; dineInCogs: number; takeawayCogs: number; 
         totalOrders: number; dineInOrders: number; takeawayOrders: number;
         repeatRev: number; newRegRev: number; unregRev: number;
+        repeatOrders: number; newRegOrders: number; unregOrders: number;
         month: string;
         year: number;
       }> = {};
@@ -327,6 +352,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0,
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0,
             repeatRev: 0, newRegRev: 0, unregRev: 0,
+            repeatOrders: 0, newRegOrders: 0, unregOrders: 0,
             month: new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', month: 'short' }).format(date),
             year: year
           };
@@ -340,6 +366,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         // Segment Breakdown
         if (!order.customerPhone) {
           monthlyData[key].unregRev += order.total;
+          monthlyData[key].unregOrders += 1;
         } else {
           const cust = customers.find(c => c.phone === order.customerPhone);
           if (cust) {
@@ -347,11 +374,14 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             const orderDateStr = getISTDateString(order.date);
             if (joinDateStr === orderDateStr) {
               monthlyData[key].newRegRev += order.total;
+              monthlyData[key].newRegOrders += 1;
             } else {
               monthlyData[key].repeatRev += order.total;
+              monthlyData[key].repeatOrders += 1;
             }
           } else {
             monthlyData[key].newRegRev += order.total;
+            monthlyData[key].newRegOrders += 1;
           }
         }
 
@@ -368,19 +398,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
 
       return Object.entries(monthlyData)
         .map(([key, values]) => {
-          let revenue = values.totalRevenue;
-          let cogs = values.totalCogs;
-          let count = values.totalOrders;
-
-          if (revenueType === 'DINE_IN') {
-            revenue = values.dineInRevenue;
-            cogs = values.dineInCogs;
-            count = values.dineInOrders;
-          } else if (revenueType === 'TAKEAWAY') {
-            revenue = values.takeawayRevenue;
-            cogs = values.takeawayCogs;
-            count = values.takeawayOrders;
-          }
+          const revenue = values.totalRevenue;
+          const cogs = values.totalCogs;
+          const count = values.totalOrders;
 
           return {
             date: key,
@@ -390,9 +410,18 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             profit: revenue - cogs,
             avgTicket: count > 0 ? revenue / count : 0,
             orderCount: count,
+            dineInRev: values.dineInRevenue,
+            takeawayRev: values.takeawayRevenue,
+            dineInProfit: values.dineInRevenue - values.dineInCogs,
+            takeawayProfit: values.takeawayRevenue - values.takeawayCogs,
+            dineInAOV: values.dineInOrders > 0 ? values.dineInRevenue / values.dineInOrders : 0,
+            takeawayAOV: values.takeawayOrders > 0 ? values.takeawayRevenue / values.takeawayOrders : 0,
             repeatRev: values.repeatRev,
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
+            repeatAOV: values.repeatOrders > 0 ? values.repeatRev / values.repeatOrders : 0,
+            newRegAOV: values.newRegOrders > 0 ? values.newRegRev / values.newRegOrders : 0,
+            unregAOV: values.unregOrders > 0 ? values.unregRev / values.unregOrders : 0,
             revenueSMA: 0,
             profitSMA: 0,
             ticketSMA: 0
@@ -400,7 +429,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         })
         .sort((a, b) => a.date.localeCompare(b.date));
     }
-  }, [orders, startDate, endDate, showSMA, revenueType, viewType]);
+  }, [orders, startDate, endDate, showSMA, viewType]);
 
   const stats = useMemo(() => {
     const totalRevenue = chartData.reduce((sum, d) => sum + d.revenue, 0);
@@ -425,33 +454,18 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           <p className="text-sm text-brand-brown/60">Revenue, Profit, and Average Order Value</p>
           <div className="flex items-center gap-4 mt-2">
             <div className="flex items-center gap-2 bg-brand-brown/5 p-1 rounded-full w-fit">
-              <button 
-                onClick={() => setRevenueType('ALL')}
-                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${revenueType === 'ALL' ? 'bg-brand-brown text-brand-yellow' : 'text-brand-brown/40'}`}
-              >All</button>
-              <button 
-                onClick={() => setRevenueType('DINE_IN')}
-                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${revenueType === 'DINE_IN' ? 'bg-brand-red text-white' : 'text-brand-brown/40'}`}
-              >Dine-In</button>
-              <button 
-                onClick={() => setRevenueType('TAKEAWAY')}
-                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${revenueType === 'TAKEAWAY' ? 'bg-indigo-600 text-white' : 'text-brand-brown/40'}`}
-              >Takeaway</button>
-            </div>
-
-            <div className="flex items-center gap-2 bg-brand-brown/5 p-1 rounded-full w-fit">
-              <button 
-                onClick={() => setViewType('daily')}
-                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${viewType === 'daily' ? 'bg-brand-brown text-brand-yellow shadow-sm' : 'text-brand-brown/40'}`}
-              >Daily</button>
-              <button 
-                onClick={() => setViewType('weekly')}
-                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${viewType === 'weekly' ? 'bg-brand-brown text-brand-yellow shadow-sm' : 'text-brand-brown/40'}`}
-              >Weekly</button>
-              <button 
-                onClick={() => setViewType('monthly')}
-                className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${viewType === 'monthly' ? 'bg-brand-brown text-brand-yellow shadow-sm' : 'text-brand-brown/40'}`}
-              >Monthly</button>
+               <button 
+                 onClick={() => setViewType('daily')}
+                 className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${viewType === 'daily' ? 'bg-brand-brown text-brand-yellow shadow-sm' : 'text-brand-brown/40'}`}
+               >Daily</button>
+               <button 
+                 onClick={() => setViewType('weekly')}
+                 className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${viewType === 'weekly' ? 'bg-brand-brown text-brand-yellow shadow-sm' : 'text-brand-brown/40'}`}
+               >Weekly</button>
+               <button 
+                 onClick={() => setViewType('monthly')}
+                 className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-all ${viewType === 'monthly' ? 'bg-brand-brown text-brand-yellow shadow-sm' : 'text-brand-brown/40'}`}
+               >Monthly</button>
             </div>
           </div>
         </div>
@@ -497,6 +511,16 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             <span className="text-[10px] font-black uppercase tracking-wider">Segments</span>
           </button>
 
+          <button 
+            onClick={() => setShowSitTake(!showSitTake)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
+              showSitTake ? 'bg-brand-brown border-brand-brown text-brand-yellow shadow-brand-yellow/20' : 'bg-white border-brand-stone/50 text-brand-brown/40'
+            }`}
+          >
+            <ShoppingBag className="w-3 h-3" />
+            <span className="text-[10px] font-black uppercase tracking-wider">Sit-Take</span>
+          </button>
+
           {viewType === 'daily' && (
             <>
               <div className="w-[1px] h-4 bg-brand-brown/10 mx-1 hidden md:block" />
@@ -518,19 +542,86 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         </div>
       </div>
 
-      {showSegments && (
-        <div className="flex flex-wrap gap-6 px-6 py-3 bg-brand-brown/5 rounded-2xl border border-brand-brown/10 mb-6 animate-in fade-in slide-in-from-top-2 duration-500">
-          <div className="flex items-center gap-2.5">
-            <div className="w-3 h-3 rounded-full bg-[#10B981] shadow-sm" />
-            <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Repeat Customers</span>
-          </div>
-          <div className="flex items-center gap-2.5">
-            <div className="w-3 h-3 rounded-full bg-[#F59E0B] shadow-sm" />
-            <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">New Registered</span>
-          </div>
-          <div className="flex items-center gap-2.5">
-            <div className="w-3 h-3 rounded-full bg-[#6B7280] shadow-sm" />
-            <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Unregistered</span>
+      {(showSegments || showSitTake) && (
+        <div className="flex flex-col gap-6 p-6 bg-brand-brown/5 rounded-2xl border border-brand-brown/10 mb-6 animate-in fade-in slide-in-from-top-2 duration-500">
+          <div className="flex flex-wrap gap-x-8 gap-y-6">
+            {showSegments && (
+              <div className="flex flex-wrap gap-x-8 gap-y-4 pb-4 border-b border-brand-brown/5 last:border-0 last:pb-0">
+                {showRevenue && (
+                  <>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-3 h-3 rounded-full bg-[#10B981] shadow-sm" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Repeat Revenue</span>
+                    </div>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-3 h-3 rounded-full bg-[#F59E0B] shadow-sm" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">New Reg. Revenue</span>
+                    </div>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-3 h-3 rounded-full bg-[#6B7280] shadow-sm" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Unreg. Revenue</span>
+                    </div>
+                  </>
+                )}
+                {showAvgTicket && (
+                  <>
+                    <div className="flex items-center gap-2.5 opacity-80">
+                      <div className="w-3 h-3 rounded-full border-2 border-dashed border-[#10B981]" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Repeat AOV</span>
+                    </div>
+                    <div className="flex items-center gap-2.5 opacity-80">
+                      <div className="w-3 h-3 rounded-full border-2 border-dashed border-[#F59E0B]" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">New Reg. AOV</span>
+                    </div>
+                    <div className="flex items-center gap-2.5 opacity-80">
+                      <div className="w-3 h-3 rounded-full border-2 border-dashed border-[#6B7280]" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Unreg. AOV</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {showSitTake && (
+              <div className="flex flex-wrap gap-x-8 gap-y-4">
+                {showRevenue && (
+                  <>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-3 h-3 rounded-full bg-[#EF4444] shadow-sm" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Dine-In Revenue</span>
+                    </div>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-3 h-3 rounded-full bg-[#4F46E5] shadow-sm" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Takeaway Revenue</span>
+                    </div>
+                  </>
+                )}
+                {showAvgTicket && (
+                  <>
+                    <div className="flex items-center gap-2.5 opacity-80">
+                      <div className="w-3 h-3 rounded-full border-2 border-dashed border-[#EF4444]" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Dine-In AOV</span>
+                    </div>
+                    <div className="flex items-center gap-2.5 opacity-80">
+                      <div className="w-3 h-3 rounded-full border-2 border-dashed border-[#4F46E5]" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Takeaway AOV</span>
+                    </div>
+                  </>
+                )}
+                {showProfit && (
+                   <>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-2.5 h-2.5 bg-[#EF4444] opacity-20 rounded-sm" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Dine-In Profit</span>
+                    </div>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-2.5 h-2.5 bg-[#4F46E5] opacity-20 rounded-sm" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Takeaway Profit</span>
+                    </div>
+                   </>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -567,37 +658,94 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                   const totalRevenue = data.revenue;
                   
                   return (
-                    <div className="bg-white p-4 rounded-xl shadow-xl border border-brand-brown/10 min-w-[180px]">
+                    <div className="bg-white p-4 rounded-xl shadow-xl border border-brand-brown/10 min-w-[220px]">
                       <p className="text-brand-brown font-black italic mb-3 border-b border-brand-brown/5 pb-2 text-sm">{data.fullDate}</p>
-                      <div className="space-y-2">
-                        {payload.map((entry: any, index: number) => {
-                          if (!entry || entry.value === undefined) return null;
-                          const isSegment = ['repeatRev', 'newRegRev', 'unregRev'].includes(entry.dataKey);
-                          const percentage = isSegment && totalRevenue > 0 
-                            ? ((entry.value / totalRevenue) * 100).toFixed(1)
-                            : null;
-
-                          return (
-                            <div key={`tooltip-${index}`} className="flex items-center justify-between gap-4">
+                      <div className="space-y-4">
+                        {/* Main Metrics */}
+                        <div className="space-y-1.5">
+                          {payload.filter((p: any) => !['repeatRev', 'newRegRev', 'unregRev', 'repeatAOV', 'newRegAOV', 'unregAOV'].includes(p.dataKey)).map((entry: any, index: number) => (
+                            <div key={`main-${index}`} className="flex items-center justify-between gap-4">
                               <div className="flex items-center gap-2">
                                 <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
                                 <span className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider whitespace-nowrap">
                                   {entry.name}
                                 </span>
                               </div>
-                              <div className="text-right">
-                                <p className="text-xs font-black text-brand-brown tracking-tighter">
-                                  ₹{typeof entry.value === 'number' ? entry.value.toLocaleString(undefined, { minimumFractionDigits: 2 }) : '0.00'}
-                                </p>
-                                {percentage && (
-                                  <p className="text-[8px] font-black text-brand-brown/40 uppercase tracking-tighter">
-                                    {percentage}% of revenue
-                                  </p>
-                                )}
-                              </div>
+                              <p className="text-xs font-black text-brand-brown tracking-tighter">
+                                ₹{typeof entry.value === 'number' ? entry.value.toLocaleString(undefined, { minimumFractionDigits: 1 }) : '0.0'}
+                              </p>
                             </div>
-                          );
-                        })}
+                          ))}
+                        </div>
+
+                        {/* Segment Breakdown */}
+                        {showSegments && (
+                          <div className="pt-2 border-t border-brand-brown/5 space-y-3">
+                            <p className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest">Customer Segments</p>
+                            {[
+                              { label: 'Repeat', rev: data.repeatRev, aov: data.repeatAOV, color: '#10B981' },
+                              { label: 'New Registered', rev: data.newRegRev, aov: data.newRegAOV, color: '#F59E0B' },
+                              { label: 'Unregistered', rev: data.unregRev, aov: data.unregAOV, color: '#6B7280' }
+                            ].map((seg, idx) => (
+                              <div key={idx} className="flex flex-col gap-1 bg-brand-brown/5 p-2 rounded-lg">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: seg.color }} />
+                                    <span className="text-[9px] font-black uppercase text-brand-brown tracking-wider">{seg.label}</span>
+                                  </div>
+                                  {showRevenue && (
+                                    <span className="text-[9px] font-black text-brand-brown/40">{totalRevenue > 0 ? ((seg.rev / totalRevenue) * 100).toFixed(0) : 0}%</span>
+                                  )}
+                                </div>
+                                <div className="flex justify-between items-baseline">
+                                  {showRevenue && (
+                                    <span className="text-[11px] font-black text-brand-brown">₹{seg.rev.toLocaleString()}</span>
+                                  )}
+                                  {true && ( /* Always show AOV in segments if space permits, or follow showAvgTicket */
+                                    <span className="text-[9px] font-bold text-brand-brown/40 uppercase">AOV: ₹{(seg.aov || 0).toFixed(1)}</span>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Sit-Take Breakdown */}
+                        {showSitTake && (
+                          <div className="pt-2 border-t border-brand-brown/5 space-y-3">
+                            <p className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest">Sit-Take Breakdown</p>
+                            {[
+                              { label: 'Dine-In', rev: data.dineInRev, aov: data.dineInAOV, profit: data.dineInProfit, color: '#EF4444' },
+                              { label: 'Takeaway', rev: data.takeawayRev, aov: data.takeawayAOV, profit: data.takeawayProfit, color: '#4F46E5' }
+                            ].map((seg, idx) => (
+                              <div key={idx} className="flex flex-col gap-1 bg-brand-brown/5 p-2 rounded-lg">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: seg.color }} />
+                                    <span className="text-[9px] font-black uppercase text-brand-brown tracking-wider">{seg.label}</span>
+                                  </div>
+                                  {showRevenue && (
+                                    <span className="text-[9px] font-black text-brand-brown/40">{totalRevenue > 0 ? ((seg.rev / totalRevenue) * 100).toFixed(0) : 0}%</span>
+                                  )}
+                                </div>
+                                <div className="flex flex-col gap-0.5">
+                                  {showRevenue && <div className="flex justify-between items-baseline px-1">
+                                    <span className="text-[8px] font-bold text-brand-brown/40 uppercase">Revenue</span>
+                                    <span className="text-[10px] font-black text-brand-brown">₹{seg.rev.toLocaleString()}</span>
+                                  </div>}
+                                  {showProfit && <div className="flex justify-between items-baseline px-1">
+                                    <span className="text-[8px] font-bold text-brand-brown/40 uppercase">Profit</span>
+                                    <span className="text-[10px] font-black text-emerald-600">₹{seg.profit.toLocaleString()}</span>
+                                  </div>}
+                                  {showAvgTicket && <div className="flex justify-between items-baseline px-1">
+                                    <span className="text-[8px] font-bold text-brand-brown/40 uppercase">AOV</span>
+                                    <span className="text-[10px] font-black text-indigo-600">₹{seg.aov.toFixed(1)}</span>
+                                  </div>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -621,33 +769,74 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             
             {showSegments && (
               <>
-                <Line 
-                   yAxisId="left"
-                   type="monotone" 
-                   dataKey="repeatRev" 
-                   name="Repeat Customers" 
-                   stroke="#10B981" 
-                   strokeWidth={3}
-                   dot={{ r: 3, fill: '#10B981' }}
-                />
-                <Line 
-                   yAxisId="left"
-                   type="monotone" 
-                   dataKey="newRegRev" 
-                   name="New Registered" 
-                   stroke="#F59E0B" 
-                   strokeWidth={3}
-                   dot={{ r: 3, fill: '#F59E0B' }}
-                />
-                <Line 
-                   yAxisId="left"
-                   type="monotone" 
-                   dataKey="unregRev" 
-                   name="Unregistered" 
-                   stroke="#6B7280" 
-                   strokeWidth={3}
-                   dot={{ r: 3, fill: '#6B7280' }}
-                />
+                {/* Revenue Lines - Only if Revenue metric is on */}
+                {showRevenue && (
+                  <>
+                    <Line 
+                       yAxisId="left"
+                       type="monotone" 
+                       dataKey="repeatRev" 
+                       name="Repeat Customers Revenue" 
+                       stroke="#10B981" 
+                       strokeWidth={3}
+                       dot={{ r: 3, fill: '#10B981' }}
+                    />
+                    <Line 
+                       yAxisId="left"
+                       type="monotone" 
+                       dataKey="newRegRev" 
+                       name="New Registered Revenue" 
+                       stroke="#F59E0B" 
+                       strokeWidth={3}
+                       dot={{ r: 3, fill: '#F59E0B' }}
+                    />
+                    <Line 
+                       yAxisId="left"
+                       type="monotone" 
+                       dataKey="unregRev" 
+                       name="Unregistered Revenue" 
+                       stroke="#6B7280" 
+                       strokeWidth={3}
+                       dot={{ r: 3, fill: '#6B7280' }}
+                    />
+                  </>
+                )}
+
+                {/* AOV Lines (Dashed) - Only if Ticket metric is on */}
+                {showAvgTicket && (
+                  <>
+                    <Line 
+                       yAxisId="right"
+                       type="monotone" 
+                       dataKey="repeatAOV" 
+                       name="Repeat AOV" 
+                       stroke="#10B981" 
+                       strokeWidth={2}
+                       strokeDasharray="5 5"
+                       dot={false}
+                    />
+                    <Line 
+                       yAxisId="right"
+                       type="monotone" 
+                       dataKey="newRegAOV" 
+                       name="New Registered AOV" 
+                       stroke="#F59E0B" 
+                       strokeWidth={2}
+                       strokeDasharray="5 5"
+                       dot={false}
+                    />
+                    <Line 
+                       yAxisId="right"
+                       type="monotone" 
+                       dataKey="unregAOV" 
+                       name="Unregistered AOV" 
+                       stroke="#6B7280" 
+                       strokeWidth={2}
+                       strokeDasharray="5 5"
+                       dot={false}
+                    />
+                  </>
+                )}
               </>
             )}
             {showProfit && (
@@ -659,7 +848,88 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                  stroke="#10B981" 
                  fill="#D1FAE5" 
                  strokeWidth={3}
+                 fillOpacity={showSitTake ? 0.3 : 1}
               />
+            )}
+
+            {showSitTake && (
+              <>
+                {/* Sit-Take Revenue Lines */}
+                {showRevenue && (
+                  <>
+                    <Line 
+                       yAxisId="left"
+                       type="monotone" 
+                       dataKey="dineInRev" 
+                       name="Dine-In Revenue" 
+                       stroke="#EF4444" 
+                       strokeWidth={2}
+                       dot={{ r: 2, fill: '#EF4444' }}
+                    />
+                    <Line 
+                       yAxisId="left"
+                       type="monotone" 
+                       dataKey="takeawayRev" 
+                       name="Takeaway Revenue" 
+                       stroke="#4F46E5" 
+                       strokeWidth={2}
+                       dot={{ r: 2, fill: '#4F46E5' }}
+                    />
+                  </>
+                )}
+
+                {/* Sit-Take Profit Lines */}
+                {showProfit && (
+                  <>
+                    <Line 
+                       yAxisId="left"
+                       type="monotone" 
+                       dataKey="dineInProfit" 
+                       name="Dine-In Profit" 
+                       stroke="#EF4444" 
+                       strokeWidth={2}
+                       strokeDasharray="2 2"
+                       dot={false}
+                    />
+                    <Line 
+                       yAxisId="left"
+                       type="monotone" 
+                       dataKey="takeawayProfit" 
+                       name="Takeaway Profit" 
+                       stroke="#4F46E5" 
+                       strokeWidth={2}
+                       strokeDasharray="2 2"
+                       dot={false}
+                    />
+                  </>
+                )}
+
+                {/* Sit-Take AOV Lines */}
+                {showAvgTicket && (
+                  <>
+                    <Line 
+                       yAxisId="right"
+                       type="monotone" 
+                       dataKey="dineInAOV" 
+                       name="Dine-In AOV" 
+                       stroke="#EF4444" 
+                       strokeWidth={2}
+                       strokeDasharray="4 4"
+                       dot={false}
+                    />
+                    <Line 
+                       yAxisId="right"
+                       type="monotone" 
+                       dataKey="takeawayAOV" 
+                       name="Takeaway AOV" 
+                       stroke="#4F46E5" 
+                       strokeWidth={2}
+                       strokeDasharray="4 4"
+                       dot={false}
+                    />
+                  </>
+                )}
+              </>
             )}
             {showAvgTicket && (
               <Line 
@@ -710,6 +980,50 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                      strokeDasharray="5 5"
                      dot={false}
                   />
+                )}
+
+                {/* Segment WMAs */}
+                {showSegments && (
+                  <>
+                    {showRevenue && (
+                      <>
+                        <Line yAxisId="left" type="monotone" dataKey="repeatRevSMA" name="Repeat Rev (WMA)" stroke="#10B981" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                        <Line yAxisId="left" type="monotone" dataKey="newRegRevSMA" name="New Reg Rev (WMA)" stroke="#F59E0B" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                        <Line yAxisId="left" type="monotone" dataKey="unregRevSMA" name="Unreg Rev (WMA)" stroke="#6B7280" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                      </>
+                    )}
+                    {showAvgTicket && (
+                      <>
+                        <Line yAxisId="right" type="monotone" dataKey="repeatAOVSMA" name="Repeat AOV (WMA)" stroke="#10B981" strokeWidth={1} strokeDasharray="2 4" dot={false} />
+                        <Line yAxisId="right" type="monotone" dataKey="newRegAOVSMA" name="New Reg AOV (WMA)" stroke="#F59E0B" strokeWidth={1} strokeDasharray="2 4" dot={false} />
+                        <Line yAxisId="right" type="monotone" dataKey="unregAOVSMA" name="Unreg AOV (WMA)" stroke="#6B7280" strokeWidth={1} strokeDasharray="2 4" dot={false} />
+                      </>
+                    )}
+                  </>
+                )}
+
+                {/* Sit-Take WMAs */}
+                {showSitTake && (
+                  <>
+                    {showRevenue && (
+                      <>
+                        <Line yAxisId="left" type="monotone" dataKey="dineInRevSMA" name="Dine-In Rev (WMA)" stroke="#EF4444" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                        <Line yAxisId="left" type="monotone" dataKey="takeawayRevSMA" name="Takeaway Rev (WMA)" stroke="#4F46E5" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                      </>
+                    )}
+                    {showProfit && (
+                      <>
+                        <Line yAxisId="left" type="monotone" dataKey="dineInProfitSMA" name="Dine-In Profit (WMA)" stroke="#EF4444" strokeWidth={1} strokeDasharray="1 3" dot={false} />
+                        <Line yAxisId="left" type="monotone" dataKey="takeawayProfitSMA" name="Takeaway Profit (WMA)" stroke="#4F46E5" strokeWidth={1} strokeDasharray="1 3" dot={false} />
+                      </>
+                    )}
+                    {showAvgTicket && (
+                      <>
+                        <Line yAxisId="right" type="monotone" dataKey="dineInAOVSMA" name="Dine-In AOV (WMA)" stroke="#EF4444" strokeWidth={1} strokeDasharray="2 4" dot={false} />
+                        <Line yAxisId="right" type="monotone" dataKey="takeawayAOVSMA" name="Takeaway AOV (WMA)" stroke="#4F46E5" strokeWidth={1} strokeDasharray="2 4" dot={false} />
+                      </>
+                    )}
+                  </>
                 )}
               </>
             )}

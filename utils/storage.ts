@@ -111,12 +111,19 @@ export async function upsertMenuItem(item: MenuItem): Promise<void> {
 }
 
 export async function deleteMenuItem(id: string): Promise<void> {
+  console.log(`Storage: Attempting to delete menu item with ID: ${id}`);
   const { error } = await supabase
     .from('menu_items')
-    .delete({ count: 'exact' })
+    .delete()
     .eq('id', id);
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    console.error("Storage: Delete Menu Item Error:", error);
+    if (error.code === '23503') {
+      throw new Error("Cannot delete this item because it has been used in previous orders. To keep historical records accurate, deletion is restricted. You can try renamed it to '(Retired)' instead.");
+    }
+    throw new Error(error.message);
+  }
 }
 
 // --- PROCUREMENT ---
@@ -132,8 +139,40 @@ export async function fetchProcurements(startDate: string, endDate: string): Pro
     .select('*')
     .gte('date', `${startDate}T00:00:00+05:30`)
     .lte('date', `${endDate}T23:59:59+05:30`)
+    .is('is_voided', false)
     .order('date', { ascending: false });
+  
+  if (error) console.error("Procurement fetch error:", error);
   return { data: data || [], error };
+}
+
+export async function getFinancialSpending(startDate: string, endDate: string): Promise<any[]> {
+  const { data, error } = await supabase
+    .from('procurements')
+    .select('*')
+    .is('is_voided', false)
+    .gte('date', `${startDate}T00:00:00+05:30`)
+    .lte('date', `${endDate}T23:59:59+05:30`);
+  
+  if (error) {
+    console.error("Financial fetch error:", error);
+    return [];
+  }
+  return data || [];
+}
+
+export async function voidProcurement(id: string, reason: string): Promise<void> {
+  const { data: p, error: fetchError } = await supabase.from('procurements').select('*').eq('id', id).single();
+  if (fetchError || !p) throw new Error("Procurement not found.");
+  if (p.is_voided) throw new Error("Already voided.");
+
+  const { data: central } = await supabase.from('central_inventory').select('current_stock').eq('id', p.item_id).single();
+  if (central) {
+     const newStock = (central.current_stock || 0) - p.quantity;
+     await supabase.from('central_inventory').update({ current_stock: newStock }).eq('id', p.item_id);
+  }
+
+  await supabase.from('procurements').update({ is_voided: true, void_reason: reason }).eq('id', id);
 }
 
 // --- ALLOCATIONS ---
@@ -144,8 +183,29 @@ export async function fetchAllocations(startDate: string, endDate: string): Prom
     .select('*')
     .gte('date', `${startDate}T00:00:00+05:30`)
     .lte('date', `${endDate}T23:59:59+05:30`)
+    .is('is_voided', false)
     .order('date', { ascending: false });
   return { data: (data as StockAllocation[]) || [], error };
+}
+
+export async function voidAllocation(id: string, reason: string): Promise<void> {
+  const { data: a, error: fetchError } = await supabase.from('stock_allocations').select('*').eq('id', id).single();
+  if (fetchError || !a) throw new Error("Allocation not found.");
+  if (a.is_voided) throw new Error("Already voided.");
+
+  const { data: central } = await supabase.from('central_inventory').select('current_stock').eq('id', a.material_id).single();
+  if (central) {
+    const newHubStock = (central.current_stock || 0) + a.quantity;
+    await supabase.from('central_inventory').update({ current_stock: newHubStock }).eq('id', a.material_id);
+  }
+
+  const { data: station } = await supabase.from('inventory').select('current_stock').eq('id', a.material_id).eq('branch_name', a.station_name).maybeSingle();
+  if (station) {
+    const newStationStock = (station.current_stock || 0) - a.quantity;
+    await supabase.from('inventory').update({ current_stock: newStationStock }).eq('id', a.material_id).eq('branch_name', a.station_name);
+  }
+
+  await supabase.from('stock_allocations').update({ is_voided: true, void_reason: reason }).eq('id', id);
 }
 
 // --- ORDERING & INVENTORY DEDUCTION ---
@@ -292,32 +352,43 @@ export async function saveOrder(
     }
 
     const { data: menuItems } = await fetchMenuItems();
-    
-    for (const item of orderItems) {
-      const menuDetail = menuItems?.find(m => m.id === item.menuItemId);
-      if (!menuDetail) continue;
+    const SIZE_PIECES: Record<string, number> = { small: 4, medium: 6, large: 8 };
 
+    for (const item of orderItems) {
+      if (!item.menuItemId || item.menuItemId === 'discount') continue;
+
+      const menuDetail = menuItems?.find(m => m.id === item.menuItemId);
+      if (!menuDetail) {
+        console.warn(`Deduction Skip: Menu item details not found for ID: ${item.menuItemId} (Name: ${item.name})`);
+        continue;
+      }
+
+      // Determine size from name suffix
       let size: Size = 'medium';
       if (item.name.includes('(Small)')) size = 'small';
       else if (item.name.includes('(Large)')) size = 'large';
 
-      let activeRecipe = menuDetail.sizeRecipes?.[size] || menuDetail.recipe;
+      // 1. Get the right recipe: Size-specific takes priority, otherwise use global
+      const hasSizeRecipe = !!(menuDetail.sizeRecipes?.[size] && menuDetail.sizeRecipes[size]!.length > 0);
+      let activeRecipe = hasSizeRecipe ? menuDetail.sizeRecipes![size] : menuDetail.recipe;
       
-      if (activeRecipe && Array.isArray(activeRecipe)) {
+      if (activeRecipe && Array.isArray(activeRecipe) && activeRecipe.length > 0) {
+        // 2. Determine Multiplier
+        // If we have an explicit size-recipe, we use quantities as-is (multiplier=1).
+        // If we fall back to global recipe for 'momo' category, we apply the plate-size multiplier.
         let sizeMultiplier = 1;
-        const usingGlobalRecipe = !menuDetail.sizeRecipes?.[size];
-        if (menuDetail.category === 'momo' && usingGlobalRecipe) {
-          if (size === 'small') sizeMultiplier = 4;
-          else if (size === 'large') sizeMultiplier = 8;
-          else sizeMultiplier = 6;
+        if (!hasSizeRecipe && menuDetail.category === 'momo') {
+          sizeMultiplier = SIZE_PIECES[size] || 6;
         }
 
         for (const requirement of activeRecipe) {
           const totalConsumption = requirement.quantity * sizeMultiplier * item.quantity;
           
+          if (totalConsumption <= 0) continue;
+
           const { data: existingInv } = await supabase
             .from('inventory')
-            .select('current_stock, name, unit, category')
+            .select('current_stock')
             .eq('id', requirement.materialId)
             .eq('branch_name', branchName)
             .maybeSingle();
@@ -329,6 +400,7 @@ export async function saveOrder(
               .eq('id', requirement.materialId)
               .eq('branch_name', branchName);
           } else {
+            // Material doesn't exist at this station yet, create it with negative initial stock
             const { data: centralInfo } = await supabase
               .from('central_inventory')
               .select('*')
@@ -346,8 +418,15 @@ export async function saveOrder(
                 is_finished: false,
                 request_pending: false
               });
+            } else {
+              console.warn(`Stock Deduction Error: Material ${requirement.materialId} not found in Central Inventory.`);
             }
           }
+        }
+      } else {
+        // Recipe is empty or not defined
+        if (menuDetail.category !== 'drink') {
+          console.info(`No recipe defined for item: ${menuDetail.name}. Stock not deducted.`);
         }
       }
     }
@@ -531,6 +610,79 @@ export async function getOrderByBillNumber(billNumber: number): Promise<Complete
   }
 
   return mapDatabaseOrderToType(data);
+}
+
+export async function getOrdersByItemName(itemName: string, startDate?: string, endDate?: string): Promise<CompletedOrder[]> {
+  const trimmedName = itemName.trim();
+  const words = trimmedName.split(/\s+/).filter(w => w.length > 0);
+  
+  if (words.length === 0) return [];
+
+  // We use filter on the joined order_items table
+  // Note: !inner makes it an inner join, filtering orders that have at least one matching item
+  let query = supabase
+    .from('orders')
+    .select(`*, items:order_items!inner(*)`)
+    .is('deletion_info', null);
+
+  // Apply each word as an AND ilike filter for better flexibility
+  words.forEach(word => {
+    query = query.ilike('items.name', `%${word}%`);
+  });
+
+  if (startDate && endDate) {
+    // Consistent with getOrdersForDateRange logic
+    query = query.gte('date', `${startDate}T00:00:00+05:30`)
+                 .lte('date', `${endDate}T23:59:59+05:30`);
+  }
+
+  const { data: ordersData, error: ordersError } = await query
+    .order('bill_number', { ascending: false })
+    .limit(100);
+    
+  if (ordersError) {
+    console.error("Search items error:", ordersError);
+    return [];
+  }
+  
+  if (!ordersData) return [];
+  
+  // Return mapped orders
+  const results = await Promise.all(ordersData.map(async (o) => {
+    // When using !inner filter on joined items, Supabase might only return the MATCHING items 
+    // in the items array. To ensure the bill shows ALL items, we re-fetch if needed.
+    // Or better, we always re-fetch items for these specifically found orders to be 100% sure.
+    const { data: fullItems } = await supabase
+      .from('order_items')
+      .select('*')
+      .eq('order_id', o.id);
+      
+    if (fullItems && fullItems.length > 0) {
+      o.items = fullItems;
+    }
+    
+    return mapDatabaseOrderToType(o);
+  }));
+
+  return results;
+}
+
+export async function getMatchingMenuItems(term: string): Promise<string[]> {
+  if (!term || term.length < 2) return [];
+  
+  // Search in both menu_items (for base names) and order_items (for historical variants)
+  // We use a larger limit for order_items and then unique-ify to get more potential variant names
+  const [menuResults, orderResults] = await Promise.all([
+    supabase.from('menu_items').select('name').ilike('name', `%${term}%`).limit(10),
+    supabase.from('order_items').select('name').ilike('name', `%${term}%`).limit(100)
+  ]);
+    
+  const names = new Set<string>();
+  menuResults.data?.forEach(i => names.add(i.name));
+  orderResults.data?.forEach(i => names.add(i.name));
+  
+  // Return top 15 unique names
+  return Array.from(names).slice(0, 15);
 }
 
 export async function getDeletedOrdersForDateRange(startDate: string, endDate: string): Promise<CompletedOrder[]> {

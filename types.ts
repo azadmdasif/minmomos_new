@@ -52,6 +52,21 @@ export interface StockAllocation {
   quantity: number;
   unit: string;
   date: string;
+  is_voided?: boolean;
+  void_reason?: string;
+}
+
+export interface Procurement {
+  id: string;
+  item_id: string;
+  item_name: string;
+  quantity: number;
+  unit: string;
+  total_cost: number;
+  vendor?: string;
+  date: string;
+  is_voided?: boolean;
+  void_reason?: string;
 }
 
 export interface MenuItem {

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { getOrdersForDateRange, getOrderByBillNumber, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchProcurements, getCentralInventory, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay } from '../utils/storage';
+import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchProcurements, getCentralInventory, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay } from '../utils/storage';
 import { CompletedOrder, PaymentMethod, Station, User, CentralMaterial, Customer } from '../types';
 import PrintReceipt from './PrintReceipt';
 import DeleteBillModal from './DeleteBillModal';
@@ -100,7 +100,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   
   const [searchTerm, setSearchTerm] = useState('');
+  const [searchMode, setSearchMode] = useState<'bill' | 'item'>('bill');
+  const [useDateFilter, setUseDateFilter] = useState(false);
+  const [itemSuggestions, setItemSuggestions] = useState<string[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [foundOrder, setFoundOrder] = useState<CompletedOrder | null>(null);
+  const [foundOrdersList, setFoundOrdersList] = useState<CompletedOrder[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
   const [foundOrderInitialBalance, setFoundOrderInitialBalance] = useState<number | undefined>(undefined);
   const [foundOrderFinalBalance, setFoundOrderFinalBalance] = useState<number | undefined>(undefined);
   const [searchMessage, setSearchMessage] = useState('');
@@ -305,49 +311,109 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     setEndDate(getDateString(end));
   };
 
-  const handleSearch = async (forcedBillNum?: number) => {
+  useEffect(() => {
+    if (searchMode === 'item' && searchTerm.length >= 2) {
+      const timer = setTimeout(async () => {
+        const results = await getMatchingMenuItems(searchTerm);
+        setItemSuggestions(results);
+        setShowSuggestions(results.length > 0);
+      }, 300);
+      return () => clearTimeout(timer);
+    } else {
+      setItemSuggestions([]);
+      setShowSuggestions(false);
+    }
+  }, [searchTerm, searchMode]);
+
+  const handleSearch = async (forcedBillNum?: number, forcedItemName?: string) => {
     setFoundOrder(null);
+    setFoundOrdersList([]);
     setFoundOrderInitialBalance(undefined);
     setFoundOrderFinalBalance(undefined);
     setSearchMessage('');
+    setShowSuggestions(false);
+    setIsSearching(true);
     
-    const query = forcedBillNum?.toString() || searchTerm;
-    if (!query.trim()) return;
-
-    const billNum = parseInt(query, 10);
-    if (isNaN(billNum)) {
-      setSearchMessage('Please enter a valid bill number.');
-      return;
-    };
-
-    const order = await getOrderByBillNumber(billNum);
-    if (order) {
-      setFoundOrder(order);
+    try {
+      const mode = forcedItemName ? 'item' : (forcedBillNum ? 'bill' : searchMode);
+      const query = forcedBillNum?.toString() || forcedItemName || searchTerm;
       
-      // Calculate historical balance at the time of this order
-      if (order.customerPhone) {
-        const history = await fetchCustomerHistory(order.customerPhone);
-        const orderDate = new Date(order.date).getTime();
-        
-        // Orders strictly before
-        const pastOrders = history.filter(h => new Date(h.date).getTime() < orderDate);
-        const spentBefore = pastOrders.reduce((acc, o) => acc + o.total, 0);
-        const redeemedBefore = pastOrders.reduce((acc, o) => {
-          return acc + o.items.reduce((sum, item) => sum + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
-        }, 0);
-        
-        // This order
-        const currentRedeemed = order.items.reduce((acc, item) => acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
-        const currentTotal = order.total;
-
-        const initialBal = calculateTotalMinCoins(spentBefore, redeemedBefore);
-        const finalBal = calculateTotalMinCoins(spentBefore + currentTotal, redeemedBefore + currentRedeemed);
-
-        setFoundOrderInitialBalance(initialBal);
-        setFoundOrderFinalBalance(finalBal);
+      if (!query.trim()) {
+        setIsSearching(false);
+        return;
       }
-    } else {
-      setSearchMessage(`Bill #${billNum} was not found in the records.`);
+
+      const sDate = useDateFilter ? startDate : undefined;
+      const eDate = useDateFilter ? endDate : undefined;
+
+      if (mode === 'bill') {
+        const billNum = parseInt(query, 10);
+        if (isNaN(billNum)) {
+          setSearchMessage('Please enter a valid bill number.');
+          setIsSearching(false);
+          return;
+        };
+
+        const order = await getOrderByBillNumber(billNum);
+        // Filter by date if needed
+        if (order) {
+          if (useDateFilter) {
+            const oDate = getISTDateString(order.date);
+            if (oDate >= (sDate || '') && oDate <= (eDate || '')) {
+              await displayOrderDetails(order);
+            } else {
+              setSearchMessage(`Bill #${billNum} exists but is outside the selected date range (${sDate} to ${eDate}).`);
+            }
+          } else {
+            await displayOrderDetails(order);
+          }
+        } else {
+          setSearchMessage(`Bill #${billNum} was not found in the records.`);
+        }
+      } else {
+        const results = await getOrdersByItemName(query, sDate, eDate);
+        if (results.length > 0) {
+          setFoundOrdersList(results);
+          if (results.length === 1) {
+            await displayOrderDetails(results[0]);
+          }
+        } else {
+          setSearchMessage(`No orders found containing "${query}"${useDateFilter ? ` between ${sDate} and ${eDate}` : ''}.`);
+        }
+      }
+    } catch (err) {
+      console.error("Search failed:", err);
+      setSearchMessage('Search failed. Please try again.');
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const displayOrderDetails = async (order: CompletedOrder) => {
+    setFoundOrder(order);
+    setSearchTerm('');
+    
+    // Calculate historical balance at the time of this order
+    if (order.customerPhone) {
+      const history = await fetchCustomerHistory(order.customerPhone);
+      const orderDate = new Date(order.date).getTime();
+      
+      // Orders strictly before
+      const pastOrders = history.filter(h => new Date(h.date).getTime() < orderDate);
+      const spentBefore = pastOrders.reduce((acc, o) => acc + o.total, 0);
+      const redeemedBefore = pastOrders.reduce((acc, o) => {
+        return acc + o.items.reduce((sum, item) => sum + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
+      }, 0);
+      
+      // This order
+      const currentRedeemed = order.items.reduce((acc, item) => acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
+      const currentTotal = order.total;
+
+      const initialBal = calculateTotalMinCoins(spentBefore, redeemedBefore);
+      const finalBal = calculateTotalMinCoins(spentBefore + currentTotal, redeemedBefore + currentRedeemed);
+
+      setFoundOrderInitialBalance(initialBal);
+      setFoundOrderFinalBalance(finalBal);
     }
   };
 
@@ -584,16 +650,75 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
           </div>
           
           <div className="flex flex-col gap-4 w-full lg:w-auto">
-            <div className="flex items-center gap-2 bg-white shadow-xl p-2 rounded-2xl border-4 border-brand-brown">
-               <input 
-                  type="number" 
-                  placeholder="SEARCH BILL #" 
-                  value={searchTerm}
-                  onChange={e => setSearchTerm(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleSearch()}
-                  className="bg-transparent text-[10px] font-black uppercase px-4 py-2 outline-none w-32"
-               />
-               <button onClick={() => handleSearch()} className="bg-brand-brown text-brand-yellow px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Find</button>
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-6">
+                <div className="flex items-center gap-1 bg-white/50 p-1 rounded-xl self-start border border-brand-stone">
+                  <button 
+                    onClick={() => setSearchMode('bill')}
+                    className={`px-3 py-1 text-[8px] font-black uppercase tracking-widest rounded-lg transition-all ${searchMode === 'bill' ? 'bg-brand-brown text-brand-yellow shadow-sm' : 'text-brand-brown/40 hover:bg-brand-brown/10'}`}
+                  >
+                    By Bill #
+                  </button>
+                  <button 
+                    onClick={() => setSearchMode('item')}
+                    className={`px-3 py-1 text-[8px] font-black uppercase tracking-widest rounded-lg transition-all ${searchMode === 'item' ? 'bg-brand-brown text-brand-yellow shadow-sm' : 'text-brand-brown/40 hover:bg-brand-brown/10'}`}
+                  >
+                    By Item
+                  </button>
+                </div>
+                
+                <label className="flex items-center gap-2 cursor-pointer group">
+                  <div className={`w-8 h-4 rounded-full relative transition-colors ${useDateFilter ? 'bg-brand-red' : 'bg-brand-stone'}`}>
+                    <input 
+                      type="checkbox" 
+                      className="hidden" 
+                      checked={useDateFilter} 
+                      onChange={() => setUseDateFilter(!useDateFilter)} 
+                    />
+                    <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full transition-transform ${useDateFilter ? 'translate-x-4' : 'translate-x-0'}`} />
+                  </div>
+                  <span className="text-[8px] font-black text-brand-brown uppercase tracking-widest">Filter by Dashboard Range</span>
+                </label>
+              </div>
+
+              <div className="relative">
+                <div className="flex items-center gap-2 bg-white shadow-xl p-2 rounded-2xl border-4 border-brand-brown">
+                  <input 
+                      type={searchMode === 'bill' ? "number" : "text"} 
+                      placeholder={searchMode === 'bill' ? "SEARCH BILL #" : "SEARCH ITEM NAME"} 
+                      value={searchTerm}
+                      onChange={e => setSearchTerm(e.target.value)}
+                      onFocus={() => searchMode === 'item' && itemSuggestions.length > 0 && setShowSuggestions(true)}
+                      onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                      className="bg-transparent text-[10px] font-black uppercase px-4 py-2 outline-none w-48"
+                  />
+                  <button 
+                    onClick={() => handleSearch()} 
+                    disabled={isSearching}
+                    className="bg-brand-brown text-brand-yellow px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-50"
+                  >
+                    {isSearching ? '...' : 'Find'}
+                  </button>
+                </div>
+
+                {showSuggestions && (
+                  <div className="absolute top-full left-0 right-0 mt-2 bg-white border-2 border-brand-brown rounded-xl shadow-2xl z-[110] overflow-hidden max-h-60 overflow-y-auto no-scrollbar">
+                    {itemSuggestions.map((item, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => {
+                          setSearchTerm(item);
+                          handleSearch(undefined, item);
+                          setShowSuggestions(false);
+                        }}
+                        className="w-full text-left px-5 py-3 text-[10px] font-black text-brand-brown uppercase tracking-wider hover:bg-brand-brown hover:text-brand-yellow transition-colors border-b border-brand-stone last:border-0"
+                      >
+                        {item}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2 bg-white/50 p-2 rounded-2xl lg:rounded-3xl border border-brand-stone">
@@ -620,6 +745,43 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
             )}
           </div>
         </header>
+
+        {foundOrdersList.length > 1 && !foundOrder && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 lg:p-10 animate-in fade-in duration-300">
+            <div className="absolute inset-0 bg-brand-brown/80 backdrop-blur-md" onClick={() => setFoundOrdersList([])}></div>
+            <div className="bg-white rounded-[2rem] lg:rounded-[3rem] p-8 border-4 border-brand-brown shadow-2xl relative z-10 w-full max-w-4xl max-h-[80vh] flex flex-col">
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h3 className="text-2xl font-black text-brand-brown uppercase tracking-tighter">Search Results</h3>
+                  <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest">Found {foundOrdersList.length} orders containing "{searchTerm}"</p>
+                </div>
+                <button onClick={() => setFoundOrdersList([])} className="p-2 hover:bg-brand-stone/20 rounded-full transition-colors">
+                  <X className="w-6 h-6 text-brand-brown" />
+                </button>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto no-scrollbar grid grid-cols-1 md:grid-cols-2 gap-4 pb-4">
+                {foundOrdersList.map((order) => (
+                  <button 
+                    key={order.id} 
+                    onClick={() => displayOrderDetails(order)}
+                    className="flex items-center justify-between p-5 bg-brand-brown/5 rounded-2xl border border-brand-brown/10 hover:border-brand-red hover:bg-white transition-all group text-left"
+                  >
+                    <div>
+                      <p className="text-[10px] font-black text-brand-red uppercase tracking-widest leading-none mb-1">Bill #{order.billNumber}</p>
+                      <p className="text-sm font-black text-brand-brown uppercase">{getISTDateString(order.date)}</p>
+                      <p className="text-[10px] font-bold text-brand-brown/40 uppercase">{order.branchName}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-lg font-black text-brand-brown">₹{order.total.toLocaleString()}</p>
+                      <p className="text-[8px] font-black text-brand-brown/40 uppercase tracking-widest">{order.items.length} Items</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
 
         {foundOrder && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 lg:p-10 animate-in fade-in duration-300">

@@ -5,6 +5,7 @@ import Menu from './Menu';
 import Bill from './Bill';
 import VariantSelectionModal from './VariantSelectionModal';
 import BillPreviewModal from './BillPreviewModal';
+import CrossSellModal from './CrossSellModal';
 import { saveOrder, peekNextBillNumber, fetchMenuItems } from '../utils/storage';
 import { printerService } from '../utils/bluetoothPrinter';
 
@@ -17,6 +18,7 @@ const CATEGORIES = [
 ];
 
 const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
+  const UPSELL_ITEM_ID = 'item-1778060358624';
   const [menuItems, setMenuItems] = useState<MenuItemType[]>([]);
   const [order, setOrder] = useState<OrderItem[]>([]);
   const [activeCategory, setActiveCategory] = useState<string>('momo');
@@ -28,6 +30,10 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
   const [customerPhone, setCustomerPhone] = useState('');
   const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
   const [isPrinterConnected, setIsPrinterConnected] = useState(false);
+  
+  // Cross-sell state
+  const [showUpsellModal, setShowUpsellModal] = useState(false);
+  const [upsellItem, setUpsellItem] = useState<MenuItemType | undefined>(undefined);
 
   useEffect(() => {
     const loadData = async () => {
@@ -57,6 +63,23 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
   };
 
   const handleAddItem = useCallback((itemsToAdd: OrderItem[]) => {
+    // Check for upselling opportunity
+    const hasQualifyingItem = itemsToAdd.some(item => {
+      const menuDetail = menuItems.find(m => m.id === item.menuItemId);
+      return menuDetail && (menuDetail.category === 'momo' || menuDetail.category === 'moburg');
+    });
+
+    const alreadyInOrder = order.some(item => item.menuItemId === UPSELL_ITEM_ID);
+    const addedInThisBatch = itemsToAdd.some(item => item.menuItemId === UPSELL_ITEM_ID);
+
+    if (hasQualifyingItem && !alreadyInOrder && !addedInThisBatch) {
+      const upsell = menuItems.find(m => m.id === UPSELL_ITEM_ID);
+      if (upsell) {
+        setUpsellItem(upsell);
+        setShowUpsellModal(true);
+      }
+    }
+
     setOrder((prev) => {
       const newOrder = [...prev];
       itemsToAdd.forEach(item => {
@@ -75,7 +98,7 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
       });
       return newOrder;
     });
-  }, []);
+  }, [menuItems, order]);
 
   const handleUpdateQuantity = (id: string, qty: number) => {
     setOrder(prev => qty <= 0 ? prev.filter(i => i.id !== id) : prev.map(i => i.id === id ? { ...i, quantity: qty } : i));
@@ -287,6 +310,12 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
         customerPhone={customerPhone}
         isPrinterConnected={isPrinterConnected}
         menuItems={menuItems}
+      />
+      <CrossSellModal 
+        isOpen={showUpsellModal}
+        onClose={() => setShowUpsellModal(false)}
+        upsellItem={upsellItem}
+        onConfirm={(item) => handleAddItem([item])}
       />
     </div>
   );
