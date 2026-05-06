@@ -762,7 +762,7 @@ export async function syncCustomerStats(customerId: string, phone?: string): Pro
 export async function deleteOrderByBillNumber(billNumber: number, reason: string): Promise<void> {
   const { data: order } = await supabase
     .from('orders')
-    .select('id, customer_id, customer_phone, order_items(name)')
+    .select('id, branch_name, customer_id, customer_phone, order_items(name, quantity, menu_item_id)')
     .eq('bill_number', billNumber)
     .single();
   
@@ -770,6 +770,58 @@ export async function deleteOrderByBillNumber(billNumber: number, reason: string
   await supabase.from('orders').update({ deletion_info: deletionInfo }).eq('bill_number', billNumber);
 
   if (order) {
+    // REVERSE STOCK DEDUCTION
+    try {
+      const { data: menuItems } = await fetchMenuItems();
+      const SIZE_PIECES: Record<string, number> = { small: 4, medium: 6, large: 8 };
+      const branchName = order.branch_name;
+
+      for (const item of (order.order_items as any[] || [])) {
+        if (!item.menu_item_id || item.name === 'discount') continue;
+
+        // 1. Handle Celebratory Gift Reversal
+        if (item.name.includes('Celebratory Campa Cola (Gift)')) {
+          const materialId = 'campa-cola-small';
+          const totalToReturn = 1 * item.quantity;
+          const { data: existingInv } = await supabase.from('inventory').select('current_stock').eq('id', materialId).eq('branch_name', branchName).maybeSingle();
+          if (existingInv) {
+            await supabase.from('inventory').update({ current_stock: existingInv.current_stock + totalToReturn }).eq('id', materialId).eq('branch_name', branchName);
+          }
+          continue;
+        }
+
+        // 2. Handle Regular Recipe Reversal
+        const menuDetail = menuItems?.find(m => m.id === item.menu_item_id);
+        if (!menuDetail) continue;
+
+        let size: Size = 'medium';
+        if (item.name.includes('(Small)')) size = 'small';
+        else if (item.name.includes('(Large)')) size = 'large';
+
+        const hasSizeRecipe = !!(menuDetail.sizeRecipes?.[size] && menuDetail.sizeRecipes[size]!.length > 0);
+        let activeRecipe = hasSizeRecipe ? menuDetail.sizeRecipes![size] : menuDetail.recipe;
+        
+        if (activeRecipe && Array.isArray(activeRecipe) && activeRecipe.length > 0) {
+          let sizeMultiplier = 1;
+          if (!hasSizeRecipe && menuDetail.category === 'momo') {
+            sizeMultiplier = SIZE_PIECES[size] || 6;
+          }
+
+          for (const requirement of activeRecipe) {
+            const totalToReturn = requirement.quantity * sizeMultiplier * item.quantity;
+            if (totalToReturn <= 0) continue;
+
+            const { data: existingInv } = await supabase.from('inventory').select('current_stock').eq('id', requirement.materialId).eq('branch_name', branchName).maybeSingle();
+            if (existingInv) {
+              await supabase.from('inventory').update({ current_stock: existingInv.current_stock + totalToReturn }).eq('id', requirement.materialId).eq('branch_name', branchName);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Stock reversal failed during order deletion:", e);
+    }
+
     // If the order contained the 15% Welcome Discount, reactivate it for the customer
     const hasCoupon = order.order_items?.some((item: any) => 
       item.name === '15% Welcome Discount' || item.name.includes('Welcome Discount')
