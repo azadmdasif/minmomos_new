@@ -22,6 +22,7 @@ export const RAW_MATERIALS_LIST = [
   { id: 'pkt-oil', name: 'Refined Cooking Oil', unit: 'ltr', category: 'PACKET' },
   { id: 'pkt-mayo', name: 'Mayonnaise', unit: 'pkt', category: 'PACKET' },
   { id: 'pkt-fries', name: 'French Fries (Bulk)', unit: 'pkt', category: 'PACKET' },
+  { id: 'campa-cola-small', name: 'Campa Cola Small', unit: 'pcs', category: 'PACKET' },
 ];
 
 export const MENU_ITEMS: MenuItem[] = [

@@ -357,6 +357,48 @@ export async function saveOrder(
     for (const item of orderItems) {
       if (!item.menuItemId || item.menuItemId === 'discount') continue;
 
+      // Special Case: Celebratory Campa Cola Gift
+      if (item.name.includes('Celebratory Campa Cola (Gift)')) {
+        const materialId = 'campa-cola-small';
+        const totalConsumption = 1 * item.quantity;
+
+        const { data: existingInv } = await supabase
+          .from('inventory')
+          .select('current_stock')
+          .eq('id', materialId)
+          .eq('branch_name', branchName)
+          .maybeSingle();
+
+        if (existingInv) {
+          const newStock = existingInv.current_stock - totalConsumption;
+          await supabase.from('inventory')
+            .update({ current_stock: newStock })
+            .eq('id', materialId)
+            .eq('branch_name', branchName);
+        } else {
+          // If material not in station inventory, check central and create entry
+          const { data: centralInfo } = await supabase
+            .from('central_inventory')
+            .select('*')
+            .eq('id', materialId)
+            .maybeSingle();
+          
+          if (centralInfo) {
+            await supabase.from('inventory').insert({
+              id: materialId,
+              branch_name: branchName,
+              name: centralInfo.name,
+              unit: centralInfo.unit,
+              category: centralInfo.category,
+              current_stock: -totalConsumption,
+              is_finished: false,
+              request_pending: false
+            });
+          }
+        }
+        continue; // Handled specially, skip regular recipe deduction
+      }
+
       const menuDetail = menuItems?.find(m => m.id === item.menuItemId);
       if (!menuDetail) {
         console.warn(`Deduction Skip: Menu item details not found for ID: ${item.menuItemId} (Name: ${item.name})`);

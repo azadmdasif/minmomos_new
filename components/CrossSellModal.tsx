@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { MenuItem, OrderItem } from '../types';
+import { MenuItem, OrderItem, PreparationType, Size } from '../types';
 
 interface CrossSellModalProps {
   isOpen: boolean;
@@ -16,17 +16,22 @@ const CrossSellModal: React.FC<CrossSellModalProps> = ({ isOpen, onClose, upsell
   const handleAdd = () => {
     // For combos, we usually have a 'normal' preparation and 'medium' size as default
     // or whatever is available with a price > 0
-    let prep: any = 'normal';
-    let size: any = 'medium';
+    let prep: PreparationType = 'normal';
+    let size: Size = 'medium';
     
     if (!upsellItem.preparations[prep]?.[size]) {
       // Fallback to first available price
       for (const p in upsellItem.preparations) {
-        for (const s in upsellItem.preparations[p as any]) {
-          if ((upsellItem.preparations[p as any] as any)[s] > 0) {
-            prep = p;
-            size = s;
-            break;
+        const prepKey = p as PreparationType;
+        const variations = upsellItem.preparations[prepKey];
+        if (variations) {
+          for (const s in variations) {
+            const sizeKey = s as Size;
+            if (variations[sizeKey]! > 0) {
+              prep = prepKey;
+              size = sizeKey;
+              break;
+            }
           }
         }
       }
