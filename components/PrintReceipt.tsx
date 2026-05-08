@@ -15,6 +15,7 @@ interface PrintReceiptProps {
   customerFinalBalance?: number;
   earnedCoinsValue?: number;
   welcomeCouponCode?: string;
+  nextOrderCoupon?: { code: string, discount: string, forOrder: number } | null;
   totalValue?: number;
 }
 
@@ -31,6 +32,7 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
   customerFinalBalance,
   earnedCoinsValue,
   welcomeCouponCode,
+  nextOrderCoupon,
   totalValue
 }) => {
   const calculatedTotal = orderItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
@@ -166,11 +168,19 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
       
       <div style={styles.divider}></div>
       
-      {welcomeCouponCode && (
-        <div style={{...styles.footer, border: '1px dashed #000', padding: '4px', margin: '8px 0'}}>
+      {welcomeCouponCode && !nextOrderCoupon && (
+        <div style={{...styles.footer, border: '2px solid #000', padding: '6px', margin: '10px 0'}}>
           <div style={{fontWeight: 'bold', fontSize: '9pt'}}>15% OFF NEXT VISIT!</div>
-          <div style={{fontSize: '11pt', fontWeight: 'bold', letterSpacing: '2px', color: '#B91C1C'}}>{welcomeCouponCode}</div>
+          <div style={{fontSize: '11pt', fontWeight: 'bold', letterSpacing: '2px'}}>{welcomeCouponCode}</div>
           <div style={{fontSize: '7pt', marginTop: '2px'}}>Redeemable on 2nd visit only</div>
+        </div>
+      )}
+
+      {nextOrderCoupon && (
+        <div style={{...styles.footer, border: '2px solid #000', padding: '6px', margin: '10px 0'}}>
+          <div style={{fontWeight: 'bold', fontSize: '9pt'}}>{nextOrderCoupon.discount} OFF NEXT VISIT!</div>
+          <div style={{fontSize: '11pt', fontWeight: 'bold', letterSpacing: '2px'}}>{nextOrderCoupon.code}</div>
+          <div style={{fontSize: '7pt', marginTop: '2px'}}>Redeem on your {nextOrderCoupon.forOrder}{nextOrderCoupon.forOrder === 2 ? 'nd' : nextOrderCoupon.forOrder === 3 ? 'rd' : 'th'} visit</div>
         </div>
       )}
       

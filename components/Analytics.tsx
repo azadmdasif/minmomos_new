@@ -110,6 +110,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [isSearching, setIsSearching] = useState(false);
   const [foundOrderInitialBalance, setFoundOrderInitialBalance] = useState<number | undefined>(undefined);
   const [foundOrderFinalBalance, setFoundOrderFinalBalance] = useState<number | undefined>(undefined);
+  const [foundOrderEarnedCoins, setFoundOrderEarnedCoins] = useState<number | undefined>(undefined);
+  const [foundOrderNextCoupon, setFoundOrderNextCoupon] = useState<any>(null);
   const [searchMessage, setSearchMessage] = useState('');
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
   const [customerSortField, setCustomerSortField] = useState<'totalSpent' | 'joinedDate' | 'totalOrders' | 'lastVisit'>('totalSpent');
@@ -341,8 +343,52 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     });
   };
 
-  const handleWhatsAppReSend = (order: CompletedOrder, useBT: boolean = false) => {
+  const handleWhatsAppReSend = async (order: CompletedOrder, useBT: boolean = false) => {
     if (!order.customerPhone) return;
+
+    const history = await fetchCustomerHistory(order.customerPhone);
+    const sortedHistory = [...history].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const orderIndex = sortedHistory.findIndex(h => h.id === order.id);
+    const orderCountAtTime = orderIndex + 1;
+
+    // Recalculate balances at that exact time
+    const pastOrders = sortedHistory.slice(0, orderIndex);
+    const spentBefore = pastOrders.reduce((acc, o) => acc + o.total, 0);
+    const redeemedBefore = pastOrders.reduce((acc, o) => {
+      return acc + o.items.reduce((sum, item) => sum + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
+    }, 0);
+    
+    const currentRedeemed = order.items.reduce((acc, item) => acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
+    const initialBal = calculateTotalMinCoins(spentBefore, redeemedBefore);
+    const finalBal = calculateTotalMinCoins(spentBefore + order.total, redeemedBefore + currentRedeemed);
+    const earned = finalBal - (initialBal - currentRedeemed);
+
+    // Next order coupon logic
+    let couponMsg = '';
+    if (orderCountAtTime === 1) {
+      couponMsg = `\n\n🎟️ *NEXT ORDER GIFT!* 🎟️\nGet *15% OFF* on your 2nd order!\nCoupon: *DISC15-${order.customerPhone.slice(-4)}*`;
+    } else if (orderCountAtTime === 2) {
+      couponMsg = `\n\n🎟️ *NEXT ORDER GIFT!* 🎟️\nGet *10% OFF* on your 3rd order!\nCoupon: *DISC10-${order.customerPhone.slice(-4)}*`;
+    } else if (orderCountAtTime === 3) {
+      couponMsg = `\n\n🎟️ *NEXT ORDER GIFT!* 🎟️\nGet *5% OFF* on your 4th order!\nCoupon: *DISC5-${order.customerPhone.slice(-4)}*`;
+    }
+
+    const tierDetails = getTierInfo(spentBefore + order.total);
+    const { name: tierBefore } = getTierInfo(spentBefore);
+    const tierAfterName = tierDetails.name;
+    const tierUpgraded = tierBefore !== tierAfterName;
+
+    let tierMsg = '';
+    if (tierUpgraded) {
+       const cashbackPct = Math.round(tierDetails.rate * 100);
+       tierMsg = `🚀 *RANK UP!* 🚀\nYou've reached *${tierAfterName.toUpperCase()}*! You now get *${cashbackPct}% CASHBACK* on every visit!\n\n`;
+    }
+
+    const hasCampaGift = order.items.some(item => item.name.includes('Celebratory Campa Cola (Gift)'));
+    let giftMsg = '';
+    if (hasCampaGift) {
+      giftMsg = `\n\n🎁 *CELEBRATION!* 🎁\nYou unlocked a *FREE Celebratory Campa Cola*!`;
+    }
 
     const total = Math.round(order.total);
     const orderDetails = order.items
@@ -353,11 +399,16 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       })
       .join('\n');
 
-    const message = `*MinMomos Bill #${order.billNumber}*
+    const message = `${tierMsg}*MinMomos Bill #${order.billNumber}*
 --------------------------
 ${orderDetails}
 --------------------------
 *Total: ₹${total}*
+
+🌟 *LOYALTY REWARDS* 🌟
+Initial Balance: ${initialBal}
+Coins Earned: +${earned}
+${currentRedeemed > 0 ? `Coins Redeemed: -${currentRedeemed}\n` : ''}*Final Balance: ${finalBal}*${couponMsg}${giftMsg}
 
 _Thank you for visiting MinMomos!_`;
 
@@ -374,6 +425,8 @@ _Thank you for visiting MinMomos!_`;
     setFoundOrdersList([]);
     setFoundOrderInitialBalance(undefined);
     setFoundOrderFinalBalance(undefined);
+    setFoundOrderEarnedCoins(undefined);
+    setFoundOrderNextCoupon(null);
     setSearchMessage('');
     setShowSuggestions(false);
     setIsSearching(true);
@@ -440,6 +493,10 @@ _Thank you for visiting MinMomos!_`;
     // Calculate historical balance at the time of this order
     if (order.customerPhone) {
       const history = await fetchCustomerHistory(order.customerPhone);
+      const sortedHistory = [...history].sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      const orderIndex = sortedHistory.findIndex(h => h.id === order.id);
+      const totalAfter = orderIndex + 1;
+
       const orderDate = new Date(order.date).getTime();
       
       // Orders strictly before
@@ -455,9 +512,19 @@ _Thank you for visiting MinMomos!_`;
 
       const initialBal = calculateTotalMinCoins(spentBefore, redeemedBefore);
       const finalBal = calculateTotalMinCoins(spentBefore + currentTotal, redeemedBefore + currentRedeemed);
+      const earned = finalBal - (initialBal - currentRedeemed);
 
       setFoundOrderInitialBalance(initialBal);
       setFoundOrderFinalBalance(finalBal);
+      setFoundOrderEarnedCoins(earned);
+
+      // Next order coupon historical state
+      let nextCoupon = null;
+      if (totalAfter === 1) nextCoupon = { code: `DISC15-${order.customerPhone.slice(-4)}`, discount: '15%', forOrder: 2 };
+      else if (totalAfter === 2) nextCoupon = { code: `DISC10-${order.customerPhone.slice(-4)}`, discount: '10%', forOrder: 3 };
+      else if (totalAfter === 3) nextCoupon = { code: `DISC5-${order.customerPhone.slice(-4)}`, discount: '5%', forOrder: 4 };
+      
+      setFoundOrderNextCoupon(nextCoupon);
     }
   };
 
@@ -920,6 +987,8 @@ _Thank you for visiting MinMomos!_`;
                      customerPhone={foundOrder.customerPhone}
                      customerInitialBalance={foundOrderInitialBalance}
                      customerFinalBalance={foundOrderFinalBalance}
+                     earnedCoinsValue={foundOrderEarnedCoins}
+                     nextOrderCoupon={foundOrderNextCoupon}
                      orderType={foundOrder.type}
                      totalValue={foundOrder.total}
                     />

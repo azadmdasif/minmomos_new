@@ -47,6 +47,22 @@ const Bill: React.FC<BillProps> = ({
   const [showSearchResults, setShowSearchResults] = React.useState(false);
   const lastCheckedPhone = React.useRef<string | null>(null);
 
+  const tier = customer ? getTierInfo(customer.totalSpent) : null;
+  const isStale = customer?.lastVisit ? (new Date().getTime() - new Date(customer.lastVisit).getTime()) > 30 * 24 * 60 * 60 * 1000 : false;
+  
+  const canRedeemWelcomeCoupon = customer && customer.totalOrders === 1 && !customer.welcomeCouponUsed;
+  const hasAppliedWelcomeDiscount = orderItems.some(item => item.id === 'welcome-discount');
+  const hasAppliedLoyaltyDiscount = orderItems.find(item => item.id === 'loyalty-discount');
+
+  const loyaltyDiscount = React.useMemo(() => {
+    if (!customer) return null;
+    const count = customer.totalOrders;
+    if (count === 1) return { percentage: 15, label: '15% Loyalty (2nd Visit)', code: `DISC15-${customer.phone.slice(-4)}` };
+    if (count === 2) return { percentage: 10, label: '10% Loyalty (3rd Visit)', code: `DISC10-${customer.phone.slice(-4)}` };
+    if (count === 3) return { percentage: 5, label: '5% Loyalty (4th Visit)', code: `DISC5-${customer.phone.slice(-4)}` };
+    return null;
+  }, [customer]);
+
   // Load Menu Items for reward logic
   React.useEffect(() => {
     fetchMenuItems().then(res => {
@@ -163,32 +179,27 @@ const Bill: React.FC<BillProps> = ({
 
   // Auto-update discount if items change
   React.useEffect(() => {
-    const discountItem = orderItems.find(i => i.id === 'welcome-discount');
-    if (discountItem) {
-      const subtotal = orderItems.reduce((acc, i) => acc + (i.id !== 'welcome-discount' && i.price > 0 ? i.price * i.quantity : 0), 0);
-      const expectedDiscount = -(subtotal * 0.15);
-      if (Math.abs(discountItem.price - expectedDiscount) > 0.01) {
-        onUpdateQuantity('welcome-discount', 1); // Trigger update with same quantity but we need a way to update price
-        // Actually onUpdateQuantity only takes quantity. 
-        // I might need to remove and re-add or change Bill.tsx to support price updates.
-        // Let's just fix the price by calling onAddItem with the same ID (handleAddItem handles existing items)
-        if (subtotal > 0) {
-          onAddItem([{
-            ...discountItem,
-            price: expectedDiscount
-          }]);
-        } else {
-          onUpdateQuantity('welcome-discount', 0); // Remove if subtotal is 0
+    const discountItems = orderItems.filter(i => i.id === 'welcome-discount' || i.id === 'loyalty-discount');
+    if (discountItems.length > 0) {
+      const subtotal = orderItems.reduce((acc, i) => acc + (i.id !== 'welcome-discount' && i.id !== 'loyalty-discount' && i.price > 0 ? i.price * i.quantity : 0), 0);
+      
+      discountItems.forEach(discountItem => {
+        const pct = discountItem.id === 'welcome-discount' ? 0.15 : (loyaltyDiscount?.percentage ? loyaltyDiscount.percentage / 100 : 0);
+        const expectedDiscount = -(subtotal * pct);
+        
+        if (Math.abs(discountItem.price - expectedDiscount) > 0.01) {
+          if (subtotal > 0 && pct > 0) {
+            onAddItem([{
+              ...discountItem,
+              price: expectedDiscount
+            }]);
+          } else {
+            onUpdateQuantity(discountItem.id, 0); // Remove if subtotal is 0 or no pct
+          }
         }
-      }
+      });
     }
-  }, [orderItems, onAddItem, onUpdateQuantity]);
-
-  const tier = customer ? getTierInfo(customer.totalSpent) : null;
-  const isStale = customer?.lastVisit ? (new Date().getTime() - new Date(customer.lastVisit).getTime()) > 30 * 24 * 60 * 60 * 1000 : false;
-  
-  const canRedeemWelcomeCoupon = customer && customer.totalOrders === 1 && !customer.welcomeCouponUsed;
-  const hasAppliedWelcomeDiscount = orderItems.some(item => item.id === 'welcome-discount');
+  }, [orderItems, onAddItem, onUpdateQuantity, loyaltyDiscount]);
 
   const canRedeemSomething = customer && (customer.minCoins || 0) >= 100;
   const projectedTotal = (customer?.totalSpent || 0) + total;
@@ -305,8 +316,42 @@ const Bill: React.FC<BillProps> = ({
             </div>
           </div>
 
-          {customer && (usualOrder || lastPriorityItem || canRedeemSomething || isCloseToNextTier || isStale || (customer.totalOrders === 0 && !hasAppliedWelcomeDiscount)) && (
+          {customer && (loyaltyDiscount || usualOrder || lastPriorityItem || canRedeemSomething || isCloseToNextTier || isStale || (customer.totalOrders === 0 && !hasAppliedWelcomeDiscount)) && (
             <div className="flex flex-wrap gap-3 animate-in fade-in slide-in-from-top-3 duration-700">
+               {loyaltyDiscount && (
+                 <div className="flex items-center gap-2 w-full lg:w-auto">
+                    <button 
+                      onClick={() => {
+                        if (hasAppliedLoyaltyDiscount) {
+                           onUpdateQuantity('loyalty-discount', 0);
+                        } else {
+                           const subtotal = orderItems.reduce((acc, i) => acc + (i.price > 0 ? i.price * i.quantity : 0), 0);
+                           if (subtotal > 0) {
+                              onAddItem([{
+                                id: 'loyalty-discount',
+                                menuItemId: 'discount',
+                                name: loyaltyDiscount.label,
+                                price: -(subtotal * (loyaltyDiscount.percentage / 100)),
+                                quantity: 1,
+                                cost: 0
+                              }]);
+                           }
+                        }
+                      }}
+                      className={`${hasAppliedLoyaltyDiscount ? 'bg-emerald-600' : 'bg-brand-brown'} px-4 py-2 rounded-2xl flex items-center gap-3 shadow-xl text-white group border-2 border-white/20 hover:scale-105 active:scale-95 transition-all`}
+                    >
+                      <div className="flex flex-col items-start leading-none py-0.5">
+                        <span className="text-[7px] font-black opacity-60 uppercase tracking-[0.2em] mb-1">{loyaltyDiscount.code}</span>
+                        <span className="text-[10px] font-black uppercase tracking-wider">
+                          {hasAppliedLoyaltyDiscount ? 'Loyalty Applied!' : `Apply ${loyaltyDiscount.percentage}% Discount`}
+                        </span>
+                      </div>
+                      <div className="w-6 h-6 bg-white/20 rounded-lg flex items-center justify-center shrink-0">
+                        <span className="text-[12px]">{hasAppliedLoyaltyDiscount ? '✅' : '🏷️'}</span>
+                      </div>
+                    </button>
+                 </div>
+               )}
                {canRedeemWelcomeCoupon && !hasAppliedWelcomeDiscount && (
                  <div className="flex items-center gap-2 w-full lg:w-auto">
                     <button 
@@ -435,7 +480,7 @@ const Bill: React.FC<BillProps> = ({
       <div className="p-6 bg-stone-50 border-t border-stone-200">
         <div className="flex justify-between items-end mb-6">
           <span className="text-[10px] font-black uppercase text-stone-400 tracking-widest">Total Amount</span>
-          <span className="text-3xl font-black text-mountain-green tracking-tighter lg:text-white">₹{total.toFixed(2)}</span>
+          <span className="text-3xl font-black text-mountain-green tracking-tighter lg:text-white">₹{Math.round(total)}</span>
         </div>
         <div className="grid grid-cols-2 gap-4">
           <button 

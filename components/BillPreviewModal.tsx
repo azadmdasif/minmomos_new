@@ -5,7 +5,7 @@ import { motion } from 'motion/react';
 import { Star, Send } from 'lucide-react';
 import { OrderItem, PaymentMethod, OrderType, Customer, MenuItem, PreparationType, Size } from '../types';
 import PrintReceipt from './PrintReceipt';
-import { getCustomerByPhone, calculateTotalMinCoins, calculateProgressiveEarned } from '../utils/storage';
+import { getCustomerByPhone, calculateTotalMinCoins, calculateProgressiveEarned, getTierInfo } from '../utils/storage';
 
 interface BillPreviewModalProps {
   isOpen: boolean;
@@ -119,6 +119,8 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
   // Consistent logic for balance updates using tiered cashback
   const previousSpent = customer?.totalSpent || 0;
   const previousCoins = customer?.minCoins || 0;
+  const totalOrdersBefore = customer?.totalOrders || 0;
+  const totalOrdersAfter = totalOrdersBefore + 1;
   
   // Determine earned based on progressive tiers
   const totalEarnedBefore = calculateProgressiveEarned(previousSpent);
@@ -129,31 +131,58 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
   const earnedCoins = totalEarnedAfter - totalEarnedBefore;
   const finalBalance = calculateTotalMinCoins(previousSpent + totalCashValue, totalRedeemedBefore + coinsRequired);
 
-  const handleWhatsAppSend = (useBT: boolean = false) => {
-    if (!customerPhone) return;
-    if (coinsRequired > 0 && !hasSufficientCoins) {
-        alert(`Insufficient MinCoins balance. Required: ${coinsRequired}, Available: ${customer?.minCoins || 0}`);
-        return;
-    }
-    
-    // Format message
-    const orderDetails = orderItems
-      .map(item => {
-        const itemTotal = item.paidWithCoins ? 0 : Math.round(item.price * item.quantity);
-        const priceText = item.paidWithCoins ? `${item.coinsPrice} Coins` : `₹${itemTotal}`;
-        return `*${item.quantity}x ${item.name}* - ${priceText}`;
-      })
-      .join('\n');
-      
-    const isFirstVisit = !customer || customer.totalOrders === 0;
-    const welcomeCode = customer?.welcomeCouponCode;
-    
-    // Explicitly show coupon if it's the first visit and we have a code
-    const couponMsg = (isFirstVisit && welcomeCode)
-      ? `\n\n🎟️ *MINMOMOS GIFT!* 🎟️\nGet *15% OFF* on your next visit!\nCoupon: *${welcomeCode}*\n(Redeem on your 2nd order)`
-      : '';
+  // Next order coupon logic
+  let nextOrderCoupon = null;
+  if (totalOrdersAfter === 1) {
+      nextOrderCoupon = { code: `DISC15-${customerPhone?.slice(-4)}`, discount: '15%', forOrder: 2 };
+  } else if (totalOrdersAfter === 2) {
+      nextOrderCoupon = { code: `DISC10-${customerPhone?.slice(-4)}`, discount: '10%', forOrder: 3 };
+  } else if (totalOrdersAfter === 3) {
+      nextOrderCoupon = { code: `DISC5-${customerPhone?.slice(-4)}`, discount: '5%', forOrder: 4 };
+  }
 
-    const message = `*MinMomos Bill #${billNumber || '---'}*
+    // Tier info for messaging
+    const tierDetails = getTierInfo(previousSpent + totalCashValue);
+    const { name: tierBefore } = getTierInfo(previousSpent);
+    const tierAfterName = tierDetails.name;
+    const tierUpgraded = tierBefore !== tierAfterName;
+
+    let tierMsg = '';
+    if (tierUpgraded) {
+      const cashbackPct = Math.round(tierDetails.rate * 100);
+      tierMsg = `🚀 *RANK UP!* 🚀\nYou've reached *${tierAfterName.toUpperCase()}*! You now get *${cashbackPct}% CASHBACK* on every visit!\n\n`;
+    }
+
+    const hasCampaGift = orderItems.some(item => item.name.includes('Celebratory Campa Cola (Gift)'));
+
+    const handleWhatsAppSend = (useBT: boolean = false) => {
+      if (!customerPhone) return;
+      if (coinsRequired > 0 && !hasSufficientCoins) {
+          alert(`Insufficient MinCoins balance. Required: ${coinsRequired}, Available: ${customer?.minCoins || 0}`);
+          return;
+      }
+      
+      // Format message
+      const orderDetails = orderItems
+        .map(item => {
+          const itemTotal = item.paidWithCoins ? 0 : Math.round(item.price * item.quantity);
+          const priceText = item.paidWithCoins ? `${item.coinsPrice} Coins` : `₹${itemTotal}`;
+          return `*${item.quantity}x ${item.name}* - ${priceText}`;
+        })
+        .join('\n');
+        
+      // Explicitly show next order coupon
+      let couponMsg = '';
+      if (nextOrderCoupon) {
+        couponMsg = `\n\n🎟️ *NEXT ORDER GIFT!* 🎟️\nGet *${nextOrderCoupon.discount} OFF* on your ${nextOrderCoupon.forOrder}${nextOrderCoupon.forOrder === 2 ? 'nd' : nextOrderCoupon.forOrder === 3 ? 'rd' : 'th'} order!\nCoupon: *${nextOrderCoupon.code}*`;
+      }
+
+      let giftMsg = '';
+      if (hasCampaGift) {
+        giftMsg = `\n\n🎁 *CELEBRATION!* 🎁\nYou unlocked a *FREE Celebratory Campa Cola*! Enjoy your treat!`;
+      }
+
+      const message = `${tierMsg}*MinMomos Bill #${billNumber || '---'}*
 --------------------------
 ${orderDetails}
 --------------------------
@@ -162,7 +191,7 @@ ${orderDetails}
 🌟 *LOYALTY REWARDS* 🌟
 Initial Balance: ${customer?.minCoins || 0}
 Coins Earned: +${earnedCoins}
-${coinsRequired > 0 ? `Coins Redeemed: -${coinsRequired}\n` : ''}*Total MinCoins: ${finalBalance}*${couponMsg}
+${coinsRequired > 0 ? `Coins Redeemed: -${coinsRequired}\n` : ''}*Final Balance: ${finalBalance}*${couponMsg}${giftMsg}
 
 _Thank you for visiting MinMomos!_`;
 
@@ -210,6 +239,7 @@ _Thank you for visiting MinMomos!_`;
                   customerFinalBalance={finalBalance}
                   earnedCoinsValue={earnedCoins}
                   welcomeCouponCode={(customer?.totalOrders === 0 || !customer) ? customer?.welcomeCouponCode : undefined}
+                  nextOrderCoupon={nextOrderCoupon}
                 />
               </div>
             </div>
@@ -276,6 +306,53 @@ _Thank you for visiting MinMomos!_`;
                     </div>
                   </div>
                 )}
+
+                {/* Loyalty Discount Redemption */}
+                {customer && !orderItems.some(i => i.id === 'loyalty-discount') && (() => {
+                  const count = customer.totalOrders;
+                  let loyalty = null;
+                  if (count === 1) loyalty = { percentage: 15, label: '15% Loyalty (2nd Visit)', code: `DISC15-${customer.phone.slice(-4)}` };
+                  else if (count === 2) loyalty = { percentage: 10, label: '10% Loyalty (3rd Visit)', code: `DISC10-${customer.phone.slice(-4)}` };
+                  else if (count === 3) loyalty = { percentage: 5, label: '5% Loyalty (4th Visit)', code: `DISC5-${customer.phone.slice(-4)}` };
+                  
+                  if (!loyalty) return null;
+
+                  return (
+                    <div className="bg-brand-brown border-2 border-brand-brown/10 p-5 rounded-2xl animate-in zoom-in-95 duration-500 shadow-xl shadow-black/20">
+                      <div className="flex items-center justify-between gap-6">
+                        <div className="flex items-center gap-4 text-white">
+                          <div className="bg-white/20 p-3 rounded-xl backdrop-blur-sm">
+                            <span className="text-xl leading-none">🎖️</span>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-black uppercase tracking-[0.1em]">Loyalty Reward Available</p>
+                            <p className="text-[12px] font-black px-2 py-0.5 bg-black/20 rounded-md inline-block mt-1">{loyalty.code}</p>
+                          </div>
+                        </div>
+                        
+                        <button 
+                          onClick={() => {
+                            const subtotal = orderItems.reduce((acc, i) => acc + (i.price > 0 && !i.paidWithCoins ? i.price * i.quantity : 0), 0);
+                            if (subtotal > 0 && loyalty) {
+                               onAddItem([{
+                                 id: 'loyalty-discount',
+                                 menuItemId: 'discount',
+                                 name: loyalty.label,
+                                 price: -(subtotal * (loyalty.percentage / 100)),
+                                 quantity: 1,
+                                 cost: 0
+                               }]);
+                            }
+                          }}
+                          className="bg-brand-yellow text-brand-brown px-6 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-lg flex items-center gap-3 group"
+                        >
+                          Apply {loyalty.percentage}% Off
+                          <Send className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* Active Rewards List */}
@@ -464,6 +541,7 @@ _Thank you for visiting MinMomos!_`;
           customerFinalBalance={finalBalance}
           earnedCoinsValue={earnedCoins}
           welcomeCouponCode={(customer?.totalOrders === 0 || !customer) ? customer?.welcomeCouponCode : undefined}
+          nextOrderCoupon={nextOrderCoupon}
         />,
         printRoot
       )}
