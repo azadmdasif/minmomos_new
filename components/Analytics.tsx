@@ -9,6 +9,7 @@ import PerformanceChart from './PerformanceChart';
 import TimeWiseRevenueChart from './TimeWiseRevenueChart';
 import RevenueBreakdownChart from './RevenueBreakdownChart';
 import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star, Users, TrendingUp as TrendingUpIcon, Gift } from 'lucide-react';
+import { printerService } from '../utils/bluetoothPrinter';
 
 const getTodaysDateString = () => {
   return getISTDateString();
@@ -325,6 +326,49 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     }
   }, [searchTerm, searchMode]);
 
+  const handleBTPrint = async (order: CompletedOrder) => {
+    if (!printerService.isConnected()) {
+      const connected = await printerService.connect();
+      if (!connected) return;
+    }
+
+    await printerService.printReceipt({
+      orderItems: order.items,
+      billNumber: order.billNumber,
+      paymentMethod: order.paymentMethod as PaymentMethod,
+      branchName: order.branchName,
+      orderType: order.type
+    });
+  };
+
+  const handleWhatsAppReSend = (order: CompletedOrder, useBT: boolean = false) => {
+    if (!order.customerPhone) return;
+
+    const total = Math.round(order.total);
+    const orderDetails = order.items
+      .map(item => {
+        const itemTotal = item.paidWithCoins ? 0 : Math.round(item.price * item.quantity);
+        const priceText = item.paidWithCoins ? `${item.coinsPrice} Coins` : `₹${itemTotal}`;
+        return `*${item.quantity}x ${item.name}* - ${priceText}`;
+      })
+      .join('\n');
+
+    const message = `*MinMomos Bill #${order.billNumber}*
+--------------------------
+${orderDetails}
+--------------------------
+*Total: ₹${total}*
+
+_Thank you for visiting MinMomos!_`;
+
+    const encodedMessage = encodeURIComponent(message);
+    const whatsappUrl = `https://wa.me/${order.customerPhone.replace(/\D/g, '')}?text=${encodedMessage}`;
+    window.open(whatsappUrl, '_blank');
+
+    if (useBT) {
+      handleBTPrint(order);
+    }
+  };
   const handleSearch = async (forcedBillNum?: number, forcedItemName?: string) => {
     setFoundOrder(null);
     setFoundOrdersList([]);
@@ -879,6 +923,29 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                      orderType={foundOrder.type}
                      totalValue={foundOrder.total}
                     />
+
+                    <div className="mt-6 grid grid-cols-2 gap-3">
+                       <button 
+                         onClick={() => handleWhatsAppReSend(foundOrder, false)}
+                         className="bg-white text-brand-brown border-2 border-brand-brown rounded-xl py-3 text-[9px] font-black uppercase tracking-widest hover:bg-brand-brown hover:text-white transition-all shadow-md flex items-center justify-center gap-2"
+                       >
+                         <Send className="w-3 h-3" />
+                         WP Send
+                       </button>
+                       <button 
+                         onClick={() => handleBTPrint(foundOrder)}
+                         className="bg-mountain-green text-white border-2 border-mountain-green rounded-xl py-3 text-[9px] font-black uppercase tracking-widest hover:brightness-110 transition-all shadow-md flex items-center justify-center gap-2"
+                       >
+                         <Receipt className="w-3 h-3" />
+                         BT Print
+                       </button>
+                       <button 
+                         onClick={() => handleWhatsAppReSend(foundOrder, true)}
+                         className="col-span-2 bg-brand-red text-white border-2 border-brand-red rounded-xl py-4 text-[10px] font-black uppercase tracking-widest hover:brightness-110 transition-all shadow-xl flex items-center justify-center gap-2 animate-pulse"
+                       >
+                         🚀 WhatsApp + BT Print
+                       </button>
+                    </div>
                 </div>
              </div>
           </div>

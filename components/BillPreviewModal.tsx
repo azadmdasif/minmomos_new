@@ -129,7 +129,7 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
   const earnedCoins = totalEarnedAfter - totalEarnedBefore;
   const finalBalance = calculateTotalMinCoins(previousSpent + totalCashValue, totalRedeemedBefore + coinsRequired);
 
-  const handleWhatsAppSend = () => {
+  const handleWhatsAppSend = (useBT: boolean = false) => {
     if (!customerPhone) return;
     if (coinsRequired > 0 && !hasSufficientCoins) {
         alert(`Insufficient MinCoins balance. Required: ${coinsRequired}, Available: ${customer?.minCoins || 0}`);
@@ -173,7 +173,7 @@ _Thank you for visiting MinMomos!_`;
     
     // Also trigger the confirm flow
     if (selectedMethod) {
-        onConfirm(selectedMethod, false);
+        onConfirm(selectedMethod, useBT);
     }
   };
 
@@ -403,7 +403,7 @@ _Thank you for visiting MinMomos!_`;
               </div>
 
               {/* Action Buttons */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-3">
                   <button 
                       onClick={() => {
                         if (coinsRequired > 0 && !hasSufficientCoins) {
@@ -421,7 +421,7 @@ _Thank you for visiting MinMomos!_`;
                   </button>
                   
                   <button 
-                    onClick={handleWhatsAppSend}
+                    onClick={() => handleWhatsAppSend(false)}
                     disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !hasSufficientCoins}
                     className="bg-white text-brand-brown font-black py-4 rounded-2xl transition-all shadow-lg text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-brand-brown"
                   >
@@ -437,6 +437,14 @@ _Thank you for visiting MinMomos!_`;
                     className="bg-mountain-green text-white font-black py-4 rounded-2xl transition-all shadow-lg text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-mountain-green"
                   >
                     Confirm & BT Print
+                  </button>
+
+                  <button 
+                    onClick={() => handleWhatsAppSend(true)}
+                    disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !isPrinterConnected || !hasSufficientCoins}
+                    className="bg-brand-red text-white font-black py-4 rounded-2xl transition-all shadow-2xl scale-105 ring-4 ring-brand-red/20 text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-brand-red animate-pulse"
+                  >
+                    🚀 WhatsApp + BT Print
                   </button>
               </div>
             </div>

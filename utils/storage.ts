@@ -1014,6 +1014,27 @@ export async function fetchUsualOrder(phone: string): Promise<{ name: string, qu
   return topItem;
 }
 
+export async function fetchLastOrderPriorityItem(phone: string): Promise<{ name: string, quantity: number } | null> {
+  const history = await fetchCustomerHistory(phone);
+  if (history.length === 0) return null;
+
+  const lastOrder = history[0];
+  if (!lastOrder.items || lastOrder.items.length === 0) return null;
+
+  let priorityItem = lastOrder.items[0];
+  let maxVal = priorityItem.price * priorityItem.quantity;
+
+  lastOrder.items.forEach(item => {
+    const val = item.price * item.quantity;
+    if (val > maxVal) {
+      maxVal = val;
+      priorityItem = item;
+    }
+  });
+
+  return { name: priorityItem.name, quantity: priorityItem.quantity };
+}
+
 export async function fetchCustomers(branchFilter?: string): Promise<Customer[]> {
   const { data } = await supabase.rpc('get_customer_stats', { branch_filter: branchFilter || null }); 
   if (!data) return [];

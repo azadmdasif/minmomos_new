@@ -3,7 +3,7 @@ import React from 'react';
 import { OrderItem, OrderType, Customer, MenuItem } from '../types';
 import BillItem from './BillItem';
 import { GIFT_CAMPA_COLA } from '../constants';
-import { fetchUsualOrder, getCustomerByPhone, getTierInfo, registerCustomer, searchCustomers, updateCustomer, fetchMenuItems } from '../utils/storage';
+import { fetchUsualOrder, fetchLastOrderPriorityItem, getCustomerByPhone, getTierInfo, registerCustomer, searchCustomers, updateCustomer, fetchMenuItems } from '../utils/storage';
 import CelebrationOverlay from './CelebrationOverlay';
 import NewCustomerModal from './NewCustomerModal';
 
@@ -36,6 +36,7 @@ const Bill: React.FC<BillProps> = ({
 
   const [customer, setCustomer] = React.useState<Customer | null>(null);
   const [usualOrder, setUsualOrder] = React.useState<{ name: string, quantity: number } | null>(null);
+  const [lastPriorityItem, setLastPriorityItem] = React.useState<{ name: string, quantity: number } | null>(null);
   const [showCelebration, setShowCelebration] = React.useState(false);
   const [celebratedTier, setCelebratedTier] = React.useState<string | null>(null);
   const [showNewCustomerPrompt, setShowNewCustomerPrompt] = React.useState(false);
@@ -109,8 +110,12 @@ const Bill: React.FC<BillProps> = ({
         lastCheckedPhone.current = customerPhone;
 
         if (cust) {
-          const usual = await fetchUsualOrder(cust.phone);
+          const [usual, lastPriority] = await Promise.all([
+            fetchUsualOrder(cust.phone),
+            fetchLastOrderPriorityItem(cust.phone)
+          ]);
           setUsualOrder(usual);
+          setLastPriorityItem(lastPriority);
           
           // MISSING NAME Logic
           if (!cust.name) {
@@ -128,6 +133,7 @@ const Bill: React.FC<BillProps> = ({
     } else {
       setCustomer(null);
       setUsualOrder(null);
+      setLastPriorityItem(null);
       setCelebratedTier(null);
       lastCheckedPhone.current = null;
       setShowNewCustomerPrompt(false);
@@ -299,8 +305,8 @@ const Bill: React.FC<BillProps> = ({
             </div>
           </div>
 
-          {customer && (usualOrder || canRedeemSomething || isCloseToNextTier || isStale || (customer.totalOrders === 0 && !hasAppliedWelcomeDiscount)) && (
-            <div className="flex flex-wrap gap-2 animate-in fade-in slide-in-from-top-2 duration-500">
+          {customer && (usualOrder || lastPriorityItem || canRedeemSomething || isCloseToNextTier || isStale || (customer.totalOrders === 0 && !hasAppliedWelcomeDiscount)) && (
+            <div className="flex flex-wrap gap-3 animate-in fade-in slide-in-from-top-3 duration-700">
                {canRedeemWelcomeCoupon && !hasAppliedWelcomeDiscount && (
                  <div className="flex items-center gap-2 w-full lg:w-auto">
                     <button 
@@ -317,7 +323,7 @@ const Bill: React.FC<BillProps> = ({
                            }]);
                         }
                       }}
-                      className="bg-brand-red px-3 py-1.5 rounded-xl flex items-center gap-3 shadow-lg shadow-red-900/20 text-white animate-bounce-subtle group border border-white/10 hover:scale-105 active:scale-95 transition-all"
+                      className="bg-brand-red px-4 py-2 rounded-2xl flex items-center gap-3 shadow-xl shadow-red-900/40 text-white animate-bounce-subtle group border-2 border-white/20 hover:scale-105 active:scale-95 transition-all"
                     >
                       <div className="flex flex-col items-start leading-none py-0.5">
                         <span className="text-[7px] font-black opacity-60 uppercase tracking-[0.2em] mb-1">{customer?.welcomeCouponCode}</span>
@@ -327,31 +333,48 @@ const Bill: React.FC<BillProps> = ({
                         <span className="text-[12px]">🎟️</span>
                       </div>
                     </button>
-                    
-                    {/* Keep hidden UI section for structure but it's empty now */}
-                    <div className="hidden"></div>
                  </div>
                )}
                {customer && customer.totalOrders === 0 && (
-                 <div className="bg-brand-yellow px-4 py-2 rounded-xl flex items-center gap-2 shadow-lg shadow-yellow-900/20 border-2 border-brand-brown/10 animate-in zoom-in-95">
-                   <span className="text-[12px]">✨</span>
-                   <span className="text-[10px] font-black text-brand-brown uppercase tracking-widest leading-none">
-                     <span className="block text-[7px] opacity-40">Special Offer</span>
+                 <div className="bg-brand-yellow px-5 py-2.5 rounded-2xl flex items-center gap-3 shadow-xl shadow-yellow-900/30 border-2 border-brand-brown/10 animate-in zoom-in-95">
+                   <div className="w-7 h-7 bg-brand-brown/10 rounded-full flex items-center justify-center animate-spin-slow">
+                     <span className="text-[14px]">✨</span>
+                   </div>
+                   <span className="text-[11px] font-black text-brand-brown uppercase tracking-widest leading-none">
+                     <span className="block text-[7px] opacity-50 mb-0.5">Special Offer</span>
                      Get 15% OFF Next Visit!
                    </span>
                  </div>
                )}
                {usualOrder && (
-                  <div className="bg-white/10 px-3 py-1.5 rounded-xl border border-white/10 flex items-center gap-2 backdrop-blur-sm">
-                    <span className="text-[8px] font-black text-brand-yellow uppercase tracking-widest">Usual</span>
-                    <span className="w-1 h-1 rounded-full bg-white/20" />
-                    <span className="text-[9px] font-bold text-white truncate max-w-[120px]">{usualOrder.name}</span>
+                  <div className="bg-white/10 lg:bg-white/5 px-4 py-3 rounded-2xl border-2 border-brand-yellow/30 flex items-center gap-3 backdrop-blur-xl group hover:bg-white/20 transition-all cursor-default shadow-2xl shrink-0">
+                    <div className="w-8 h-8 bg-brand-yellow/30 rounded-xl flex items-center justify-center shrink-0 shadow-inner">
+                      <span className="text-[14px]">⭐</span>
+                    </div>
+                    <div className="flex flex-col min-w-[120px]">
+                      <span className="text-[8px] font-black text-brand-yellow uppercase tracking-[0.2em] leading-none mb-1.5 shadow-sm">Their Favorite</span>
+                      <span className="text-[12px] font-black text-white leading-tight drop-shadow-md">{usualOrder.name}</span>
+                    </div>
+                  </div>
+               )}
+               {lastPriorityItem && (
+                  <div className="bg-white/10 lg:bg-white/5 px-4 py-3 rounded-2xl border-2 border-rose-500/30 flex items-center gap-3 backdrop-blur-xl group hover:bg-white/20 transition-all cursor-default shadow-2xl shrink-0">
+                    <div className="w-8 h-8 bg-rose-500/30 rounded-xl flex items-center justify-center shrink-0 shadow-inner">
+                      <span className="text-[14px]">🔥</span>
+                    </div>
+                    <div className="flex flex-col min-w-[120px]">
+                      <span className="text-[8px] font-black text-rose-300 uppercase tracking-[0.2em] leading-none mb-1.5 shadow-sm">Last Time's Pick</span>
+                      <span className="text-[12px] font-black text-white leading-tight drop-shadow-md">{lastPriorityItem.name}</span>
+                    </div>
                   </div>
                )}
                {rewardSuggestion && (
-                 <div className="bg-white px-3 py-1.5 rounded-lg flex items-center gap-2 shadow-lg shadow-black/20 animate-pulse border border-peak-amber/20">
-                   <span className="text-[10px]">🎁</span>
-                   <span className="text-[9px] font-black text-peak-amber uppercase tracking-wider">
+                 <div className="bg-white px-4 py-2.5 rounded-2xl flex items-center gap-3 shadow-xl shadow-black/20 border-2 border-peak-amber/20">
+                   <div className="w-6 h-6 bg-peak-amber/10 rounded-full flex items-center justify-center">
+                     <span className="text-[12px]">🎁</span>
+                   </div>
+                   <span className="text-[10px] font-black text-peak-amber uppercase tracking-widest leading-none">
+                     <span className="block text-[7px] opacity-60 mb-0.5">Bonus Goal</span>
                      Add ₹{Math.ceil(rewardSuggestion.gap)} more for FREE {rewardSuggestion.name}
                    </span>
                  </div>

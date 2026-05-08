@@ -229,7 +229,7 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
       </div>
 
       {/* Cart Sidebar */}
-      <div className="hidden lg:flex w-96 bg-brand-brown border-l border-brand-brown/10 flex-col shadow-2xl relative z-10 text-white">
+      <div className="hidden lg:flex lg:w-[400px] xl:w-[480px] bg-brand-brown border-l border-brand-brown/10 flex-col shadow-2xl relative z-10 text-white transition-all duration-500">
         <div className="flex-1 overflow-hidden">
           <Bill 
             orderItems={order} 
