@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'motion/react';
-import { Star, Send } from 'lucide-react';
+import { Send } from 'lucide-react';
 import { OrderItem, PaymentMethod, OrderType, Customer, MenuItem, PreparationType, Size } from '../types';
 import PrintReceipt from './PrintReceipt';
 import { getCustomerByPhone, calculateTotalMinCoins, calculateProgressiveEarned, getTierInfo } from '../utils/storage';
@@ -10,7 +10,7 @@ import { getCustomerByPhone, calculateTotalMinCoins, calculateProgressiveEarned,
 interface BillPreviewModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onConfirm: (paymentMethod: PaymentMethod, useBluetooth?: boolean) => void;
+  onConfirm: (paymentMethod: PaymentMethod, useBluetooth?: boolean, manualTotal?: number, manualDiscount?: number) => void;
   orderItems: OrderItem[];
   billNumber: number | null;
   branchName: string | null;
@@ -21,6 +21,7 @@ interface BillPreviewModalProps {
   customerPhone?: string;
   isPrinterConnected?: boolean;
   menuItems: MenuItem[];
+  isHistoryView?: boolean;
 }
 
 const BillPreviewModal: React.FC<BillPreviewModalProps> = ({ 
@@ -36,13 +37,13 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
   orderType,
   customerPhone,
   isPrinterConnected = false,
-  menuItems
+  menuItems,
+  isHistoryView = false
 }) => {
   const [selectedMethod, setSelectedMethod] = useState<PaymentMethod | null>(null);
   const [customer, setCustomer] = useState<Customer | null>(null);
-
-  const hasAppliedWelcomeDiscount = orderItems.some(item => item.id === 'welcome-discount');
-  const canRedeemWelcomeCoupon = customer && customer.totalOrders === 1 && !customer.welcomeCouponUsed;
+  const [manualPrice, setManualPrice] = useState<string>('');
+  const [manualDiscount, setManualDiscount] = useState<string>('');
 
   useEffect(() => {
     if (isOpen && customerPhone) {
@@ -202,7 +203,12 @@ _Thank you for visiting MinMomos!_`;
     
     // Also trigger the confirm flow
     if (selectedMethod) {
-        onConfirm(selectedMethod, useBT);
+        onConfirm(
+          selectedMethod, 
+          useBT, 
+          manualPrice ? parseFloat(manualPrice) : undefined, 
+          manualDiscount ? parseFloat(manualDiscount) : undefined
+        );
     }
   };
 
@@ -238,8 +244,9 @@ _Thank you for visiting MinMomos!_`;
                   customerInitialBalance={customer?.minCoins}
                   customerFinalBalance={finalBalance}
                   earnedCoinsValue={earnedCoins}
-                  welcomeCouponCode={(customer?.totalOrders === 0 || !customer) ? customer?.welcomeCouponCode : undefined}
                   nextOrderCoupon={nextOrderCoupon}
+                  totalValue={manualPrice ? parseFloat(manualPrice) : undefined}
+                  manualDiscount={manualDiscount ? parseFloat(manualDiscount) : undefined}
                 />
               </div>
             </div>
@@ -271,44 +278,7 @@ _Thank you for visiting MinMomos!_`;
                 </div>
 
                 {/* Coupon Redemption Area */}
-                {canRedeemWelcomeCoupon && !hasAppliedWelcomeDiscount && (
-                  <div className="bg-brand-red border-2 border-brand-red/10 p-5 rounded-2xl animate-in zoom-in-95 duration-500 shadow-xl shadow-red-900/20">
-                    <div className="flex items-center justify-between gap-6">
-                      <div className="flex items-center gap-4">
-                        <div className="bg-white/20 text-white p-3 rounded-xl backdrop-blur-sm">
-                          <Star className="w-5 h-5 fill-current" />
-                        </div>
-                        <div>
-                          <p className="text-[11px] font-black text-white uppercase tracking-[0.1em]">Verified Welcome Reward</p>
-                          <p className="text-[12px] font-black text-white px-2 py-0.5 bg-black/20 rounded-md inline-block mt-1">{customer?.welcomeCouponCode}</p>
-                        </div>
-                      </div>
-                      
-                      <button 
-                        onClick={() => {
-                          const subtotal = orderItems.reduce((acc, i) => acc + (i.price > 0 ? i.price * i.quantity : 0), 0);
-                          if (subtotal > 0) {
-                             onAddItem([{
-                               id: 'welcome-discount',
-                               menuItemId: 'discount',
-                               name: '15% Welcome Discount',
-                               price: -(subtotal * 0.15),
-                               quantity: 1,
-                               cost: 0
-                             }]);
-                          }
-                        }}
-                        className="bg-white text-brand-red px-6 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest hover:bg-stone-100 active:scale-95 transition-all shadow-lg flex items-center gap-3 group"
-                      >
-                        Apply 15% Discount
-                        <Send className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Loyalty Discount Redemption */}
-                {customer && !orderItems.some(i => i.id === 'loyalty-discount') && (() => {
+                {customer && !isHistoryView && !orderItems.some(i => i.id === 'loyalty-discount') && (() => {
                   const count = customer.totalOrders;
                   let loyalty = null;
                   if (count === 1) loyalty = { percentage: 15, label: '15% Loyalty (2nd Visit)', code: `DISC15-${customer.phone.slice(-4)}` };
@@ -414,7 +384,7 @@ _Thank you for visiting MinMomos!_`;
                                </div>
                             </div>
                             <div className="bg-indigo-600 text-white px-2 py-1 rounded-lg text-[8px] font-black shadow-md">
-                               🪙 {reward.coins}
+                                🪙 {reward.coins}
                             </div>
                           </button>
                         ))
@@ -426,6 +396,48 @@ _Thank you for visiting MinMomos!_`;
                     </div>
                   </div>
                 </div>
+
+                {/* Delivery Manual Pricing */}
+                {orderType === 'DELIVERY' && (
+                  <div className="bg-brand-red/5 border-2 border-brand-red/10 p-6 rounded-3xl animate-in fade-in slide-in-from-top-4 duration-500">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="w-10 h-10 bg-brand-red rounded-xl flex items-center justify-center text-white text-xl shadow-lg">🛵</div>
+                      <div>
+                        <h3 className="text-sm font-black text-brand-brown uppercase italic leading-none">Delivery <span className="text-brand-red">Configuration</span></h3>
+                        <p className="text-[8px] font-black text-brand-red/40 uppercase tracking-widest mt-1">Zomato / Swiggy Pricing</p>
+                      </div>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <label className="text-[9px] font-black text-brand-brown/40 uppercase tracking-widest ml-1">Selling Price (Total)</label>
+                        <div className="relative">
+                          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-brown/40 font-black text-sm">₹</span>
+                          <input 
+                            type="number"
+                            value={manualPrice}
+                            onChange={(e) => setManualPrice(e.target.value)}
+                            placeholder={totalCashValue.toString()}
+                            className="w-full bg-white border-2 border-brand-red/10 focus:border-brand-red rounded-xl py-3.5 pl-8 pr-4 text-sm font-black text-brand-brown outline-none transition-all placeholder:text-stone-300"
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[9px] font-black text-brand-brown/40 uppercase tracking-widest ml-1">Platform Discount</label>
+                        <div className="relative">
+                          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-brown/40 font-black text-sm">₹</span>
+                          <input 
+                            type="number"
+                            value={manualDiscount}
+                            onChange={(e) => setManualDiscount(e.target.value)}
+                            placeholder="0"
+                            className="w-full bg-white border-2 border-brand-red/10 focus:border-brand-red rounded-xl py-3.5 pl-8 pr-4 text-sm font-black text-brand-brown outline-none transition-all placeholder:text-stone-300"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Payment Section */}
@@ -479,51 +491,63 @@ _Thank you for visiting MinMomos!_`;
                 </div>
               </div>
 
-              {/* Action Buttons */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-3">
-                  <button 
-                      onClick={() => {
-                        if (coinsRequired > 0 && !hasSufficientCoins) {
-                            return;
-                        }
-                        if (isRedemptionOverLimit) {
-                            return;
-                        }
-                        selectedMethod && onConfirm(selectedMethod, false);
-                      }} 
-                      disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !hasSufficientCoins}
-                      className="bg-brand-brown text-brand-yellow font-black py-4 rounded-2xl transition-all shadow-lg text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-brand-brown"
-                  >
-                      Confirm System Print
-                  </button>
-                  
-                  <button 
-                    onClick={() => handleWhatsAppSend(false)}
-                    disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !hasSufficientCoins}
-                    className="bg-white text-brand-brown font-black py-4 rounded-2xl transition-all shadow-lg text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-brand-brown"
-                  >
-                    Confirm & WhatsApp
-                  </button>
+      {/* Action Buttons */}
+      {!isHistoryView && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-3">
+            <button 
+                onClick={() => {
+                  if (coinsRequired > 0 && !hasSufficientCoins) {
+                      return;
+                  }
+                  if (isRedemptionOverLimit) {
+                      return;
+                  }
+                  selectedMethod && onConfirm(
+                    selectedMethod, 
+                    false,
+                    manualPrice ? parseFloat(manualPrice) : undefined, 
+                    manualDiscount ? parseFloat(manualDiscount) : undefined
+                  );
+                }} 
+                disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !hasSufficientCoins}
+                className="bg-brand-brown text-brand-yellow font-black py-4 rounded-2xl transition-all shadow-lg text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-brand-brown"
+            >
+                Confirm System Print
+            </button>
+            
+            <button 
+              onClick={() => handleWhatsAppSend(false)}
+              disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !hasSufficientCoins}
+              className="bg-white text-brand-brown font-black py-4 rounded-2xl transition-all shadow-lg text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-brand-brown"
+            >
+              Confirm & WhatsApp
+            </button>
 
-                  <button 
-                    onClick={() => {
-                      if (isRedemptionOverLimit || !hasSufficientCoins) return;
-                      selectedMethod && onConfirm(selectedMethod, true);
-                    }} 
-                    disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !isPrinterConnected || !hasSufficientCoins}
-                    className="bg-mountain-green text-white font-black py-4 rounded-2xl transition-all shadow-lg text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-mountain-green"
-                  >
-                    Confirm & BT Print
-                  </button>
+            <button 
+              onClick={() => {
+                if (isRedemptionOverLimit || !hasSufficientCoins) return;
+                selectedMethod && onConfirm(
+                  selectedMethod, 
+                  true,
+                  manualPrice ? parseFloat(manualPrice) : undefined, 
+                  manualDiscount ? parseFloat(manualDiscount) : undefined
+                );
+              }} 
+              disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !isPrinterConnected || !hasSufficientCoins}
+              className="bg-mountain-green text-white font-black py-4 rounded-2xl transition-all shadow-lg text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-mountain-green"
+            >
+              Confirm & BT Print
+            </button>
 
-                  <button 
-                    onClick={() => handleWhatsAppSend(true)}
-                    disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !isPrinterConnected || !hasSufficientCoins}
-                    className="bg-brand-red text-white font-black py-4 rounded-2xl transition-all shadow-2xl scale-105 ring-4 ring-brand-red/20 text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-brand-red animate-pulse"
-                  >
-                    🚀 WhatsApp + BT Print
-                  </button>
-              </div>
+            <button 
+              onClick={() => handleWhatsAppSend(true)}
+              disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !isPrinterConnected || !hasSufficientCoins}
+              className="bg-brand-red text-white font-black py-4 rounded-2xl transition-all shadow-2xl scale-105 ring-4 ring-brand-red/20 text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-brand-red animate-pulse"
+            >
+              🚀 WhatsApp + BT Print
+            </button>
+        </div>
+      )}
             </div>
           </div>
         </motion.div>
@@ -540,8 +564,9 @@ _Thank you for visiting MinMomos!_`;
           customerInitialBalance={customer?.minCoins}
           customerFinalBalance={finalBalance}
           earnedCoinsValue={earnedCoins}
-          welcomeCouponCode={(customer?.totalOrders === 0 || !customer) ? customer?.welcomeCouponCode : undefined}
           nextOrderCoupon={nextOrderCoupon}
+          totalValue={manualPrice ? parseFloat(manualPrice) : undefined}
+          manualDiscount={manualDiscount ? parseFloat(manualDiscount) : undefined}
         />,
         printRoot
       )}

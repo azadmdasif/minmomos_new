@@ -119,7 +119,7 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
     setIsSaving(false);
   };
 
-  const handleConfirmOrder = async (method: PaymentMethod, useBluetooth: boolean = false) => {
+  const handleConfirmOrder = async (method: PaymentMethod, useBluetooth: boolean = false, manualTotal?: number, manualDiscount?: number) => {
     if (isSaving) return;
     setIsSaving(true);
     
@@ -134,7 +134,9 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
         'ORDERED', 
         method, 
         undefined,
-        customerPhone
+        customerPhone,
+        manualTotal,
+        manualDiscount
       );
       
       if (savedNum) {

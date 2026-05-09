@@ -148,6 +148,8 @@ export interface CompletedOrder {
   branchName: string;
   customerPhone?: string;
   customerId?: string;
+  manualTotal?: number;
+  manualDiscount?: number;
   deletionInfo?: {
     reason: string;
     date: string;

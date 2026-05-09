@@ -50,8 +50,6 @@ const Bill: React.FC<BillProps> = ({
   const tier = customer ? getTierInfo(customer.totalSpent) : null;
   const isStale = customer?.lastVisit ? (new Date().getTime() - new Date(customer.lastVisit).getTime()) > 30 * 24 * 60 * 60 * 1000 : false;
   
-  const canRedeemWelcomeCoupon = customer && customer.totalOrders === 1 && !customer.welcomeCouponUsed;
-  const hasAppliedWelcomeDiscount = orderItems.some(item => item.id === 'welcome-discount');
   const hasAppliedLoyaltyDiscount = orderItems.find(item => item.id === 'loyalty-discount');
 
   const loyaltyDiscount = React.useMemo(() => {
@@ -138,6 +136,15 @@ const Bill: React.FC<BillProps> = ({
             setIsPromptForExisting(true);
             setShowNewCustomerPrompt(true);
           }
+
+          // VOIDED / RE-FIRST ORDER Logic
+          const hasGiftInOrder = orderItems.some(item => item.name.includes('Celebratory Campa Cola (Gift)'));
+          if (cust.totalOrders === 0 && !hasGiftInOrder) {
+            onAddItem([{
+              ...GIFT_CAMPA_COLA,
+              id: `welcome-gift-${Date.now()}`
+            }]);
+          }
         } else {
           setUsualOrder(null);
           // NEW CUSTOMER Logic
@@ -179,12 +186,12 @@ const Bill: React.FC<BillProps> = ({
 
   // Auto-update discount if items change
   React.useEffect(() => {
-    const discountItems = orderItems.filter(i => i.id === 'welcome-discount' || i.id === 'loyalty-discount');
+    const discountItems = orderItems.filter(i => i.id === 'loyalty-discount');
     if (discountItems.length > 0) {
-      const subtotal = orderItems.reduce((acc, i) => acc + (i.id !== 'welcome-discount' && i.id !== 'loyalty-discount' && i.price > 0 ? i.price * i.quantity : 0), 0);
+      const subtotal = orderItems.reduce((acc, i) => acc + (i.id !== 'loyalty-discount' && i.price > 0 ? i.price * i.quantity : 0), 0);
       
       discountItems.forEach(discountItem => {
-        const pct = discountItem.id === 'welcome-discount' ? 0.15 : (loyaltyDiscount?.percentage ? loyaltyDiscount.percentage / 100 : 0);
+        const pct = (loyaltyDiscount?.percentage ? loyaltyDiscount.percentage / 100 : 0);
         const expectedDiscount = -(subtotal * pct);
         
         if (Math.abs(discountItem.price - expectedDiscount) > 0.01) {
@@ -316,7 +323,7 @@ const Bill: React.FC<BillProps> = ({
             </div>
           </div>
 
-          {customer && (loyaltyDiscount || usualOrder || lastPriorityItem || canRedeemSomething || isCloseToNextTier || isStale || (customer.totalOrders === 0 && !hasAppliedWelcomeDiscount)) && (
+          {customer && (loyaltyDiscount || usualOrder || lastPriorityItem || canRedeemSomething || isCloseToNextTier || isStale) && (
             <div className="flex flex-wrap gap-3 animate-in fade-in slide-in-from-top-3 duration-700">
                {loyaltyDiscount && (
                  <div className="flex items-center gap-2 w-full lg:w-auto">
@@ -350,45 +357,6 @@ const Bill: React.FC<BillProps> = ({
                         <span className="text-[12px]">{hasAppliedLoyaltyDiscount ? '✅' : '🏷️'}</span>
                       </div>
                     </button>
-                 </div>
-               )}
-               {canRedeemWelcomeCoupon && !hasAppliedWelcomeDiscount && (
-                 <div className="flex items-center gap-2 w-full lg:w-auto">
-                    <button 
-                      onClick={() => {
-                        const subtotal = orderItems.reduce((acc, i) => acc + (i.price > 0 ? i.price * i.quantity : 0), 0);
-                        if (subtotal > 0) {
-                           onAddItem([{
-                             id: 'welcome-discount',
-                             menuItemId: 'discount',
-                             name: '15% Welcome Discount',
-                             price: -(subtotal * 0.15),
-                             quantity: 1,
-                             cost: 0
-                           }]);
-                        }
-                      }}
-                      className="bg-brand-red px-4 py-2 rounded-2xl flex items-center gap-3 shadow-xl shadow-red-900/40 text-white animate-bounce-subtle group border-2 border-white/20 hover:scale-105 active:scale-95 transition-all"
-                    >
-                      <div className="flex flex-col items-start leading-none py-0.5">
-                        <span className="text-[7px] font-black opacity-60 uppercase tracking-[0.2em] mb-1">{customer?.welcomeCouponCode}</span>
-                        <span className="text-[10px] font-black uppercase tracking-wider">Apply 15% OFF</span>
-                      </div>
-                      <div className="w-6 h-6 bg-white/20 rounded-lg flex items-center justify-center">
-                        <span className="text-[12px]">🎟️</span>
-                      </div>
-                    </button>
-                 </div>
-               )}
-               {customer && customer.totalOrders === 0 && (
-                 <div className="bg-brand-yellow px-5 py-2.5 rounded-2xl flex items-center gap-3 shadow-xl shadow-yellow-900/30 border-2 border-brand-brown/10 animate-in zoom-in-95">
-                   <div className="w-7 h-7 bg-brand-brown/10 rounded-full flex items-center justify-center animate-spin-slow">
-                     <span className="text-[14px]">✨</span>
-                   </div>
-                   <span className="text-[11px] font-black text-brand-brown uppercase tracking-widest leading-none">
-                     <span className="block text-[7px] opacity-50 mb-0.5">Special Offer</span>
-                     Get 15% OFF Next Visit!
-                   </span>
                  </div>
                )}
                {usualOrder && (

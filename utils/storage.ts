@@ -225,6 +225,8 @@ function mapDatabaseOrderToType(o: any): CompletedOrder {
     branchName: o.branch_name,
     customerPhone: o.customer_phone,
     customerId: o.customer_id,
+    manualTotal: o.manual_total,
+    manualDiscount: o.manual_discount,
     deletionInfo: o.deletion_info,
     items: rawItems.map((i: any) => ({ 
       id: i.id, 
@@ -247,7 +249,9 @@ export async function saveOrder(
   status: OrderStatus = 'ORDERED', 
   paymentMethod?: PaymentMethod, 
   tableId?: string,
-  customerPhone?: string
+  customerPhone?: string,
+  manualTotal?: number,
+  manualDiscount?: number
 ): Promise<number | null> {
   try {
     const nextBillNumber = await peekNextBillNumber();
@@ -297,7 +301,9 @@ export async function saveOrder(
       status, 
       table_id: tableId || null, 
       customer_id: customerId,
-      customer_phone: customerPhone || null
+      customer_phone: customerPhone || null,
+      manual_total: manualTotal !== undefined ? Math.round(manualTotal) : null,
+      manual_discount: manualDiscount !== undefined ? Math.round(manualDiscount) : null
     }).select().single();
     
     if (orderError) {
@@ -320,7 +326,7 @@ export async function saveOrder(
       if (item.menuItemId && 
           item.menuItemId !== 'discount' && 
           item.menuItemId !== 'registration' && 
-          item.menuItemId.length > 5) { // Basic UUID check
+          item.menuItemId.length > 24) { // Only assign if it looks like a real UUID to avoid FK errors with mock IDs
         row.menu_item_id = item.menuItemId;
       }
       
@@ -358,7 +364,10 @@ export async function saveOrder(
       if (!item.menuItemId || item.menuItemId === 'discount') continue;
 
       // Special Case: Celebratory Campa Cola Gift
-      if (item.name.includes('Celebratory Campa Cola (Gift)')) {
+      const isCampaGift = item.name.toLowerCase().includes('celebratory campa cola') || 
+                         item.name.toLowerCase().includes('campa cola (gift)');
+
+      if (isCampaGift) {
         const materialId = 'campa-cola-small';
         const totalConsumption = 1 * item.quantity;
 
@@ -375,6 +384,14 @@ export async function saveOrder(
             .update({ current_stock: newStock })
             .eq('id', materialId)
             .eq('branch_name', branchName);
+          
+          await supabase.from('inventory_logs').insert({
+            inventory_id: materialId,
+            branch_name: branchName,
+            quantity_change: -totalConsumption,
+            reason: `ORDER_BILL_${nextBillNumber}`,
+            date: getISTISOString()
+          });
         } else {
           // If material not in station inventory, check central and create entry
           const { data: centralInfo } = await supabase
@@ -393,6 +410,14 @@ export async function saveOrder(
               current_stock: -totalConsumption,
               is_finished: false,
               request_pending: false
+            });
+
+            await supabase.from('inventory_logs').insert({
+              inventory_id: materialId,
+              branch_name: branchName,
+              quantity_change: -totalConsumption,
+              reason: `ORDER_BILL_${nextBillNumber}`,
+              date: getISTISOString()
             });
           }
         }
@@ -441,6 +466,14 @@ export async function saveOrder(
               .update({ current_stock: newStock })
               .eq('id', requirement.materialId)
               .eq('branch_name', branchName);
+            
+            await supabase.from('inventory_logs').insert({
+              inventory_id: requirement.materialId,
+              branch_name: branchName,
+              quantity_change: -totalConsumption,
+              reason: `ORDER_BILL_${nextBillNumber}`,
+              date: getISTISOString()
+            });
           } else {
             // Material doesn't exist at this station yet, create it with negative initial stock
             const { data: centralInfo } = await supabase
@@ -459,6 +492,14 @@ export async function saveOrder(
                 current_stock: -totalConsumption,
                 is_finished: false,
                 request_pending: false
+              });
+
+              await supabase.from('inventory_logs').insert({
+                inventory_id: requirement.materialId,
+                branch_name: branchName,
+                quantity_change: -totalConsumption,
+                reason: `ORDER_BILL_${nextBillNumber}`,
+                date: getISTISOString()
               });
             } else {
               console.warn(`Stock Deduction Error: Material ${requirement.materialId} not found in Central Inventory.`);
@@ -777,21 +818,39 @@ export async function deleteOrderByBillNumber(billNumber: number, reason: string
       const branchName = order.branch_name;
 
       for (const item of (order.order_items as any[] || [])) {
-        if (!item.menu_item_id || item.name === 'discount') continue;
-
-        // 1. Handle Celebratory Gift Reversal
-        if (item.name.includes('Celebratory Campa Cola (Gift)')) {
+        // Handle Celebratory Gift Reversal FIRST (before skipping items without menu_item_id)
+        const isCampaGift = item.name.toLowerCase().includes('celebratory campa cola') || 
+                           item.name.toLowerCase().includes('campa cola (gift)');
+                           
+        if (isCampaGift) {
           const materialId = 'campa-cola-small';
           const totalToReturn = 1 * item.quantity;
           const { data: existingInv } = await supabase.from('inventory').select('current_stock').eq('id', materialId).eq('branch_name', branchName).maybeSingle();
           if (existingInv) {
-            await supabase.from('inventory').update({ current_stock: existingInv.current_stock + totalToReturn }).eq('id', materialId).eq('branch_name', branchName);
+            const newStock = existingInv.current_stock + totalToReturn;
+            await supabase.from('inventory').update({ current_stock: newStock }).eq('id', materialId).eq('branch_name', branchName);
+            
+            // Log the reversal
+            await supabase.from('inventory_logs').insert({
+              inventory_id: materialId,
+              branch_name: branchName,
+              quantity_change: totalToReturn,
+              reason: `VOID_ORDER_BILL_${billNumber}`,
+              date: getISTISOString()
+            });
           }
           continue;
         }
 
         // 2. Handle Regular Recipe Reversal
-        const menuDetail = menuItems?.find(m => m.id === item.menu_item_id);
+        let menuDetail = menuItems?.find(m => m.id === item.menu_item_id);
+        
+        // Fallback: If menu_item_id is null (older data or mock IDs), try matching by name
+        if (!menuDetail) {
+          const baseName = item.name.split(' (')[0];
+          menuDetail = menuItems?.find(m => m.name === baseName || m.name === item.name);
+        }
+
         if (!menuDetail) continue;
 
         let size: Size = 'medium';
@@ -813,7 +872,17 @@ export async function deleteOrderByBillNumber(billNumber: number, reason: string
 
             const { data: existingInv } = await supabase.from('inventory').select('current_stock').eq('id', requirement.materialId).eq('branch_name', branchName).maybeSingle();
             if (existingInv) {
-              await supabase.from('inventory').update({ current_stock: existingInv.current_stock + totalToReturn }).eq('id', requirement.materialId).eq('branch_name', branchName);
+              const newStock = existingInv.current_stock + totalToReturn;
+              await supabase.from('inventory').update({ current_stock: newStock }).eq('id', requirement.materialId).eq('branch_name', branchName);
+              
+              // Log the reversal
+              await supabase.from('inventory_logs').insert({
+                inventory_id: requirement.materialId,
+                branch_name: branchName,
+                quantity_change: totalToReturn,
+                reason: `VOID_ORDER_BILL_${billNumber}`,
+                date: getISTISOString()
+              });
             }
           }
         }
@@ -901,28 +970,48 @@ async function getRedeemedCoins(phone: string): Promise<number> {
 }
 
 export async function getCustomerByPhone(phone: string): Promise<Customer | null> {
-  const { data } = await supabase.rpc('get_customer_stats');
-  if (!data) return null;
-  const match = data.find((c: any) => c.phone === phone);
-  if (!match) return null;
+  // 1. Get basic info from the customers table
+  const { data: dbCust, error: fetchError } = await supabase
+    .from('customers')
+    .select('*')
+    .eq('phone', phone)
+    .maybeSingle();
+
+  if (fetchError || !dbCust) return null;
+
+  // 2. Fetch live history to get the most accurate, real-time stats
+  // This bypasses any lag or logic issues in RPC/aggregated columns
+  const history = await fetchCustomerHistory(phone);
   
-  const totalSpent = Number(match.total_spent || 0);
+  const totalOrders = history.length;
+  // Account for manual totals (delivery platforms) in LTV calculation
+  const totalSpent = history.reduce((acc, o) => acc + (o.manualTotal !== null && o.manualTotal !== undefined ? o.manualTotal : o.total), 0);
   const redeemedCoins = await getRedeemedCoins(phone);
   
+  const lastVisit = history.length > 0 ? history[0].date : dbCust.last_visit;
+
+  // 3. Sync the database record if it's lagging (optional background update)
+  if (dbCust.total_orders !== totalOrders || Math.abs((dbCust.ltv || 0) - totalSpent) > 1) {
+    supabase.from('customers')
+      .update({ total_orders: totalOrders, ltv: totalSpent, last_visit: lastVisit })
+      .eq('id', dbCust.id)
+      .then(); // Non-blocking
+  }
+  
   return {
-    id: match.id,
-    phone: match.phone,
-    name: match.name,
-    email: match.email,
-    birthday: match.birthday,
-    note: match.note,
-    totalOrders: Number(match.total_orders || 0),
+    id: dbCust.id,
+    phone: dbCust.phone,
+    name: dbCust.name,
+    email: dbCust.email,
+    birthday: dbCust.birthday,
+    note: dbCust.note,
+    totalOrders: totalOrders,
     totalSpent: totalSpent,
     minCoins: calculateTotalMinCoins(totalSpent, redeemedCoins),
-    lastVisit: match.last_visit,
-    joinedDate: match.joined_date,
-    welcomeCouponUsed: match.welcome_coupon_used || false,
-    welcomeCouponCode: match.welcome_coupon_code
+    lastVisit: lastVisit,
+    joinedDate: dbCust.created_at,
+    welcomeCouponUsed: dbCust.welcome_coupon_used || false,
+    welcomeCouponCode: dbCust.welcome_coupon_code
   };
 }
 
@@ -937,22 +1026,29 @@ export async function searchCustomers(query: string): Promise<Customer[]> {
 
   if (error) return [];
   
-  return data.map(d => ({
-    id: d.id,
-    phone: d.phone,
-    name: d.name,
-    totalOrders: d.total_orders || 0,
-    totalSpent: d.ltv || 0,
-    minCoins: d.min_coins || 0,
-    joinedDate: d.created_at,
-    lastVisit: d.last_visit,
-    welcomeCouponUsed: d.welcome_coupon_used || false,
-    welcomeCouponCode: d.welcome_coupon_code
-  }));
+  return data.map(d => {
+    const totalSpent = d.ltv || 0;
+    // For search results, we use a zero-redeemed estimate for minCoins if not stored in DB
+    // This provides a helpful estimate during search
+    const estimatedCoins = calculateTotalMinCoins(Number(totalSpent), 0);
+    
+    return {
+      id: d.id,
+      phone: d.phone,
+      name: d.name,
+      totalOrders: d.total_orders || 0,
+      totalSpent: totalSpent,
+      minCoins: d.min_coins ?? estimatedCoins,
+      joinedDate: d.created_at,
+      lastVisit: d.last_visit,
+      welcomeCouponUsed: d.welcome_coupon_used || false,
+      welcomeCouponCode: d.welcome_coupon_code
+    };
+  });
 }
 
 export async function registerCustomer(phone: string, name: string): Promise<Customer> {
-  const couponCode = `MOMO-${Math.random().toString(36).substring(2, 6).toUpperCase()}-${phone.slice(-4)}`;
+  const couponCode = `DISC15-${phone.slice(-4)}`;
   const { data, error } = await supabase
     .from('customers')
     .upsert({ phone, name, welcome_coupon_code: couponCode }, { onConflict: 'phone' })

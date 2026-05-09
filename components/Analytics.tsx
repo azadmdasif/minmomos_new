@@ -6,10 +6,10 @@ import PrintReceipt from './PrintReceipt';
 import DeleteBillModal from './DeleteBillModal';
 import ItemSalesReport from './ItemSalesReport';
 import PerformanceChart from './PerformanceChart';
-import TimeWiseRevenueChart from './TimeWiseRevenueChart';
 import RevenueBreakdownChart from './RevenueBreakdownChart';
+import OrderModeChart from './OrderModeChart';
+import TimeWiseRevenueChart from './TimeWiseRevenueChart';
 import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star, Users, TrendingUp as TrendingUpIcon, Gift } from 'lucide-react';
-import { printerService } from '../utils/bluetoothPrinter';
 
 const getTodaysDateString = () => {
   return getISTDateString();
@@ -328,98 +328,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     }
   }, [searchTerm, searchMode]);
 
-  const handleBTPrint = async (order: CompletedOrder) => {
-    if (!printerService.isConnected()) {
-      const connected = await printerService.connect();
-      if (!connected) return;
-    }
-
-    await printerService.printReceipt({
-      orderItems: order.items,
-      billNumber: order.billNumber,
-      paymentMethod: order.paymentMethod as PaymentMethod,
-      branchName: order.branchName,
-      orderType: order.type
-    });
-  };
-
-  const handleWhatsAppReSend = async (order: CompletedOrder, useBT: boolean = false) => {
-    if (!order.customerPhone) return;
-
-    const history = await fetchCustomerHistory(order.customerPhone);
-    const sortedHistory = [...history].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-    const orderIndex = sortedHistory.findIndex(h => h.id === order.id);
-    const orderCountAtTime = orderIndex + 1;
-
-    // Recalculate balances at that exact time
-    const pastOrders = sortedHistory.slice(0, orderIndex);
-    const spentBefore = pastOrders.reduce((acc, o) => acc + o.total, 0);
-    const redeemedBefore = pastOrders.reduce((acc, o) => {
-      return acc + o.items.reduce((sum, item) => sum + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
-    }, 0);
-    
-    const currentRedeemed = order.items.reduce((acc, item) => acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
-    const initialBal = calculateTotalMinCoins(spentBefore, redeemedBefore);
-    const finalBal = calculateTotalMinCoins(spentBefore + order.total, redeemedBefore + currentRedeemed);
-    const earned = finalBal - (initialBal - currentRedeemed);
-
-    // Next order coupon logic
-    let couponMsg = '';
-    if (orderCountAtTime === 1) {
-      couponMsg = `\n\n🎟️ *NEXT ORDER GIFT!* 🎟️\nGet *15% OFF* on your 2nd order!\nCoupon: *DISC15-${order.customerPhone.slice(-4)}*`;
-    } else if (orderCountAtTime === 2) {
-      couponMsg = `\n\n🎟️ *NEXT ORDER GIFT!* 🎟️\nGet *10% OFF* on your 3rd order!\nCoupon: *DISC10-${order.customerPhone.slice(-4)}*`;
-    } else if (orderCountAtTime === 3) {
-      couponMsg = `\n\n🎟️ *NEXT ORDER GIFT!* 🎟️\nGet *5% OFF* on your 4th order!\nCoupon: *DISC5-${order.customerPhone.slice(-4)}*`;
-    }
-
-    const tierDetails = getTierInfo(spentBefore + order.total);
-    const { name: tierBefore } = getTierInfo(spentBefore);
-    const tierAfterName = tierDetails.name;
-    const tierUpgraded = tierBefore !== tierAfterName;
-
-    let tierMsg = '';
-    if (tierUpgraded) {
-       const cashbackPct = Math.round(tierDetails.rate * 100);
-       tierMsg = `🚀 *RANK UP!* 🚀\nYou've reached *${tierAfterName.toUpperCase()}*! You now get *${cashbackPct}% CASHBACK* on every visit!\n\n`;
-    }
-
-    const hasCampaGift = order.items.some(item => item.name.includes('Celebratory Campa Cola (Gift)'));
-    let giftMsg = '';
-    if (hasCampaGift) {
-      giftMsg = `\n\n🎁 *CELEBRATION!* 🎁\nYou unlocked a *FREE Celebratory Campa Cola*!`;
-    }
-
-    const total = Math.round(order.total);
-    const orderDetails = order.items
-      .map(item => {
-        const itemTotal = item.paidWithCoins ? 0 : Math.round(item.price * item.quantity);
-        const priceText = item.paidWithCoins ? `${item.coinsPrice} Coins` : `₹${itemTotal}`;
-        return `*${item.quantity}x ${item.name}* - ${priceText}`;
-      })
-      .join('\n');
-
-    const message = `${tierMsg}*MinMomos Bill #${order.billNumber}*
---------------------------
-${orderDetails}
---------------------------
-*Total: ₹${total}*
-
-🌟 *LOYALTY REWARDS* 🌟
-Initial Balance: ${initialBal}
-Coins Earned: +${earned}
-${currentRedeemed > 0 ? `Coins Redeemed: -${currentRedeemed}\n` : ''}*Final Balance: ${finalBal}*${couponMsg}${giftMsg}
-
-_Thank you for visiting MinMomos!_`;
-
-    const encodedMessage = encodeURIComponent(message);
-    const whatsappUrl = `https://wa.me/${order.customerPhone.replace(/\D/g, '')}?text=${encodedMessage}`;
-    window.open(whatsappUrl, '_blank');
-
-    if (useBT) {
-      handleBTPrint(order);
-    }
-  };
   const handleSearch = async (forcedBillNum?: number, forcedItemName?: string) => {
     setFoundOrder(null);
     setFoundOrdersList([]);
@@ -539,26 +447,42 @@ _Thank you for visiting MinMomos!_`;
 
   const financialData = useMemo(() => {
     let revenue = 0;
+    let deliveryRevenue = 0;
+    let deliveryDiscount = 0;
     let cogs = 0;
     const breakdown: Record<PaymentMethod, number> = { 'Cash': 0, 'UPI': 0, 'Card': 0 };
 
     orders.forEach(order => {
-      const roundedTotal = Math.round(order.total);
-      revenue += roundedTotal;
       const orderCogs = order.items.reduce((acc, item) => acc + (item.cost ?? 0) * item.quantity, 0);
       cogs += Math.round(orderCogs);
-      if (order.paymentMethod && order.paymentMethod in breakdown) {
-        breakdown[order.paymentMethod as PaymentMethod] += roundedTotal;
+
+      if (order.type === 'DELIVERY') {
+        const dRev = order.manualTotal !== undefined ? Math.round(order.manualTotal) : Math.round(order.total);
+        deliveryRevenue += dRev;
+        deliveryDiscount += (order.manualDiscount || 0);
+        
+        // Use manual total for breakdown for consistency if it's a delivery order
+        if (order.paymentMethod && order.paymentMethod in breakdown) {
+          breakdown[order.paymentMethod as PaymentMethod] += dRev;
+        }
+      } else {
+        const roundedTotal = Math.round(order.total);
+        revenue += roundedTotal;
+        if (order.paymentMethod && order.paymentMethod in breakdown) {
+          breakdown[order.paymentMethod as PaymentMethod] += roundedTotal;
+        }
       }
     });
 
-    const grossProfit = revenue - cogs;
+    const grossProfit = (revenue + deliveryRevenue) - cogs;
     return { 
       totalRevenue: revenue, 
+      deliveryRevenue: deliveryRevenue,
+      deliveryDiscount: deliveryDiscount,
       totalCogs: cogs,
       grossProfit,
-      profitMargin: revenue > 0 ? (grossProfit / revenue) * 100 : 0,
-      averageOrderValue: orders.length > 0 ? revenue / orders.length : 0,
+      profitMargin: (revenue + deliveryRevenue) > 0 ? (grossProfit / (revenue + deliveryRevenue)) * 100 : 0,
+      averageOrderValue: orders.length > 0 ? (revenue + deliveryRevenue) / orders.length : 0,
       paymentBreakdown: breakdown,
       totalOrders: orders.length,
     };
@@ -604,11 +528,12 @@ _Thank you for visiting MinMomos!_`;
     });
 
     visibleRaw.forEach(order => {
-      const roundedTotal = Math.round(order.total);
+      const actualRev = order.type === 'DELIVERY' && order.manualTotal !== undefined ? order.manualTotal : order.total;
+      const roundedTotal = Math.round(actualRev);
       if (!stores[order.branchName]) stores[order.branchName] = { revenue: 0, orders: 0, profit: 0 };
       stores[order.branchName].revenue += roundedTotal;
       stores[order.branchName].orders += 1;
-      const orderCogs = order.items.reduce((acc, item) => acc + (item.cost ?? 0) * item.quantity, 0);
+      const orderCogs = order.items?.reduce((acc, item) => acc + (item.cost ?? 0) * item.quantity, 0) || 0;
       stores[order.branchName].profit += (roundedTotal - Math.round(orderCogs));
     });
     return Object.entries(stores).map(([name, stats]) => ({ name, ...stats })).sort((a, b) => b.revenue - a.revenue);
@@ -926,7 +851,9 @@ _Thank you for visiting MinMomos!_`;
                       </div>
                       <div className="bg-brand-brown/5 p-5 rounded-2xl border border-brand-brown/5">
                          <p className="text-[9px] font-black text-brand-brown/40 uppercase tracking-widest mb-1">Amount</p>
-                         <p className="font-black text-brand-red italic text-xl">₹{(foundOrder.total ?? 0).toLocaleString()}</p>
+                         <p className="font-black text-brand-red italic text-xl">
+                           ₹{(foundOrder.type === 'DELIVERY' && foundOrder.manualTotal !== undefined ? foundOrder.manualTotal : (foundOrder.total ?? 0)).toLocaleString()}
+                         </p>
                       </div>
                    </div>
 
@@ -934,21 +861,29 @@ _Thank you for visiting MinMomos!_`;
                       <p className="text-[10px] font-black uppercase text-brand-brown/30 tracking-widest px-1">Order Breakdown</p>
                       <div className="max-h-[250px] overflow-y-auto no-scrollbar pr-2">
                         {foundOrder.items.length > 0 ? (
-                          foundOrder.items.map((it, idx) => (
-                            <div key={idx} className="flex justify-between items-center border-b border-brand-stone/50 py-3 group/item">
-                                <div>
-                                  <span className="font-black text-brand-brown uppercase text-xs lg:text-sm block">x{it.quantity} {it.name}</span>
-                                  {it.paidWithCoins && <span className="text-[8px] font-black text-indigo-600 uppercase tracking-widest leading-none">Redeemed with Coins</span>}
-                                </div>
-                                <span className="font-black text-brand-brown text-xs lg:text-sm">
-                                  {it.paidWithCoins ? '0 (Coins)' : `₹${(it.price * it.quantity).toLocaleString()}`}
-                                </span>
-                            </div>
-                          ))
+                          foundOrder.items.map((it, idx) => {
+                            const isGift = it.name.includes('(Gift)') || it.id === 'gift-campa-cola';
+                            return (
+                              <div key={idx} className={`flex justify-between items-center border-b border-brand-stone/50 py-3 group/item ${isGift ? 'bg-brand-red/5 p-2 rounded-lg my-1 border-none' : ''}`}>
+                                  <div>
+                                    <span className={`font-black uppercase text-xs lg:text-sm block ${isGift ? 'text-brand-red' : 'text-brand-brown'}`}>
+                                      x{it.quantity} {it.name}
+                                      {isGift && <span className="ml-2 bg-brand-red text-white text-[7px] px-1.5 py-0.5 rounded-full ring-2 ring-brand-red/10 animate-pulse uppercase">FREE GIFT</span>}
+                                    </span>
+                                    {it.paidWithCoins && <span className="text-[8px] font-black text-indigo-600 uppercase tracking-widest leading-none">Redeemed with Coins</span>}
+                                  </div>
+                                  <span className={`font-black text-xs lg:text-sm ${isGift ? 'text-brand-red' : 'text-brand-brown'}`}>
+                                    {isGift ? '₹0' : (it.paidWithCoins ? '0 (Coins)' : `₹${(it.price * it.quantity).toLocaleString()}`)}
+                                  </span>
+                              </div>
+                            );
+                          })
                         ) : (
                           <div className="py-10 text-center bg-brand-brown/5 rounded-2xl border-2 border-dashed border-brand-stone/30">
                             <p className="text-xs font-black text-brand-brown/40 uppercase tracking-widest">Item details missing from record</p>
-                            <p className="text-[10px] font-bold text-brand-brown/20 uppercase mt-2">Total amount ₹{(foundOrder.total ?? 0).toLocaleString()} confirmed</p>
+                            <p className="text-[10px] font-bold text-brand-brown/20 uppercase mt-2">
+                              Total amount ₹{(foundOrder.type === 'DELIVERY' && foundOrder.manualTotal !== undefined ? foundOrder.manualTotal : (foundOrder.total ?? 0)).toLocaleString()} confirmed
+                            </p>
                           </div>
                         )}
                       </div>
@@ -990,31 +925,10 @@ _Thank you for visiting MinMomos!_`;
                      earnedCoinsValue={foundOrderEarnedCoins}
                      nextOrderCoupon={foundOrderNextCoupon}
                      orderType={foundOrder.type}
-                     totalValue={foundOrder.total}
+                     totalValue={foundOrder.type === 'DELIVERY' && foundOrder.manualTotal !== undefined ? foundOrder.manualTotal : foundOrder.total}
+                     manualDiscount={foundOrder.manualDiscount}
                     />
 
-                    <div className="mt-6 grid grid-cols-2 gap-3">
-                       <button 
-                         onClick={() => handleWhatsAppReSend(foundOrder, false)}
-                         className="bg-white text-brand-brown border-2 border-brand-brown rounded-xl py-3 text-[9px] font-black uppercase tracking-widest hover:bg-brand-brown hover:text-white transition-all shadow-md flex items-center justify-center gap-2"
-                       >
-                         <Send className="w-3 h-3" />
-                         WP Send
-                       </button>
-                       <button 
-                         onClick={() => handleBTPrint(foundOrder)}
-                         className="bg-mountain-green text-white border-2 border-mountain-green rounded-xl py-3 text-[9px] font-black uppercase tracking-widest hover:brightness-110 transition-all shadow-md flex items-center justify-center gap-2"
-                       >
-                         <Receipt className="w-3 h-3" />
-                         BT Print
-                       </button>
-                       <button 
-                         onClick={() => handleWhatsAppReSend(foundOrder, true)}
-                         className="col-span-2 bg-brand-red text-white border-2 border-brand-red rounded-xl py-4 text-[10px] font-black uppercase tracking-widest hover:brightness-110 transition-all shadow-xl flex items-center justify-center gap-2 animate-pulse"
-                       >
-                         🚀 WhatsApp + BT Print
-                       </button>
-                    </div>
                 </div>
              </div>
           </div>
@@ -1046,7 +960,10 @@ _Thank you for visiting MinMomos!_`;
             {/* 1. Main Line Chart */}
             <PerformanceChart orders={chartOrders} customers={customers} startDate={startDate} endDate={endDate} />
 
-            <RevenueBreakdownChart orders={orders} customers={customers} />
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+              <RevenueBreakdownChart orders={orders} customers={customers} />
+              <OrderModeChart orders={orders} />
+            </div>
 
             {/* 2. Insight Summary Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
@@ -1214,11 +1131,12 @@ _Thank you for visiting MinMomos!_`;
 
         {reportView === 'revenue' && (
           <div className="space-y-6 lg:space-y-8 animate-in fade-in duration-500">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
-              <SummaryCard title="Total Revenue" value={financialData.totalRevenue} sub={`${financialData.totalOrders} Orders`} color="bg-brand-yellow" />
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 lg:gap-6">
+              <SummaryCard title="In-Store Sales" value={financialData.totalRevenue} sub="Dine-in / Takeaway" color="bg-brand-yellow" />
+              <SummaryCard title="Delivery Sales" value={financialData.deliveryRevenue} sub={`Disc: ₹${financialData.deliveryDiscount}`} color="bg-brand-red" textWhite />
+              <SummaryCard title="Combined Revenue" value={financialData.totalRevenue + financialData.deliveryRevenue} sub="Total Collected" color="bg-brand-brown" textWhite />
               <SummaryCard title="Gross Profit" value={financialData.grossProfit} sub="Direct Margin" color="bg-emerald-500" textWhite />
-              <SummaryCard title="Order COGS" value={financialData.totalCogs} sub="Materials" color="bg-brand-red" textWhite />
-              <SummaryCard title="Avg Ticket" value={financialData.averageOrderValue} sub="Per Order" color="bg-brand-brown" textWhite />
+              <SummaryCard title="Order COGS" value={financialData.totalCogs} sub="Materials Used" color="bg-brand-stone" />
             </div>
 
             <TimeWiseRevenueChart orders={orders} />
@@ -1240,9 +1158,20 @@ _Thank you for visiting MinMomos!_`;
                         <td className="px-4 lg:px-8 py-4 text-[10px] lg:text-xs">{getISTFullDateTime(o.date)}</td>
                         <td className="px-4 lg:px-8 py-4 text-[9px] lg:text-[10px] font-bold uppercase">{o.branchName}</td>
                         <td className="px-4 lg:px-8 py-4">
-                           <span className="px-2 py-0.5 bg-brand-brown/5 rounded text-[8px] font-black uppercase text-brand-brown/40">{o.type.replace('_', ' ')}</span>
+                           <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${o.type === 'DELIVERY' ? 'bg-brand-red text-white' : 'bg-brand-brown/5 text-brand-brown/40'}`}>
+                             {o.type.replace('_', ' ')}
+                           </span>
                         </td>
-                        <td className="px-4 lg:px-8 py-4 text-right font-black text-xs lg:text-sm">₹{o.total}</td>
+                        <td className="px-4 lg:px-8 py-4 text-right font-black text-xs lg:text-sm">
+                           {o.type === 'DELIVERY' && o.manualTotal !== undefined ? (
+                             <div className="flex flex-col items-end">
+                               <span>₹{o.manualTotal}</span>
+                               <span className="text-[7px] text-brand-brown/30 font-bold uppercase tracking-tighter">Menu Price: ₹{o.total}</span>
+                             </div>
+                           ) : (
+                             <span>₹{o.total}</span>
+                           )}
+                        </td>
                         <td className="px-4 lg:px-8 py-4 text-right">
                           <button 
                             onClick={() => handleSearch(o.billNumber)}
@@ -1668,7 +1597,9 @@ _Thank you for visiting MinMomos!_`;
                             
                             <div className="flex items-center gap-6">
                               <div className="text-right hidden sm:block">
-                                <p className="text-lg font-black text-brand-brown">₹{(o.total ?? 0).toLocaleString()}</p>
+                                <p className="text-lg font-black text-brand-brown">
+                                  ₹{(o.type === 'DELIVERY' && o.manualTotal !== undefined ? o.manualTotal : (o.total ?? 0)).toLocaleString()}
+                                </p>
                                 {o.items.some(i => i.paidWithCoins) && (
                                   <p className="text-[8px] font-black uppercase text-indigo-600 tracking-tighter mt-1">
                                      -{o.items.reduce((sum, item) => sum + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0)} Coins

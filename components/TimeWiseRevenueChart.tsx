@@ -7,8 +7,7 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  ResponsiveContainer,
-  Cell
+  ResponsiveContainer
 } from 'recharts';
 import { CompletedOrder } from '../types';
 import { getISTHour, getISTDay } from '../utils/storage';
@@ -27,6 +26,7 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
         key: i,
         label: `${i % 12 || 12}${i >= 12 ? 'PM' : 'AM'}`,
         revenue: 0,
+        deliveryRevenue: 0,
         orders: 0
       }));
 
@@ -34,7 +34,11 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
         try {
           const h = getISTHour(order.date);
           if (h >= 0 && h < 24) {
-            hours[h].revenue += (order.total || 0);
+            if (order.type === 'DELIVERY') {
+              hours[h].deliveryRevenue += (order.manualTotal !== undefined ? order.manualTotal : order.total);
+            } else {
+              hours[h].revenue += (order.total || 0);
+            }
             hours[h].orders += 1;
           }
         } catch (e) {
@@ -43,7 +47,7 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
       });
 
       // Filter to show active hours (where there's revenue) or a sensible range (10AM - 11PM)
-      const activeHours = hours.filter(h => h.revenue > 0);
+      const activeHours = hours.filter(h => h.revenue > 0 || h.deliveryRevenue > 0);
       if (activeHours.length === 0) {
           return hours.filter(h => h.key >= 10 && h.key <= 22);
       }
@@ -55,13 +59,13 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
     } else {
       // Daily view
       const days = [
-        { key: 1, label: 'Monday', revenue: 0, orders: 0 },
-        { key: 2, label: 'Tuesday', revenue: 0, orders: 0 },
-        { key: 3, label: 'Wednesday', revenue: 0, orders: 0 },
-        { key: 4, label: 'Thursday', revenue: 0, orders: 0 },
-        { key: 5, label: 'Friday', revenue: 0, orders: 0 },
-        { key: 6, label: 'Saturday', revenue: 0, orders: 0 },
-        { key: 0, label: 'Sunday', revenue: 0, orders: 0 },
+        { key: 1, label: 'Monday', revenue: 0, deliveryRevenue: 0, orders: 0 },
+        { key: 2, label: 'Tuesday', revenue: 0, deliveryRevenue: 0, orders: 0 },
+        { key: 3, label: 'Wednesday', revenue: 0, deliveryRevenue: 0, orders: 0 },
+        { key: 4, label: 'Thursday', revenue: 0, deliveryRevenue: 0, orders: 0 },
+        { key: 5, label: 'Friday', revenue: 0, deliveryRevenue: 0, orders: 0 },
+        { key: 6, label: 'Saturday', revenue: 0, deliveryRevenue: 0, orders: 0 },
+        { key: 0, label: 'Sunday', revenue: 0, deliveryRevenue: 0, orders: 0 },
       ];
 
       orders.forEach(order => {
@@ -69,7 +73,11 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
           const d = getISTDay(order.date);
           const day = days.find(day => day.key === d);
           if (day) {
-            day.revenue += (order.total || 0);
+            if (order.type === 'DELIVERY') {
+              day.deliveryRevenue += (order.manualTotal !== undefined ? order.manualTotal : order.total);
+            } else {
+              day.revenue += (order.total || 0);
+            }
             day.orders += 1;
           }
         } catch (e) {
@@ -151,20 +159,24 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
                 if (active && payload && payload.length) {
                   const data = payload[0].payload;
                   return (
-                    <div className="bg-brand-brown p-4 rounded-2xl shadow-2xl border-2 border-brand-stone min-w-[140px]">
+                    <div className="bg-brand-brown p-4 rounded-2xl shadow-2xl border-2 border-brand-stone min-w-[160px]">
                       <p className="text-brand-yellow text-[10px] font-black uppercase tracking-widest mb-3 italic">{label}</p>
                       <div className="space-y-3">
                         <div>
-                          <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-0.5">Revenue</p>
+                          <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-0.5">In-Store Rev</p>
                           <p className="text-white text-lg font-black leading-none">₹{Number(data.revenue).toLocaleString()}</p>
                         </div>
                         <div className="pt-2 border-t border-white/5">
-                          <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-0.5">Total Orders</p>
-                          <p className="text-brand-yellow text-sm font-black leading-none">{data.orders}</p>
+                          <p className="text-[8px] font-black uppercase text-brand-red tracking-widest mb-0.5">Delivery Rev</p>
+                          <p className="text-white text-lg font-black leading-none">₹{Number(data.deliveryRevenue).toLocaleString()}</p>
+                        </div>
+                        <div className="pt-2 border-t border-white/5 bg-white/5 -mx-4 px-4 py-2">
+                          <p className="text-[8px] font-black uppercase text-brand-yellow tracking-widest mb-0.5">Combined</p>
+                          <p className="text-brand-yellow text-lg font-black leading-none">₹{Number(data.revenue + data.deliveryRevenue).toLocaleString()}</p>
                         </div>
                         <div className="pt-2 border-t border-white/5">
-                             <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-0.5">Avg/Order</p>
-                             <p className="text-white text-sm font-black leading-none">₹{data.orders > 0 ? Math.round(data.revenue / data.orders).toLocaleString() : 0}</p>
+                          <p className="text-[8px] font-black uppercase text-white/40 tracking-widest mb-0.5">Total Orders</p>
+                          <p className="text-white text-sm font-black leading-none">{data.orders}</p>
                         </div>
                       </div>
                     </div>
@@ -175,18 +187,18 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
             />
             <Bar 
               dataKey="revenue" 
-              animationBegin={0}
-              animationDuration={1000}
+              stackId="a" 
+              fill="#EF4444" 
               barSize={viewMode === 'daily' ? 60 : 40}
-            >
-              {chartData.map((entry, index) => (
-                <Cell 
-                  key={`cell-${index}`} 
-                  fill={entry.revenue > 0 ? '#EF4444' : '#e5e1da'}
-                  className="transition-all hover:opacity-80"
-                />
-              ))}
-            </Bar>
+              radius={viewMode === 'hourly' ? [0, 0, 0, 0] : undefined}
+            />
+            <Bar 
+              dataKey="deliveryRevenue" 
+              stackId="a" 
+              fill="#fbbf24" 
+              barSize={viewMode === 'daily' ? 60 : 40}
+              radius={[4, 4, 0, 0]}
+            />
           </BarChart>
         </ResponsiveContainer>
       </div>

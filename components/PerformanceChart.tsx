@@ -25,6 +25,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
   const [showSMA, setShowSMA] = useState(false);
   const [showSegments, setShowSegments] = useState(false);
   const [showSitTake, setShowSitTake] = useState(false);
+  const [showDelivery, setShowDelivery] = useState(false);
   const [showRevenue, setShowRevenue] = useState(true);
   const [showProfit, setShowProfit] = useState(true);
   const [showAvgTicket, setShowAvgTicket] = useState(true);
@@ -39,9 +40,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
       startObj.setDate(startObj.getDate() - 31);
       
       const dailyData: Record<string, { 
-        totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; 
-        totalCogs: number; dineInCogs: number; takeawayCogs: number; 
-        totalOrders: number; dineInOrders: number; takeawayOrders: number;
+        totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; deliveryRevenue: number;
+        totalCogs: number; dineInCogs: number; takeawayCogs: number; deliveryCogs: number;
+        totalOrders: number; dineInOrders: number; takeawayOrders: number; deliveryOrders: number;
         repeatRev: number; newRegRev: number; unregRev: number;
         repeatOrders: number; newRegOrders: number; unregOrders: number;
       }> = {};
@@ -51,9 +52,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
       while (curr <= endObj) {
           const ds = getISTDateString(curr);
           dailyData[ds] = { 
-            totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, 
-            totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, 
-            totalOrders: 0, dineInOrders: 0, takeawayOrders: 0,
+            totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, deliveryRevenue: 0,
+            totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, deliveryCogs: 0,
+            totalOrders: 0, dineInOrders: 0, takeawayOrders: 0, deliveryOrders: 0,
             repeatRev: 0, newRegRev: 0, unregRev: 0,
             repeatOrders: 0, newRegOrders: 0, unregOrders: 0,
           };
@@ -65,14 +66,15 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         const dateStr = getISTDateString(order.date);
         if (dailyData[dateStr]) {
           const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
+          const actualRev = order.type === 'DELIVERY' && order.manualTotal !== undefined ? order.manualTotal : order.total;
           
-          dailyData[dateStr].totalRevenue += order.total;
+          dailyData[dateStr].totalRevenue += actualRev;
           dailyData[dateStr].totalOrders += 1;
           dailyData[dateStr].totalCogs += totalCost;
 
           // Segment Breakdown logic
           if (!order.customerPhone) {
-            dailyData[dateStr].unregRev += order.total;
+            dailyData[dateStr].unregRev += actualRev;
             dailyData[dateStr].unregOrders += 1;
           } else {
             const cust = customers.find(c => c.phone === order.customerPhone);
@@ -80,14 +82,14 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
               const joinDateStr = getISTDateString(cust.joinedDate);
               const orderDateStr = getISTDateString(order.date);
               if (joinDateStr === orderDateStr) {
-                dailyData[dateStr].newRegRev += order.total;
+                dailyData[dateStr].newRegRev += actualRev;
                 dailyData[dateStr].newRegOrders += 1;
               } else {
-                dailyData[dateStr].repeatRev += order.total;
+                dailyData[dateStr].repeatRev += actualRev;
                 dailyData[dateStr].repeatOrders += 1;
               }
             } else {
-              dailyData[dateStr].newRegRev += order.total;
+              dailyData[dateStr].newRegRev += actualRev;
               dailyData[dateStr].newRegOrders += 1;
             }
           }
@@ -100,6 +102,10 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             dailyData[dateStr].takeawayRevenue += order.total;
             dailyData[dateStr].takeawayOrders += 1;
             dailyData[dateStr].takeawayCogs += totalCost;
+          } else if (order.type === 'DELIVERY') {
+            dailyData[dateStr].deliveryRevenue += actualRev;
+            dailyData[dateStr].deliveryOrders += 1;
+            dailyData[dateStr].deliveryCogs += totalCost;
           }
         }
       });
@@ -120,10 +126,13 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             orderCount: count,
             dineInRev: values.dineInRevenue,
             takeawayRev: values.takeawayRevenue,
+            deliveryRev: values.deliveryRevenue,
             dineInProfit: values.dineInRevenue - values.dineInCogs,
             takeawayProfit: values.takeawayRevenue - values.takeawayCogs,
+            deliveryProfit: values.deliveryRevenue - values.deliveryCogs,
             dineInAOV: values.dineInOrders > 0 ? values.dineInRevenue / values.dineInOrders : 0,
             takeawayAOV: values.takeawayOrders > 0 ? values.takeawayRevenue / values.takeawayOrders : 0,
+            deliveryAOV: values.deliveryOrders > 0 ? values.deliveryRevenue / values.deliveryOrders : 0,
             repeatRev: values.repeatRev,
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
@@ -179,6 +188,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           takeawayRevSMA: calculateWMA(arr, idx, 'takeawayRev'),
           dineInProfitSMA: calculateWMA(arr, idx, 'dineInProfit'),
           takeawayProfitSMA: calculateWMA(arr, idx, 'takeawayProfit'),
+          deliveryRevSMA: calculateWMA(arr, idx, 'deliveryRev'),
+          deliveryProfitSMA: calculateWMA(arr, idx, 'deliveryProfit'),
           dineInAOVSMA: calculateWMA(arr, idx, 'dineInAOV'),
           takeawayAOVSMA: calculateWMA(arr, idx, 'takeawayAOV'),
         };
@@ -202,9 +213,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
       };
 
       const weeklyData: Record<string, { 
-        totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; 
-        totalCogs: number; dineInCogs: number; takeawayCogs: number; 
-        totalOrders: number; dineInOrders: number; takeawayOrders: number;
+        totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; deliveryRevenue: number;
+        totalCogs: number; dineInCogs: number; takeawayCogs: number; deliveryCogs: number;
+        totalOrders: number; dineInOrders: number; takeawayOrders: number; deliveryOrders: number;
         repeatRev: number; newRegRev: number; unregRev: number;
         repeatOrders: number; newRegOrders: number; unregOrders: number;
         weekNum: number;
@@ -240,9 +251,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           const mon = getMonday(orderDate);
           const sun = getSunday(orderDate);
           weeklyData[key] = {
-            totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0,
-            totalCogs: 0, dineInCogs: 0, takeawayCogs: 0,
-            totalOrders: 0, dineInOrders: 0, takeawayOrders: 0,
+            totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, deliveryRevenue: 0,
+            totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, deliveryCogs: 0,
+            totalOrders: 0, dineInOrders: 0, takeawayOrders: 0, deliveryOrders: 0,
             repeatRev: 0, newRegRev: 0, unregRev: 0,
             repeatOrders: 0, newRegOrders: 0, unregOrders: 0,
             weekNum: w,
@@ -253,13 +264,15 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         }
 
         const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
-        weeklyData[key].totalRevenue += order.total;
+        const actualRev = order.type === 'DELIVERY' && order.manualTotal !== undefined ? order.manualTotal : order.total;
+        
+        weeklyData[key].totalRevenue += actualRev;
         weeklyData[key].totalOrders += 1;
         weeklyData[key].totalCogs += totalCost;
 
         // Segment Breakdown
         if (!order.customerPhone) {
-          weeklyData[key].unregRev += order.total;
+          weeklyData[key].unregRev += actualRev;
           weeklyData[key].unregOrders += 1;
         } else {
           const cust = customers.find(c => c.phone === order.customerPhone);
@@ -267,14 +280,14 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             const joinDateStr = getISTDateString(cust.joinedDate);
             const orderDateStr = getISTDateString(order.date);
             if (joinDateStr === orderDateStr) {
-              weeklyData[key].newRegRev += order.total;
+              weeklyData[key].newRegRev += actualRev;
               weeklyData[key].newRegOrders += 1;
             } else {
-              weeklyData[key].repeatRev += order.total;
+              weeklyData[key].repeatRev += actualRev;
               weeklyData[key].repeatOrders += 1;
             }
           } else {
-            weeklyData[key].newRegRev += order.total;
+            weeklyData[key].newRegRev += actualRev;
             weeklyData[key].newRegOrders += 1;
           }
         }
@@ -287,6 +300,10 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           weeklyData[key].takeawayRevenue += order.total;
           weeklyData[key].takeawayOrders += 1;
           weeklyData[key].takeawayCogs += totalCost;
+        } else if (order.type === 'DELIVERY') {
+          weeklyData[key].deliveryRevenue += actualRev;
+          weeklyData[key].deliveryOrders += 1;
+          weeklyData[key].deliveryCogs += totalCost;
         }
       });
 
@@ -306,10 +323,13 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             orderCount: count,
             dineInRev: values.dineInRevenue,
             takeawayRev: values.takeawayRevenue,
+            deliveryRev: values.deliveryRevenue,
             dineInProfit: values.dineInRevenue - values.dineInCogs,
             takeawayProfit: values.takeawayRevenue - values.takeawayCogs,
+            deliveryProfit: values.deliveryRevenue - values.deliveryCogs,
             dineInAOV: values.dineInOrders > 0 ? values.dineInRevenue / values.dineInOrders : 0,
             takeawayAOV: values.takeawayOrders > 0 ? values.takeawayRevenue / values.takeawayOrders : 0,
+            deliveryAOV: values.deliveryOrders > 0 ? values.deliveryRevenue / values.deliveryOrders : 0,
             repeatRev: values.repeatRev,
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
@@ -325,9 +345,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
     } else {
       // Monthly view
       const monthlyData: Record<string, { 
-        totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; 
-        totalCogs: number; dineInCogs: number; takeawayCogs: number; 
-        totalOrders: number; dineInOrders: number; takeawayOrders: number;
+        totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; deliveryRevenue: number;
+        totalCogs: number; dineInCogs: number; takeawayCogs: number; deliveryCogs: number;
+        totalOrders: number; dineInOrders: number; takeawayOrders: number; deliveryOrders: number;
         repeatRev: number; newRegRev: number; unregRev: number;
         repeatOrders: number; newRegOrders: number; unregOrders: number;
         month: string;
@@ -348,9 +368,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
 
         if (!monthlyData[key]) {
           monthlyData[key] = {
-            totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0,
-            totalCogs: 0, dineInCogs: 0, takeawayCogs: 0,
-            totalOrders: 0, dineInOrders: 0, takeawayOrders: 0,
+            totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, deliveryRevenue: 0,
+            totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, deliveryCogs: 0,
+            totalOrders: 0, dineInOrders: 0, takeawayOrders: 0, deliveryOrders: 0,
             repeatRev: 0, newRegRev: 0, unregRev: 0,
             repeatOrders: 0, newRegOrders: 0, unregOrders: 0,
             month: new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', month: 'short' }).format(date),
@@ -359,13 +379,15 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         }
 
         const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
-        monthlyData[key].totalRevenue += order.total;
+        const actualRev = order.type === 'DELIVERY' && order.manualTotal !== undefined ? order.manualTotal : order.total;
+        
+        monthlyData[key].totalRevenue += actualRev;
         monthlyData[key].totalOrders += 1;
         monthlyData[key].totalCogs += totalCost;
 
         // Segment Breakdown
         if (!order.customerPhone) {
-          monthlyData[key].unregRev += order.total;
+          monthlyData[key].unregRev += actualRev;
           monthlyData[key].unregOrders += 1;
         } else {
           const cust = customers.find(c => c.phone === order.customerPhone);
@@ -373,14 +395,14 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             const joinDateStr = getISTDateString(cust.joinedDate);
             const orderDateStr = getISTDateString(order.date);
             if (joinDateStr === orderDateStr) {
-              monthlyData[key].newRegRev += order.total;
+              monthlyData[key].newRegRev += actualRev;
               monthlyData[key].newRegOrders += 1;
             } else {
-              monthlyData[key].repeatRev += order.total;
+              monthlyData[key].repeatRev += actualRev;
               monthlyData[key].repeatOrders += 1;
             }
           } else {
-            monthlyData[key].newRegRev += order.total;
+            monthlyData[key].newRegRev += actualRev;
             monthlyData[key].newRegOrders += 1;
           }
         }
@@ -393,6 +415,10 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           monthlyData[key].takeawayRevenue += order.total;
           monthlyData[key].takeawayOrders += 1;
           monthlyData[key].takeawayCogs += totalCost;
+        } else if (order.type === 'DELIVERY') {
+          monthlyData[key].deliveryRevenue += actualRev;
+          monthlyData[key].deliveryOrders += 1;
+          monthlyData[key].deliveryCogs += totalCost;
         }
       });
 
@@ -412,10 +438,13 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             orderCount: count,
             dineInRev: values.dineInRevenue,
             takeawayRev: values.takeawayRevenue,
+            deliveryRev: values.deliveryRevenue,
             dineInProfit: values.dineInRevenue - values.dineInCogs,
             takeawayProfit: values.takeawayRevenue - values.takeawayCogs,
+            deliveryProfit: values.deliveryRevenue - values.deliveryCogs,
             dineInAOV: values.dineInOrders > 0 ? values.dineInRevenue / values.dineInOrders : 0,
             takeawayAOV: values.takeawayOrders > 0 ? values.takeawayRevenue / values.takeawayOrders : 0,
+            deliveryAOV: values.deliveryOrders > 0 ? values.deliveryRevenue / values.deliveryOrders : 0,
             repeatRev: values.repeatRev,
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
@@ -521,6 +550,16 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             <span className="text-[10px] font-black uppercase tracking-wider">Sit-Take</span>
           </button>
 
+          <button 
+            onClick={() => setShowDelivery(!showDelivery)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
+              showDelivery ? 'bg-brand-red border-brand-red text-white shadow-brand-red/20' : 'bg-white border-brand-stone/50 text-brand-brown/40'
+            }`}
+          >
+            <TrendingUp className="w-3 h-3" />
+            <span className="text-[10px] font-black uppercase tracking-wider">Delivery</span>
+          </button>
+
           {viewType === 'daily' && (
             <>
               <div className="w-[1px] h-4 bg-brand-brown/10 mx-1 hidden md:block" />
@@ -542,7 +581,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         </div>
       </div>
 
-      {(showSegments || showSitTake) && (
+      {(showSegments || showSitTake || showDelivery) && (
         <div className="flex flex-col gap-6 p-6 bg-brand-brown/5 rounded-2xl border border-brand-brown/10 mb-6 animate-in fade-in slide-in-from-top-2 duration-500">
           <div className="flex flex-wrap gap-x-8 gap-y-6">
             {showSegments && (
@@ -619,6 +658,28 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                       <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Takeaway Profit</span>
                     </div>
                    </>
+                )}
+              </div>
+            )}
+            {showDelivery && (
+              <div className="flex flex-wrap gap-x-8 gap-y-4">
+                {showRevenue && (
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-3 h-3 rounded-full bg-[#db2777] shadow-sm" />
+                    <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery Revenue</span>
+                  </div>
+                )}
+                {showAvgTicket && (
+                  <div className="flex items-center gap-2.5 opacity-80">
+                    <div className="w-3 h-3 rounded-full border-2 border-dashed border-[#db2777]" />
+                    <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery AOV</span>
+                  </div>
+                )}
+                {showProfit && (
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-2.5 h-2.5 bg-[#db2777] opacity-20 rounded-sm" />
+                    <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery Profit</span>
+                  </div>
                 )}
               </div>
             )}
@@ -744,6 +805,37 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                                 </div>
                               </div>
                             ))}
+                          </div>
+                        )}
+                        {/* Delivery Breakdown */}
+                        {showDelivery && (
+                          <div className="pt-2 border-t border-brand-brown/5 space-y-3">
+                            <p className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest">Delivery Breakdown</p>
+                            <div className="flex flex-col gap-1 bg-brand-brown/5 p-2 rounded-lg">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-1.5 h-1.5 rounded-full bg-[#db2777]" />
+                                  <span className="text-[9px] font-black uppercase text-brand-brown tracking-wider">Zomato/Delivery</span>
+                                </div>
+                                {showRevenue && (
+                                  <span className="text-[9px] font-black text-brand-brown/40">{totalRevenue > 0 ? ((data.deliveryRev / totalRevenue) * 100).toFixed(0) : 0}%</span>
+                                )}
+                              </div>
+                              <div className="flex flex-col gap-0.5">
+                                {showRevenue && <div className="flex justify-between items-baseline px-1">
+                                  <span className="text-[8px] font-bold text-brand-brown/40 uppercase">Revenue</span>
+                                  <span className="text-[10px] font-black text-brand-brown">₹{data.deliveryRev.toLocaleString()}</span>
+                                </div>}
+                                {showProfit && <div className="flex justify-between items-baseline px-1">
+                                  <span className="text-[8px] font-bold text-brand-brown/40 uppercase">Profit</span>
+                                  <span className="text-[10px] font-black text-pink-600">₹{data.deliveryProfit.toLocaleString()}</span>
+                                </div>}
+                                {showAvgTicket && <div className="flex justify-between items-baseline px-1">
+                                  <span className="text-[8px] font-bold text-brand-brown/40 uppercase">AOV</span>
+                                  <span className="text-[10px] font-black text-pink-600">₹{data.deliveryAOV.toFixed(1)}</span>
+                                </div>}
+                              </div>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -1024,6 +1116,46 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                       </>
                     )}
                   </>
+                )}
+              </>
+            )}
+            {showDelivery && (
+              <>
+                {showRevenue && (
+                  <Area 
+                    yAxisId="left"
+                    type="monotone" 
+                    dataKey="deliveryRev" 
+                    name="Delivery Revenue" 
+                    stroke="#db2777" 
+                    fill="#fce7f3" 
+                    strokeWidth={2}
+                    fillOpacity={0.2}
+                  />
+                )}
+                {showProfit && (
+                  <Line 
+                    yAxisId="left"
+                    type="monotone" 
+                    dataKey="deliveryProfit" 
+                    name="Delivery Profit" 
+                    stroke="#db2777" 
+                    strokeWidth={2}
+                    strokeDasharray="2 2"
+                    dot={false}
+                  />
+                )}
+                {showAvgTicket && (
+                  <Line 
+                    yAxisId="right"
+                    type="monotone" 
+                    dataKey="deliveryAOV" 
+                    name="Delivery AOV" 
+                    stroke="#db2777" 
+                    strokeWidth={2}
+                    strokeDasharray="4 4"
+                    dot={false}
+                  />
                 )}
               </>
             )}
