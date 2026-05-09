@@ -16,7 +16,6 @@ interface PrintReceiptProps {
   earnedCoinsValue?: number;
   nextOrderCoupon?: { code: string, discount: string, forOrder: number } | null;
   totalValue?: number;
-  manualDiscount?: number;
 }
 
 const PrintReceipt: React.FC<PrintReceiptProps> = ({ 
@@ -32,16 +31,10 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
   customerFinalBalance,
   earnedCoinsValue,
   nextOrderCoupon,
-  totalValue,
-  manualDiscount
+  totalValue
 }) => {
   const calculatedTotal = orderItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
   const total = totalValue !== undefined ? totalValue : calculatedTotal;
-  
-  // Calculate discount to show: either explicit manualDiscount or derivation if totalValue was used
-  const displayDiscount = manualDiscount !== undefined 
-    ? manualDiscount 
-    : (totalValue !== undefined && totalValue < calculatedTotal ? calculatedTotal - totalValue : 0);
   const coinsRequired = orderItems.reduce((acc, item) => acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
   
   // If specific balances are provided (e.g. from historical view), use them.
@@ -141,20 +134,6 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
       
       <div style={styles.divider}></div>
       
-      {displayDiscount > 0 && (
-        <div style={{...styles.metaRow, fontSize: '9pt', marginBottom: '2px'}}>
-          <span>SUBTOTAL</span>
-          <span>₹{calculatedTotal.toFixed(0)}</span>
-        </div>
-      )}
-      
-      {displayDiscount > 0 && (
-        <div style={{...styles.metaRow, fontSize: '9pt', color: '#d00', marginBottom: '2px'}}>
-          <span>DISCOUNT</span>
-          <span>-₹{displayDiscount.toFixed(0)}</span>
-        </div>
-      )}
-
       <div style={styles.totalRow}>
         <span>TOTAL</span>
         <span>₹{total.toFixed(0)}</span>

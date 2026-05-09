@@ -926,7 +926,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                      nextOrderCoupon={foundOrderNextCoupon}
                      orderType={foundOrder.type}
                      totalValue={foundOrder.type === 'DELIVERY' && foundOrder.manualTotal !== undefined ? foundOrder.manualTotal : foundOrder.total}
-                     manualDiscount={foundOrder.manualDiscount}
                     />
 
                 </div>

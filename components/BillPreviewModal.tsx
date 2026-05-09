@@ -246,7 +246,6 @@ _Thank you for visiting MinMomos!_`;
                   earnedCoinsValue={earnedCoins}
                   nextOrderCoupon={nextOrderCoupon}
                   totalValue={manualPrice ? parseFloat(manualPrice) : undefined}
-                  manualDiscount={manualDiscount ? parseFloat(manualDiscount) : undefined}
                 />
               </div>
             </div>
@@ -566,7 +565,6 @@ _Thank you for visiting MinMomos!_`;
           earnedCoinsValue={earnedCoins}
           nextOrderCoupon={nextOrderCoupon}
           totalValue={manualPrice ? parseFloat(manualPrice) : undefined}
-          manualDiscount={manualDiscount ? parseFloat(manualDiscount) : undefined}
         />,
         printRoot
       )}
