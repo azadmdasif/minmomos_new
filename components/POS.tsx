@@ -89,7 +89,7 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
           newOrder[idx] = { ...newOrder[idx], ...item, quantity: newOrder[idx].quantity + (item.quantity > 0 ? item.quantity : 0) };
           // Special case: if adding specifically 1 quantity for a newly added item, but it was already there, we might just want to set it.
           // For the discount auto-update, we pass quantity: 1 but we really just want to update the price.
-          if (item.id === 'welcome-discount') {
+          if (item.id === 'welcome-discount' || item.id === 'loyalty-discount') {
             newOrder[idx].quantity = 1;
             newOrder[idx].price = item.price;
           }

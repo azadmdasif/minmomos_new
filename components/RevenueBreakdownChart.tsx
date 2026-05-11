@@ -14,10 +14,14 @@ const RevenueBreakdownChart: React.FC<RevenueBreakdownChartProps> = ({ orders, c
     let repeatRev = 0;
     let newRegRev = 0;
     let unregRev = 0;
+    let zomatoRev = 0;
 
     orders.forEach(o => {
-      const total = Math.round(o.total);
-      if (!o.customerPhone) {
+      const total = o.type === 'DELIVERY' && o.manualTotal != null ? Math.round(o.manualTotal) : Math.round(o.total);
+      
+      if (o.type === 'DELIVERY') {
+        zomatoRev += total;
+      } else if (!o.customerPhone) {
         unregRev += total;
       } else {
         const cust = customers.find(c => c.phone === o.customerPhone);
@@ -30,19 +34,18 @@ const RevenueBreakdownChart: React.FC<RevenueBreakdownChartProps> = ({ orders, c
             repeatRev += total;
           }
         } else {
-          // If customer not in list (maybe multi-store overlap or missing sync), treat as new if it's the first time we see it in this range?
-          // For now, assume it's a new registration if not found in the customers state.
           newRegRev += total;
         }
       }
     });
 
-    const total = repeatRev + newRegRev + unregRev;
+    const total = repeatRev + newRegRev + unregRev + zomatoRev;
     
     return [
       { name: 'Repeat Customers', value: repeatRev, color: '#10B981', pct: total > 0 ? (repeatRev/total*100).toFixed(1) : "0" },
       { name: 'New Registered', value: newRegRev, color: '#F59E0B', pct: total > 0 ? (newRegRev/total*100).toFixed(1) : "0" },
-      { name: 'Unregistered', value: unregRev, color: '#EF4444', pct: total > 0 ? (unregRev/total*100).toFixed(1) : "0" },
+      { name: 'Unregistered', value: unregRev, color: '#6B7280', pct: total > 0 ? (unregRev/total*100).toFixed(1) : "0" },
+      { name: 'Zomato Users', value: zomatoRev, color: '#E11D48', pct: total > 0 ? (zomatoRev/total*100).toFixed(1) : "0" },
     ];
   }, [orders, customers]);
 

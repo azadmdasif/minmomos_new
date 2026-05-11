@@ -457,7 +457,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       cogs += Math.round(orderCogs);
 
       if (order.type === 'DELIVERY') {
-        const dRev = order.manualTotal !== undefined ? Math.round(order.manualTotal) : Math.round(order.total);
+        const dRev = order.manualTotal != null ? Math.round(order.manualTotal) : Math.round(order.total);
         deliveryRevenue += dRev;
         deliveryDiscount += (order.manualDiscount || 0);
         
@@ -528,7 +528,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     });
 
     visibleRaw.forEach(order => {
-      const actualRev = order.type === 'DELIVERY' && order.manualTotal !== undefined ? order.manualTotal : order.total;
+      const actualRev = order.type === 'DELIVERY' && order.manualTotal != null ? order.manualTotal : order.total;
       const roundedTotal = Math.round(actualRev);
       if (!stores[order.branchName]) stores[order.branchName] = { revenue: 0, orders: 0, profit: 0 };
       stores[order.branchName].revenue += roundedTotal;
@@ -851,8 +851,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                       </div>
                       <div className="bg-brand-brown/5 p-5 rounded-2xl border border-brand-brown/5">
                          <p className="text-[9px] font-black text-brand-brown/40 uppercase tracking-widest mb-1">Amount</p>
-                         <p className="font-black text-brand-red italic text-xl">
-                           ₹{(foundOrder.type === 'DELIVERY' && foundOrder.manualTotal !== undefined ? foundOrder.manualTotal : (foundOrder.total ?? 0)).toLocaleString()}
+                         <p className="font-black text-brand-brown italic text-xl">
+                           ₹{(foundOrder.type === 'DELIVERY' && foundOrder.manualTotal != null ? foundOrder.manualTotal : (foundOrder.total ?? 0)).toLocaleString()}
                          </p>
                       </div>
                    </div>
@@ -882,7 +882,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                           <div className="py-10 text-center bg-brand-brown/5 rounded-2xl border-2 border-dashed border-brand-stone/30">
                             <p className="text-xs font-black text-brand-brown/40 uppercase tracking-widest">Item details missing from record</p>
                             <p className="text-[10px] font-bold text-brand-brown/20 uppercase mt-2">
-                              Total amount ₹{(foundOrder.type === 'DELIVERY' && foundOrder.manualTotal !== undefined ? foundOrder.manualTotal : (foundOrder.total ?? 0)).toLocaleString()} confirmed
+                              Total amount ₹{(foundOrder.type === 'DELIVERY' && foundOrder.manualTotal != null ? foundOrder.manualTotal : (foundOrder.total ?? 0)).toLocaleString()} confirmed
                             </p>
                           </div>
                         )}
@@ -925,7 +925,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                      earnedCoinsValue={foundOrderEarnedCoins}
                      nextOrderCoupon={foundOrderNextCoupon}
                      orderType={foundOrder.type}
-                     totalValue={foundOrder.type === 'DELIVERY' && foundOrder.manualTotal !== undefined ? foundOrder.manualTotal : foundOrder.total}
+                     totalValue={foundOrder.type === 'DELIVERY' && foundOrder.manualTotal != null ? foundOrder.manualTotal : foundOrder.total}
                     />
 
                 </div>
@@ -1162,7 +1162,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                            </span>
                         </td>
                         <td className="px-4 lg:px-8 py-4 text-right font-black text-xs lg:text-sm">
-                           {o.type === 'DELIVERY' && o.manualTotal !== undefined ? (
+                           {o.type === 'DELIVERY' && o.manualTotal != null ? (
                              <div className="flex flex-col items-end">
                                <span>₹{o.manualTotal}</span>
                                <span className="text-[7px] text-brand-brown/30 font-bold uppercase tracking-tighter">Menu Price: ₹{o.total}</span>
@@ -1597,7 +1597,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                             <div className="flex items-center gap-6">
                               <div className="text-right hidden sm:block">
                                 <p className="text-lg font-black text-brand-brown">
-                                  ₹{(o.type === 'DELIVERY' && o.manualTotal !== undefined ? o.manualTotal : (o.total ?? 0)).toLocaleString()}
+                                  ₹{(o.type === 'DELIVERY' && o.manualTotal != null ? o.manualTotal : (o.total ?? 0)).toLocaleString()}
                                 </p>
                                 {o.items.some(i => i.paidWithCoins) && (
                                   <p className="text-[8px] font-black uppercase text-indigo-600 tracking-tighter mt-1">

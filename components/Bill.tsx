@@ -262,7 +262,7 @@ const Bill: React.FC<BillProps> = ({
               {customer && (
                 <div className="text-right">
                   <span className="text-[10px] font-black text-brand-yellow uppercase tracking-widest animate-in fade-in slide-in-from-right-2 block drop-shadow-sm">
-                    {customer.name || 'Anonymous Explorer'} • {tier?.name} Stage • {customer.totalOrders} Visits
+                    {customer.name || 'Anonymous Explorer'} • {tier?.name} Stage • Visit #{customer.totalOrders + 1}
                   </span>
                   {nextTarget && (
                     <div className="mt-1">

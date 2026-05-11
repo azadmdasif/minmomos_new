@@ -35,7 +35,7 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
           const h = getISTHour(order.date);
           if (h >= 0 && h < 24) {
             if (order.type === 'DELIVERY') {
-              hours[h].deliveryRevenue += (order.manualTotal !== undefined ? order.manualTotal : order.total);
+              hours[h].deliveryRevenue += (order.manualTotal != null ? order.manualTotal : order.total);
             } else {
               hours[h].revenue += (order.total || 0);
             }
@@ -74,7 +74,7 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
           const day = days.find(day => day.key === d);
           if (day) {
             if (order.type === 'DELIVERY') {
-              day.deliveryRevenue += (order.manualTotal !== undefined ? order.manualTotal : order.total);
+              day.deliveryRevenue += (order.manualTotal != null ? order.manualTotal : order.total);
             } else {
               day.revenue += (order.total || 0);
             }

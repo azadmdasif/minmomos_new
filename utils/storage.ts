@@ -302,8 +302,8 @@ export async function saveOrder(
       table_id: tableId || null, 
       customer_id: customerId,
       customer_phone: customerPhone || null,
-      manual_total: manualTotal !== undefined ? Math.round(manualTotal) : null,
-      manual_discount: manualDiscount !== undefined ? Math.round(manualDiscount) : null
+      manual_total: manualTotal != null ? Math.round(manualTotal) : null,
+      manual_discount: manualDiscount != null ? Math.round(manualDiscount) : null
     }).select().single();
     
     if (orderError) {
@@ -348,8 +348,8 @@ export async function saveOrder(
     }
 
     // 1.5 Update Customer LTV and Total Orders
-    if (customerId) {
-        await syncCustomerStats(customerId, customerPhone);
+    if (customerPhone) {
+        await syncCustomerStats(customerPhone);
         
         const usesWelcomeDiscount = orderItems.some(i => i.id === 'welcome-discount');
         if (usesWelcomeDiscount) {
@@ -790,14 +790,23 @@ export async function getDeletedOrdersForDateRange(startDate: string, endDate: s
   return results;
 }
 
-export async function syncCustomerStats(customerId: string, phone?: string): Promise<void> {
-  const { data: stats } = await supabase.rpc('get_customer_stats');
-  const customerStats = stats?.find((c: any) => c.id === customerId || (phone && c.phone === phone));
-  
-  await supabase.from('customers').update({
-      total_orders: customerStats?.total_orders || 0,
-      ltv: customerStats?.total_spent || 0
-  }).eq('id', customerId);
+export async function syncCustomerStats(phone: string): Promise<void> {
+  const history = await fetchCustomerHistory(phone);
+  const totalOrders = history.length;
+  const totalSpent = history.reduce((acc, o) => acc + (o.manualTotal != null ? o.manualTotal : o.total), 0);
+  const redeemedCoins = await getRedeemedCoins(phone);
+  const minCoins = calculateTotalMinCoins(totalSpent, redeemedCoins);
+  const lastVisit = history.length > 0 ? history[0].date : null;
+
+  await supabase
+    .from('customers')
+    .update({ 
+      total_orders: totalOrders,
+      total_spent: totalSpent,
+      min_coins: minCoins,
+      last_visit: lastVisit
+    })
+    .eq('phone', phone);
 }
 
 export async function deleteOrderByBillNumber(billNumber: number, reason: string): Promise<void> {
@@ -902,8 +911,8 @@ export async function deleteOrderByBillNumber(billNumber: number, reason: string
         .eq('id', order.customer_id);
     }
 
-    if (order.customer_id) {
-      await syncCustomerStats(order.customer_id, order.customer_phone);
+    if (order.customer_phone) {
+      await syncCustomerStats(order.customer_phone);
     }
   }
 }
@@ -985,7 +994,7 @@ export async function getCustomerByPhone(phone: string): Promise<Customer | null
   
   const totalOrders = history.length;
   // Account for manual totals (delivery platforms) in LTV calculation
-  const totalSpent = history.reduce((acc, o) => acc + (o.manualTotal !== null && o.manualTotal !== undefined ? o.manualTotal : o.total), 0);
+  const totalSpent = history.reduce((acc, o) => acc + (o.manualTotal != null ? o.manualTotal : o.total), 0);
   const redeemedCoins = await getRedeemedCoins(phone);
   
   const lastVisit = history.length > 0 ? history[0].date : dbCust.last_visit;

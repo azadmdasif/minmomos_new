@@ -43,8 +43,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; deliveryRevenue: number;
         totalCogs: number; dineInCogs: number; takeawayCogs: number; deliveryCogs: number;
         totalOrders: number; dineInOrders: number; takeawayOrders: number; deliveryOrders: number;
-        repeatRev: number; newRegRev: number; unregRev: number;
-        repeatOrders: number; newRegOrders: number; unregOrders: number;
+        repeatRev: number; newRegRev: number; unregRev: number; zomatoRev: number;
+        repeatOrders: number; newRegOrders: number; unregOrders: number; zomatoOrders: number;
       }> = {};
       
       // Initialize all dates in range to 0
@@ -55,8 +55,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, deliveryRevenue: 0,
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, deliveryCogs: 0,
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0, deliveryOrders: 0,
-            repeatRev: 0, newRegRev: 0, unregRev: 0,
-            repeatOrders: 0, newRegOrders: 0, unregOrders: 0,
+            repeatRev: 0, newRegRev: 0, unregRev: 0, zomatoRev: 0,
+            repeatOrders: 0, newRegOrders: 0, unregOrders: 0, zomatoOrders: 0,
           };
           curr.setDate(curr.getDate() + 1);
       }
@@ -66,14 +66,17 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         const dateStr = getISTDateString(order.date);
         if (dailyData[dateStr]) {
           const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
-          const actualRev = order.type === 'DELIVERY' && order.manualTotal !== undefined ? order.manualTotal : order.total;
+          const actualRev = order.type === 'DELIVERY' && order.manualTotal != null ? order.manualTotal : order.total;
           
           dailyData[dateStr].totalRevenue += actualRev;
           dailyData[dateStr].totalOrders += 1;
           dailyData[dateStr].totalCogs += totalCost;
 
           // Segment Breakdown logic
-          if (!order.customerPhone) {
+          if (order.type === 'DELIVERY') {
+            dailyData[dateStr].zomatoRev += actualRev;
+            dailyData[dateStr].zomatoOrders += 1;
+          } else if (!order.customerPhone) {
             dailyData[dateStr].unregRev += actualRev;
             dailyData[dateStr].unregOrders += 1;
           } else {
@@ -136,9 +139,11 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             repeatRev: values.repeatRev,
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
+            zomatoRev: values.zomatoRev,
             repeatAOV: values.repeatOrders > 0 ? values.repeatRev / values.repeatOrders : 0,
             newRegAOV: values.newRegOrders > 0 ? values.newRegRev / values.newRegOrders : 0,
-            unregAOV: values.unregOrders > 0 ? values.unregRev / values.unregOrders : 0
+            unregAOV: values.unregOrders > 0 ? values.unregRev / values.unregOrders : 0,
+            zomatoAOV: values.zomatoOrders > 0 ? values.zomatoRev / values.zomatoOrders : 0
           };
         })
         .sort((a, b) => a.date.localeCompare(b.date));
@@ -180,9 +185,11 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           repeatRevSMA: calculateWMA(arr, idx, 'repeatRev'),
           newRegRevSMA: calculateWMA(arr, idx, 'newRegRev'),
           unregRevSMA: calculateWMA(arr, idx, 'unregRev'),
+          zomatoRevSMA: calculateWMA(arr, idx, 'zomatoRev'),
           repeatAOVSMA: calculateWMA(arr, idx, 'repeatAOV'),
           newRegAOVSMA: calculateWMA(arr, idx, 'newRegAOV'),
           unregAOVSMA: calculateWMA(arr, idx, 'unregAOV'),
+          zomatoAOVSMA: calculateWMA(arr, idx, 'zomatoAOV'),
           // Sit-Take WMA
           dineInRevSMA: calculateWMA(arr, idx, 'dineInRev'),
           takeawayRevSMA: calculateWMA(arr, idx, 'takeawayRev'),
@@ -216,8 +223,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; deliveryRevenue: number;
         totalCogs: number; dineInCogs: number; takeawayCogs: number; deliveryCogs: number;
         totalOrders: number; dineInOrders: number; takeawayOrders: number; deliveryOrders: number;
-        repeatRev: number; newRegRev: number; unregRev: number;
-        repeatOrders: number; newRegOrders: number; unregOrders: number;
+        repeatRev: number; newRegRev: number; unregRev: number; zomatoRev: number;
+        repeatOrders: number; newRegOrders: number; unregOrders: number; zomatoOrders: number;
         weekNum: number;
         year: number;
         monday: string;
@@ -254,8 +261,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, deliveryRevenue: 0,
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, deliveryCogs: 0,
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0, deliveryOrders: 0,
-            repeatRev: 0, newRegRev: 0, unregRev: 0,
-            repeatOrders: 0, newRegOrders: 0, unregOrders: 0,
+            repeatRev: 0, newRegRev: 0, unregRev: 0, zomatoRev: 0,
+            repeatOrders: 0, newRegOrders: 0, unregOrders: 0, zomatoOrders: 0,
             weekNum: w,
             year: y,
             monday: mon.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
@@ -264,14 +271,17 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         }
 
         const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
-        const actualRev = order.type === 'DELIVERY' && order.manualTotal !== undefined ? order.manualTotal : order.total;
+        const actualRev = order.type === 'DELIVERY' && order.manualTotal != null ? order.manualTotal : order.total;
         
         weeklyData[key].totalRevenue += actualRev;
         weeklyData[key].totalOrders += 1;
         weeklyData[key].totalCogs += totalCost;
 
         // Segment Breakdown
-        if (!order.customerPhone) {
+        if (order.type === 'DELIVERY') {
+          weeklyData[key].zomatoRev += actualRev;
+          weeklyData[key].zomatoOrders += 1;
+        } else if (!order.customerPhone) {
           weeklyData[key].unregRev += actualRev;
           weeklyData[key].unregOrders += 1;
         } else {
@@ -333,9 +343,11 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             repeatRev: values.repeatRev,
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
+            zomatoRev: values.zomatoRev,
             repeatAOV: values.repeatOrders > 0 ? values.repeatRev / values.repeatOrders : 0,
             newRegAOV: values.newRegOrders > 0 ? values.newRegRev / values.newRegOrders : 0,
             unregAOV: values.unregOrders > 0 ? values.unregRev / values.unregOrders : 0,
+            zomatoAOV: values.zomatoOrders > 0 ? values.zomatoRev / values.zomatoOrders : 0,
             revenueSMA: 0, // SMA not supported in weekly view yet
             profitSMA: 0,
             ticketSMA: 0
@@ -348,8 +360,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; deliveryRevenue: number;
         totalCogs: number; dineInCogs: number; takeawayCogs: number; deliveryCogs: number;
         totalOrders: number; dineInOrders: number; takeawayOrders: number; deliveryOrders: number;
-        repeatRev: number; newRegRev: number; unregRev: number;
-        repeatOrders: number; newRegOrders: number; unregOrders: number;
+        repeatRev: number; newRegRev: number; unregRev: number; zomatoRev: number;
+        repeatOrders: number; newRegOrders: number; unregOrders: number; zomatoOrders: number;
         month: string;
         year: number;
       }> = {};
@@ -371,22 +383,25 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, deliveryRevenue: 0,
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, deliveryCogs: 0,
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0, deliveryOrders: 0,
-            repeatRev: 0, newRegRev: 0, unregRev: 0,
-            repeatOrders: 0, newRegOrders: 0, unregOrders: 0,
+            repeatRev: 0, newRegRev: 0, unregRev: 0, zomatoRev: 0,
+            repeatOrders: 0, newRegOrders: 0, unregOrders: 0, zomatoOrders: 0,
             month: new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', month: 'short' }).format(date),
             year: year
           };
         }
 
         const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
-        const actualRev = order.type === 'DELIVERY' && order.manualTotal !== undefined ? order.manualTotal : order.total;
+        const actualRev = order.type === 'DELIVERY' && order.manualTotal != null ? order.manualTotal : order.total;
         
         monthlyData[key].totalRevenue += actualRev;
         monthlyData[key].totalOrders += 1;
         monthlyData[key].totalCogs += totalCost;
 
         // Segment Breakdown
-        if (!order.customerPhone) {
+        if (order.type === 'DELIVERY') {
+          monthlyData[key].zomatoRev += actualRev;
+          monthlyData[key].zomatoOrders += 1;
+        } else if (!order.customerPhone) {
           monthlyData[key].unregRev += actualRev;
           monthlyData[key].unregOrders += 1;
         } else {
@@ -448,9 +463,11 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             repeatRev: values.repeatRev,
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
+            zomatoRev: values.zomatoRev,
             repeatAOV: values.repeatOrders > 0 ? values.repeatRev / values.repeatOrders : 0,
             newRegAOV: values.newRegOrders > 0 ? values.newRegRev / values.newRegOrders : 0,
             unregAOV: values.unregOrders > 0 ? values.unregRev / values.unregOrders : 0,
+            zomatoAOV: values.zomatoOrders > 0 ? values.zomatoRev / values.zomatoOrders : 0,
             revenueSMA: 0,
             profitSMA: 0,
             ticketSMA: 0
@@ -600,6 +617,10 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                       <div className="w-3 h-3 rounded-full bg-[#6B7280] shadow-sm" />
                       <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Unreg. Revenue</span>
                     </div>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-3 h-3 rounded-full bg-[#E11D48] shadow-sm" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Zomato Rev.</span>
+                    </div>
                   </>
                 )}
                 {showAvgTicket && (
@@ -615,6 +636,10 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                     <div className="flex items-center gap-2.5 opacity-80">
                       <div className="w-3 h-3 rounded-full border-2 border-dashed border-[#6B7280]" />
                       <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Unreg. AOV</span>
+                    </div>
+                    <div className="flex items-center gap-2.5 opacity-80">
+                      <div className="w-3 h-3 rounded-full border-2 border-dashed border-[#E11D48]" />
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Zomato AOV</span>
                     </div>
                   </>
                 )}
@@ -724,7 +749,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                       <div className="space-y-4">
                         {/* Main Metrics */}
                         <div className="space-y-1.5">
-                          {payload.filter((p: any) => !['repeatRev', 'newRegRev', 'unregRev', 'repeatAOV', 'newRegAOV', 'unregAOV'].includes(p.dataKey)).map((entry: any, index: number) => (
+                          {payload.filter((p: any) => !['repeatRev', 'newRegRev', 'unregRev', 'zomatoRev', 'repeatAOV', 'newRegAOV', 'unregAOV', 'zomatoAOV'].includes(p.dataKey)).map((entry: any, index: number) => (
                             <div key={`main-${index}`} className="flex items-center justify-between gap-4">
                               <div className="flex items-center gap-2">
                                 <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
@@ -746,7 +771,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                             {[
                               { label: 'Repeat', rev: data.repeatRev, aov: data.repeatAOV, color: '#10B981' },
                               { label: 'New Registered', rev: data.newRegRev, aov: data.newRegAOV, color: '#F59E0B' },
-                              { label: 'Unregistered', rev: data.unregRev, aov: data.unregAOV, color: '#6B7280' }
+                              { label: 'Unregistered', rev: data.unregRev, aov: data.unregAOV, color: '#6B7280' },
+                              { label: 'Zomato User', rev: data.zomatoRev, aov: data.zomatoAOV, color: '#E11D48' }
                             ].map((seg, idx) => (
                               <div key={idx} className="flex flex-col gap-1 bg-brand-brown/5 p-2 rounded-lg">
                                 <div className="flex items-center justify-between">
@@ -891,6 +917,15 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                        strokeWidth={3}
                        dot={{ r: 3, fill: '#6B7280' }}
                     />
+                    <Line 
+                       yAxisId="left"
+                       type="monotone" 
+                       dataKey="zomatoRev" 
+                       name="Zomato Revenue" 
+                       stroke="#E11D48" 
+                       strokeWidth={3}
+                       dot={{ r: 3, fill: '#E11D48' }}
+                    />
                   </>
                 )}
 
@@ -923,6 +958,16 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                        dataKey="unregAOV" 
                        name="Unregistered AOV" 
                        stroke="#6B7280" 
+                       strokeWidth={2}
+                       strokeDasharray="5 5"
+                       dot={false}
+                    />
+                    <Line 
+                       yAxisId="right"
+                       type="monotone" 
+                       dataKey="zomatoAOV" 
+                       name="Zomato AOV" 
+                       stroke="#E11D48" 
                        strokeWidth={2}
                        strokeDasharray="5 5"
                        dot={false}

@@ -14,7 +14,7 @@ const OrderModeChart: React.FC<OrderModeChartProps> = ({ orders }) => {
     let deliveryRev = 0;
 
     orders.forEach(o => {
-      const rev = o.type === 'DELIVERY' && o.manualTotal !== undefined ? o.manualTotal : o.total;
+      const rev = o.type === 'DELIVERY' && o.manualTotal != null ? o.manualTotal : o.total;
       if (o.type === 'DINE_IN') dineInRev += rev;
       else if (o.type === 'TAKEAWAY') takeawayRev += rev;
       else if (o.type === 'DELIVERY') deliveryRev += rev;

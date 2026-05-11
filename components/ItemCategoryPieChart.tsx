@@ -6,6 +6,9 @@ import { PieChart as PieChartIcon, TrendingUp, DollarSign } from 'lucide-react';
 
 interface ItemCategoryPieChartProps {
   orders: CompletedOrder[];
+  title?: string;
+  colorTheme?: string;
+  disabled?: boolean;
 }
 
 const COLORS = [
@@ -24,11 +27,11 @@ const getBaseName = (name: string): string => {
     .trim();
 };
 
-const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders }) => {
+const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders, title, colorTheme, disabled }) => {
   const [viewMode, setViewMode] = useState<'revenue' | 'profit'>('revenue');
 
   const chartData = useMemo(() => {
-    const categoryMap = new Map<string, { name: string; revenue: number; profit: number }>();
+    const categoryMap = new Map<string, { name: string; revenue: number; profit: number; quantity: number }>();
 
     orders.forEach(order => {
       order.items.forEach(item => {
@@ -36,16 +39,19 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders }) =
         const revenue = item.price * item.quantity;
         const cost = (item.cost ?? 0) * item.quantity;
         const profit = revenue - cost;
+        const quantity = item.quantity;
 
         const existing = categoryMap.get(baseName);
         if (existing) {
           existing.revenue += revenue;
           existing.profit += profit;
+          existing.quantity += quantity;
         } else {
           categoryMap.set(baseName, {
             name: baseName,
             revenue,
-            profit
+            profit,
+            quantity
           });
         }
       });
@@ -54,7 +60,10 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders }) =
     return Array.from(categoryMap.values())
       .map(item => ({
         name: item.name,
-        value: Math.round(viewMode === 'revenue' ? item.revenue : item.profit)
+        value: Math.round(viewMode === 'revenue' ? item.revenue : item.profit),
+        revenue: item.revenue,
+        profit: item.profit,
+        quantity: item.quantity
       }))
       .filter(item => item.value > 0)
       .sort((a, b) => b.value - a.value);
@@ -65,14 +74,22 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders }) =
   }, [chartData]);
 
   return (
-    <div className="bg-white rounded-[3rem] shadow-xl p-8 border border-brand-stone h-full flex flex-col">
+    <div className={`bg-white rounded-[3rem] shadow-xl p-8 border border-brand-stone h-full flex flex-col transition-all lg:hover:scale-[1.01] ${disabled ? 'opacity-40 grayscale pointer-events-none' : ''}`}>
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-8">
         <div>
           <div className="flex items-center gap-2 mb-1">
-             <PieChartIcon className="w-5 h-5 text-brand-red" />
-             <h3 className="text-xl font-black text-brand-brown uppercase italic tracking-tighter">Item <span className="text-brand-red">Performance</span></h3>
+             <PieChartIcon className="w-5 h-5" style={{ color: colorTheme || '#EF4444' }} />
+             <h3 className="text-xl font-black text-brand-brown uppercase italic tracking-tighter">
+               {title ? (
+                 <>
+                   {title.split(' ')[0]} <span style={{ color: colorTheme || '#EF4444' }}>{title.split(' ').slice(1).join(' ') || 'Performance'}</span>
+                 </>
+               ) : (
+                 <>Item <span className="text-brand-red">Performance</span></>
+               )}
+             </h3>
           </div>
-          <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest">Revenue/Profit share by item category</p>
+          <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest">Rev/Prof share by item category</p>
         </div>
 
         <div className="flex items-center gap-2 bg-brand-brown/5 p-1 rounded-2xl border border-brand-stone/30 self-start">
@@ -83,7 +100,7 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders }) =
             }`}
           >
             <DollarSign className="w-3 h-3" />
-            Revenue
+            Rev
           </button>
           <button 
             onClick={() => setViewMode('profit')}
@@ -92,7 +109,7 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders }) =
             }`}
           >
             <TrendingUp className="w-3 h-3" />
-            Profit
+            Prof
           </button>
         </div>
       </div>
@@ -122,14 +139,21 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders }) =
                     const val = payload[0].value;
                     const percentage = totalValue > 0 ? ((Number(val) / totalValue) * 100).toFixed(1) : '0';
                     return (
-                      <div className="bg-white p-4 shadow-2xl rounded-2xl border border-brand-stone/20">
-                        <p className="text-[10px] font-black text-brand-brown/40 uppercase tracking-widest mb-1">{data.name}</p>
-                        <p className="text-sm font-black text-brand-brown">
-                          ₹{Number(val).toLocaleString()} {viewMode}
-                        </p>
-                        <p className="text-[10px] font-bold text-brand-red uppercase tracking-tight mt-1">
-                          {percentage}% of total {viewMode}
-                        </p>
+                      <div className="bg-[#1A1817] p-4 shadow-2xl rounded-2xl border border-white/10 backdrop-blur-xl">
+                        <p className="text-[10px] font-black text-white/40 uppercase tracking-widest mb-2 border-b border-white/5 pb-2">{data.name}</p>
+                        <div className="space-y-1.5">
+                          <p className="text-sm font-black text-white">
+                            ₹{Number(val).toLocaleString()} <span className="text-brand-yellow font-bold uppercase text-[9px] ml-1">{viewMode === 'revenue' ? 'Rev' : 'Prof'}</span>
+                          </p>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[9px] font-bold text-white/50 uppercase tracking-tighter">Units Sold</span>
+                            <span className="text-[10px] font-black text-white">{data.quantity}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[9px] font-bold text-white/50 uppercase tracking-tighter">Contribution</span>
+                            <span className="text-[10px] font-black text-brand-red">{percentage}%</span>
+                          </div>
+                        </div>
                       </div>
                     );
                   }
@@ -146,23 +170,44 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders }) =
                     const valA = a.payload?.value ?? 0;
                     const valB = b.payload?.value ?? 0;
                     return valB - valA;
-                  });
-
-                  return (
-                    <div className="flex flex-wrap justify-center gap-x-6 gap-y-3 mt-8 px-4 overflow-y-auto max-h-[150px] no-scrollbar">
+                  });                  return (
+                    <div className="flex flex-wrap justify-center gap-x-6 gap-y-3 mt-8 px-4 overflow-y-auto max-h-[140px] no-scrollbar">
                       {sortedPayload.map((entry: any, index: number) => {
-                        const itemValue = entry.payload?.value ?? 0;
+                        const itemData = entry.payload;
+                        const itemValue = itemData?.value ?? 0;
                         const percentage = totalValue > 0 ? ((itemValue / totalValue) * 100).toFixed(1) : '0';
                         return (
-                          <div key={`legend-${index}`} className="flex items-center gap-3 group cursor-pointer">
+                          <div key={`legend-${index}`} className="flex items-center gap-3 group cursor-pointer relative">
                             <div className="w-2.5 h-2.5 rounded-full transition-transform group-hover:scale-125 shadow-sm" style={{ backgroundColor: entry.color }} />
                             <div className="flex flex-col">
-                              <span className="text-[10px] font-black text-brand-brown uppercase tracking-tight leading-none">
+                              <span className="text-[10px] font-black text-brand-brown uppercase tracking-tight leading-none group-hover:text-brand-red transition-colors">
                                 {entry.value}
                               </span>
                               <span className="text-[8px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">
                                 {percentage}% Share
                               </span>
+                            </div>
+                            
+                            {/* Hover Details Popover */}
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-4 opacity-0 group-hover:opacity-100 pointer-events-none transition-all duration-300 translate-y-2 group-hover:translate-y-0 z-[100]">
+                               <div className="bg-[#1A1817] text-white p-3 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] border border-white/20 min-w-[130px] backdrop-blur-xl">
+                                  <p className="text-[8px] font-black uppercase tracking-widest text-brand-yellow/80 border-b border-white/10 pb-2 mb-2">{entry.value}</p>
+                                  <div className="space-y-2">
+                                    <div className="flex items-center justify-between gap-4">
+                                      <span className="text-[9px] font-bold text-white/40 uppercase tracking-tighter">Qty Sold</span>
+                                      <span className="text-[11px] font-black">{itemData.quantity}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-4">
+                                      <span className="text-[9px] font-bold text-white/40 uppercase tracking-tighter">Total Rev</span>
+                                      <span className="text-[11px] font-black text-brand-yellow">₹{itemData.revenue?.toLocaleString()}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-4">
+                                      <span className="text-[9px] font-bold text-white/40 uppercase tracking-tighter">Market Share</span>
+                                      <span className="text-[11px] font-black text-brand-red">{percentage}%</span>
+                                    </div>
+                                  </div>
+                               </div>
+                               <div className="w-3 h-3 bg-[#1A1817] rotate-45 absolute -bottom-1.5 left-1/2 -translate-x-1/2 border-r border-b border-white/20" />
                             </div>
                           </div>
                         );
@@ -180,7 +225,7 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders }) =
         )}
 
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[60px] text-center pointer-events-none">
-           <p className="text-[8px] font-black text-brand-brown/30 uppercase tracking-[0.2em] mb-1">Total {viewMode}</p>
+           <p className="text-[8px] font-black text-brand-brown/30 uppercase tracking-[0.2em] mb-1">Total {viewMode === 'revenue' ? 'Rev' : 'Prof'}</p>
            <p className="text-2xl font-black text-brand-brown tracking-tighter italic">₹{totalValue.toLocaleString()}</p>
         </div>
       </div>
