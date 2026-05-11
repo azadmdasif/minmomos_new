@@ -11,7 +11,7 @@ import {
   ComposedChart
 } from 'recharts';
 import { CompletedOrder, Customer } from '../types';
-import { TrendingUp, DollarSign, ShoppingBag, BarChart2, Users } from 'lucide-react';
+import { TrendingUp, DollarSign, ShoppingBag, BarChart2, Users, Eye, EyeOff } from 'lucide-react';
 import { getISTDate, getISTDateString } from '../utils/storage';
 
 interface PerformanceChartProps {
@@ -29,7 +29,17 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
   const [showRevenue, setShowRevenue] = useState(true);
   const [showProfit, setShowProfit] = useState(true);
   const [showAvgTicket, setShowAvgTicket] = useState(true);
+  const [hideCurves, setHideCurves] = useState<string[]>([]);
   const [viewType, setViewType] = useState<'daily' | 'weekly' | 'monthly'>('daily');
+
+  const toggleCurveVisibility = (metric: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setHideCurves(prev => 
+      prev.includes(metric) ? prev.filter(m => m !== metric) : [...prev, metric]
+    );
+  };
+
+  const isCurveVisible = (metric: string) => !hideCurves.includes(metric);
 
   const chartData = useMemo(() => {
     // 1. Determine date range for data population
@@ -519,62 +529,111 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         <div className="flex flex-wrap items-center gap-3 bg-brand-brown/5 p-2 rounded-[1.5rem] border border-brand-brown/10">
           <button 
             onClick={() => setShowRevenue(!showRevenue)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
+            className={`flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
               showRevenue ? 'bg-red-500 border-red-600 text-white shadow-red-200' : 'bg-white border-brand-stone/50 text-brand-brown/40'
             }`}
           >
             <div className={`w-2 h-2 rounded-full ${showRevenue ? 'bg-white' : 'bg-gray-300'}`} />
             <span className="text-[10px] font-black uppercase tracking-wider">Revenue</span>
+            {showRevenue && (
+              <div 
+                onClick={(e) => toggleCurveVisibility('revenue', e)}
+                className="ml-1 p-1 hover:bg-black/10 rounded-full transition-colors"
+                title={isCurveVisible('revenue') ? "Hide from chart" : "Show on chart"}
+              >
+                {isCurveVisible('revenue') ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3 text-white/50" />}
+              </div>
+            )}
           </button>
 
           <button 
             onClick={() => setShowProfit(!showProfit)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
+            className={`flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
               showProfit ? 'bg-green-500 border-green-600 text-white shadow-green-200' : 'bg-white border-brand-stone/50 text-brand-brown/40'
             }`}
           >
             <div className={`w-2 h-2 rounded-full ${showProfit ? 'bg-white' : 'bg-gray-300'}`} />
             <span className="text-[10px] font-black uppercase tracking-wider">Profit</span>
+            {showProfit && (
+              <div 
+                onClick={(e) => toggleCurveVisibility('profit', e)}
+                className="ml-1 p-1 hover:bg-black/10 rounded-full transition-colors"
+              >
+                {isCurveVisible('profit') ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3 text-white/50" />}
+              </div>
+            )}
           </button>
 
           <button 
             onClick={() => setShowAvgTicket(!showAvgTicket)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
+            className={`flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
               showAvgTicket ? 'bg-indigo-500 border-indigo-600 text-white shadow-indigo-200' : 'bg-white border-brand-stone/50 text-brand-brown/40'
             }`}
           >
             <div className={`w-2 h-2 rounded-full ${showAvgTicket ? 'bg-white' : 'bg-gray-300'}`} />
             <span className="text-[10px] font-black uppercase tracking-wider">Ticket</span>
+            {showAvgTicket && (
+              <div 
+                onClick={(e) => toggleCurveVisibility('ticket', e)}
+                className="ml-1 p-1 hover:bg-black/10 rounded-full transition-colors"
+              >
+                {isCurveVisible('ticket') ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3 text-white/50" />}
+              </div>
+            )}
           </button>
 
           <button 
             onClick={() => setShowSegments(!showSegments)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
+            className={`flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
               showSegments ? 'bg-amber-500 border-amber-600 text-white shadow-amber-200' : 'bg-white border-brand-stone/50 text-brand-brown/40'
             }`}
           >
             <Users className="w-3 h-3" />
             <span className="text-[10px] font-black uppercase tracking-wider">Segments</span>
+            {showSegments && (
+              <div 
+                onClick={(e) => toggleCurveVisibility('segments', e)}
+                className="ml-1 p-1 hover:bg-black/10 rounded-full transition-colors"
+              >
+                {isCurveVisible('segments') ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3 text-white/50" />}
+              </div>
+            )}
           </button>
 
           <button 
             onClick={() => setShowSitTake(!showSitTake)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
+            className={`flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
               showSitTake ? 'bg-brand-brown border-brand-brown text-brand-yellow shadow-brand-yellow/20' : 'bg-white border-brand-stone/50 text-brand-brown/40'
             }`}
           >
             <ShoppingBag className="w-3 h-3" />
             <span className="text-[10px] font-black uppercase tracking-wider">Sit-Take</span>
+            {showSitTake && (
+              <div 
+                onClick={(e) => toggleCurveVisibility('sit-take', e)}
+                className="ml-1 p-1 hover:bg-black/10 rounded-full transition-colors"
+              >
+                {isCurveVisible('sit-take') ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3 text-brand-yellow/50" />}
+              </div>
+            )}
           </button>
 
           <button 
             onClick={() => setShowDelivery(!showDelivery)}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
+            className={`flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
               showDelivery ? 'bg-brand-red border-brand-red text-white shadow-brand-red/20' : 'bg-white border-brand-stone/50 text-brand-brown/40'
             }`}
           >
             <TrendingUp className="w-3 h-3" />
             <span className="text-[10px] font-black uppercase tracking-wider">Delivery</span>
+            {showDelivery && (
+              <div 
+                onClick={(e) => toggleCurveVisibility('delivery', e)}
+                className="ml-1 p-1 hover:bg-black/10 rounded-full transition-colors"
+              >
+                {isCurveVisible('delivery') ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3 text-white/50" />}
+              </div>
+            )}
           </button>
 
           {viewType === 'daily' && (
@@ -871,9 +930,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                 return null;
               }}
             />
-            {/* Legend removed in favor of custom interactive toggles above */}
+            {/* Legend removed in favor of custom interactive toggles */}
             
-            {showRevenue && (
+            {showRevenue && isCurveVisible('revenue') && (
               <Area 
                  yAxisId="left"
                  type="monotone" 
@@ -888,7 +947,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             {showSegments && (
               <>
                 {/* Revenue Lines - Only if Revenue metric is on */}
-                {showRevenue && (
+                {showRevenue && isCurveVisible('segments') && (
                   <>
                     <Line 
                        yAxisId="left"
@@ -930,7 +989,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                 )}
 
                 {/* AOV Lines (Dashed) - Only if Ticket metric is on */}
-                {showAvgTicket && (
+                {showAvgTicket && isCurveVisible('segments') && (
                   <>
                     <Line 
                        yAxisId="right"
@@ -976,7 +1035,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                 )}
               </>
             )}
-            {showProfit && (
+            {showProfit && isCurveVisible('profit') && (
               <Area 
                  yAxisId="left"
                  type="monotone" 
@@ -992,7 +1051,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             {showSitTake && (
               <>
                 {/* Sit-Take Revenue Lines */}
-                {showRevenue && (
+                {showRevenue && isCurveVisible('sit-take') && (
                   <>
                     <Line 
                        yAxisId="left"
@@ -1016,7 +1075,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                 )}
 
                 {/* Sit-Take Profit Lines */}
-                {showProfit && (
+                {showProfit && isCurveVisible('sit-take') && (
                   <>
                     <Line 
                        yAxisId="left"
@@ -1042,7 +1101,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                 )}
 
                 {/* Sit-Take AOV Lines */}
-                {showAvgTicket && (
+                {showAvgTicket && isCurveVisible('sit-take') && (
                   <>
                     <Line 
                        yAxisId="right"
@@ -1068,7 +1127,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                 )}
               </>
             )}
-            {showAvgTicket && (
+            {showAvgTicket && isCurveVisible('ticket') && (
               <Line 
                  yAxisId="right"
                  type="monotone" 
@@ -1127,6 +1186,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                         <Line yAxisId="left" type="monotone" dataKey="repeatRevSMA" name="Repeat Rev (WMA)" stroke="#10B981" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
                         <Line yAxisId="left" type="monotone" dataKey="newRegRevSMA" name="New Reg Rev (WMA)" stroke="#F59E0B" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
                         <Line yAxisId="left" type="monotone" dataKey="unregRevSMA" name="Unreg Rev (WMA)" stroke="#6B7280" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                        <Line yAxisId="left" type="monotone" dataKey="zomatoRevSMA" name="Zomato Rev (WMA)" stroke="#E11D48" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
                       </>
                     )}
                     {showAvgTicket && (
@@ -1134,6 +1194,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                         <Line yAxisId="right" type="monotone" dataKey="repeatAOVSMA" name="Repeat AOV (WMA)" stroke="#10B981" strokeWidth={1} strokeDasharray="2 4" dot={false} />
                         <Line yAxisId="right" type="monotone" dataKey="newRegAOVSMA" name="New Reg AOV (WMA)" stroke="#F59E0B" strokeWidth={1} strokeDasharray="2 4" dot={false} />
                         <Line yAxisId="right" type="monotone" dataKey="unregAOVSMA" name="Unreg AOV (WMA)" stroke="#6B7280" strokeWidth={1} strokeDasharray="2 4" dot={false} />
+                        <Line yAxisId="right" type="monotone" dataKey="zomatoAOVSMA" name="Zomato AOV (WMA)" stroke="#E11D48" strokeWidth={1} strokeDasharray="2 4" dot={false} />
                       </>
                     )}
                   </>
@@ -1166,7 +1227,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             )}
             {showDelivery && (
               <>
-                {showRevenue && (
+                {showRevenue && isCurveVisible('delivery') && (
                   <Area 
                     yAxisId="left"
                     type="monotone" 
@@ -1178,7 +1239,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                     fillOpacity={0.2}
                   />
                 )}
-                {showProfit && (
+                {showProfit && isCurveVisible('delivery') && (
                   <Line 
                     yAxisId="left"
                     type="monotone" 
@@ -1190,7 +1251,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                     dot={false}
                   />
                 )}
-                {showAvgTicket && (
+                {showAvgTicket && isCurveVisible('delivery') && (
                   <Line 
                     yAxisId="right"
                     type="monotone" 
@@ -1201,6 +1262,12 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                     strokeDasharray="4 4"
                     dot={false}
                   />
+                )}
+                {showSMA && (
+                  <>
+                    {showRevenue && <Line yAxisId="left" type="monotone" dataKey="deliveryRevSMA" name="Delivery Rev (WMA)" stroke="#db2777" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />}
+                    {showProfit && <Line yAxisId="left" type="monotone" dataKey="deliveryProfitSMA" name="Delivery Prof (WMA)" stroke="#db2777" strokeWidth={1} strokeDasharray="1 3" dot={false} />}
+                  </>
                 )}
               </>
             )}
