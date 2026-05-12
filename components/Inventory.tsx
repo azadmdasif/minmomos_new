@@ -19,7 +19,9 @@ import {
   voidAllocation,
   getISTDate,
   getISTDateString,
-  getISTISOString
+  getISTISOString,
+  fetchMenuItems,
+  manuallyAdjustStock
 } from '../utils/storage';
 import { 
   PieChart, 
@@ -60,6 +62,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
 
   const [stations, setStations] = useState<Station[]>([]);
   const [centralStock, setCentralStock] = useState<CentralMaterial[]>([]);
+  const [menuItems, setMenuItems] = useState<any[]>([]);
   const [storeStock, setStoreStock] = useState<RawMaterial[]>([]);
   const [procurements, setProcurements] = useState<any[]>([]);
   const [allocations, setAllocations] = useState<StockAllocation[]>([]);
@@ -71,7 +74,10 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [isAllocateModalOpen, setIsAllocateModalOpen] = useState(false);
   const [isAddItemModalOpen, setIsAddItemModalOpen] = useState(false);
   const [isVoidModalOpen, setIsVoidModalOpen] = useState(false);
+  const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
   const [voidReason, setVoidReason] = useState('');
+  const [adjustReason, setAdjustReason] = useState('');
+  const [adjustValue, setAdjustValue] = useState('');
   const [itemToVoid, setItemToVoid] = useState<{ id: string, type: LedgerType } | null>(null);
   const [selectedItem, setSelectedItem] = useState<any>(null);
   
@@ -93,8 +99,12 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
 
         // Fetch Central Inventory
         try {
-          const c = await getCentralInventory();
+          const [c, m] = await Promise.all([
+            getCentralInventory(),
+            fetchMenuItems()
+          ]);
           setCentralStock(c);
+          if (m.data) setMenuItems(m.data);
         } catch (e: any) {
           if (e.code === '42P01') setIsTableMissing(true);
         }
@@ -360,6 +370,37 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     }
   };
 
+  const handleManualAdjust = async () => {
+    if (!selectedItem || adjustValue === '' || !adjustReason) {
+      alert("Please enter a new quantity and a reason.");
+      return;
+    }
+    
+    const newVal = parseFloat(adjustValue);
+    if (isNaN(newVal)) {
+      alert("Please enter a valid number.");
+      return;
+    }
+
+    try {
+      await manuallyAdjustStock(
+        selectedItem.id, 
+        selectedItem.branch_name || user.stationName || 'Main Station', 
+        newVal, 
+        adjustReason,
+        user.username
+      );
+      setIsAdjustModalOpen(false);
+      setAdjustValue('');
+      setAdjustReason('');
+      setSelectedItem(null);
+      await fetchData();
+      alert("Stock adjusted successfully.");
+    } catch (e: any) {
+      alert("Adjustment failed: " + e.message);
+    }
+  };
+
   const resetForm = () => {
     setQty('');
     setCost('');
@@ -546,26 +587,59 @@ NOTIFY pgrst, 'reload schema';`}
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                  {centralStock.filter(i => i.category === materialCategory).map(item => (
-                    <div key={item.id} className={`bg-white p-8 rounded-[2.5rem] shadow-sm border-2 border-brand-stone group transition-all ${item.is_finished ? 'bg-red-50 border-brand-red/50' : 'hover:border-brand-brown shadow-lg'}`}>
-                      <div className="flex justify-between items-start mb-6">
-                        <div>
-                          <h4 className="text-lg font-black text-brand-brown">{item.name}</h4>
-                          <p className={`text-[10px] font-black uppercase tracking-widest mt-1 ${item.is_finished ? 'text-brand-red' : 'text-brand-brown/40'}`}>HUB: {item.current_stock.toFixed(2)} {item.unit}</p>
+                    {centralStock.filter(i => i.category === materialCategory).map(item => {
+                      const linkedItems = menuItems.filter(mi => {
+                        const recipe = mi.recipe || {};
+                        const hasInMainRecipe = Object.values(recipe).some((r: any) => r.materialId === item.id);
+                        const hasInSizeRecipes = mi.sizeRecipes ? Object.values(mi.sizeRecipes).some((sr: any) => 
+                          sr && typeof sr === 'object' && Object.values(sr).some((r: any) => r && (r as any).materialId === item.id)
+                        ) : false;
+                        return hasInMainRecipe || hasInSizeRecipes;
+                      });
+
+                      return (
+                        <div key={item.id} className={`bg-white p-8 rounded-[2.5rem] shadow-sm border-2 border-brand-stone group transition-all flex flex-col ${item.is_finished ? 'bg-red-50 border-brand-red/50' : 'hover:border-brand-brown shadow-lg'}`}>
+                          <div className="flex justify-between items-start mb-4">
+                            <div>
+                              <h4 className="text-lg font-black text-brand-brown line-clamp-1">{item.name}</h4>
+                              <p className={`text-[10px] font-black uppercase tracking-widest mt-1 ${item.is_finished ? 'text-brand-red' : 'text-brand-brown/40'}`}>HUB: {item.current_stock.toFixed(2)} {item.unit}</p>
+                            </div>
+                            <button onClick={() => { setSelectedItem(item); setIsRestockModalOpen(true); }} className="p-3 bg-brand-stone/30 rounded-xl hover:bg-brand-yellow transition-colors group-hover:bg-brand-yellow shadow-sm flex-shrink-0">
+                              <svg className="w-5 h-5 text-brand-brown" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 4v16m8-8H4" /></svg>
+                            </button>
+                          </div>
+
+                          {linkedItems.length > 0 && (
+                            <div className="mb-6">
+                              <p className="text-[8px] font-black text-brand-brown/30 uppercase tracking-widest mb-2 flex items-center gap-1">
+                                <svg className="w-2 h-2" fill="currentColor" viewBox="0 0 24 24"><path d="M12 3L4 9v12h16V9l-8-6zm0 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
+                                Used in Recipes
+                              </p>
+                              <div className="flex flex-wrap gap-1">
+                                {linkedItems.slice(0, 3).map(mi => (
+                                  <span key={mi.id} className="px-2 py-0.5 bg-brand-stone/40 text-brand-brown/60 text-[7px] font-black rounded-md uppercase whitespace-nowrap">
+                                    {mi.name}
+                                  </span>
+                                ))}
+                                {linkedItems.length > 3 && (
+                                  <span className="px-2 py-0.5 bg-brand-stone/20 text-brand-brown/30 text-[7px] font-black rounded-md uppercase">
+                                    +{linkedItems.length - 3} More
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="mt-auto grid grid-cols-1 gap-3">
+                            {materialCategory !== 'INGREDIENT' ? (
+                              <button onClick={() => { setSelectedItem(item); setIsAllocateModalOpen(true); }} className="w-full py-4 bg-brand-brown text-brand-yellow rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all">Dispatch to Store</button>
+                            ) : (
+                              <button onClick={() => { markCentralFinished(item.id, !item.is_finished); fetchData(); }} className={`full py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg ${item.is_finished ? 'bg-brand-brown text-brand-yellow' : 'bg-brand-red text-white'}`}>{item.is_finished ? 'Receive Hub Stock' : 'Mark as Used Up'}</button>
+                            )}
+                          </div>
                         </div>
-                        <button onClick={() => { setSelectedItem(item); setIsRestockModalOpen(true); }} className="p-3 bg-brand-stone/30 rounded-xl hover:bg-brand-yellow transition-colors group-hover:bg-brand-yellow shadow-sm">
-                          <svg className="w-5 h-5 text-brand-brown" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 4v16m8-8H4" /></svg>
-                        </button>
-                      </div>
-                      <div className="grid grid-cols-1 gap-3">
-                        {materialCategory !== 'INGREDIENT' ? (
-                          <button onClick={() => { setSelectedItem(item); setIsAllocateModalOpen(true); }} className="w-full py-4 bg-brand-brown text-brand-yellow rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all">Dispatch to Store</button>
-                        ) : (
-                          <button onClick={() => { markCentralFinished(item.id, !item.is_finished); fetchData(); }} className={`full py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg ${item.is_finished ? 'bg-brand-brown text-brand-yellow' : 'bg-brand-red text-white'}`}>{item.is_finished ? 'Receive Hub Stock' : 'Mark as Used Up'}</button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+                      );
+                    })}
                   {centralStock.filter(i => i.category === materialCategory).length === 0 && (
                     <div className="lg:col-span-4 p-12 text-center text-brand-brown/20 uppercase font-black text-[10px] tracking-widest">No materials found in this category</div>
                   )}
@@ -596,21 +670,31 @@ NOTIFY pgrst, 'reload schema';`}
                         <td className="px-10 py-8"><p className="text-xl font-black text-brand-brown">{item.name}</p>{item.request_pending && <span className="text-[9px] font-black text-brand-red uppercase bg-brand-red/10 px-3 py-1 rounded-full inline-block mt-2 animate-pulse">Low Stock Alert</span>}</td>
                         <td className="px-10 py-8 text-center"><span className={`px-6 py-2 rounded-full text-[10px] font-black uppercase tracking-widest ${item.is_finished ? 'bg-brand-red text-white' : 'bg-brand-brown/5 text-brand-brown'}`}>{item.is_finished ? 'FINISHED' : `${item.current_stock.toFixed(2)} ${item.unit}`}</span></td>
                         <td className="px-10 py-8 text-right">
-                          {!isAdmin && materialCategory === 'PACKET' && (
-                            <>
-                              {!item.is_finished ? (
-                                <button 
-                                  onClick={() => handleStoreAction(item.id, 'finish')} 
-                                  className="px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-md transition-all bg-brand-red/10 text-brand-red hover:bg-brand-red hover:text-white"
-                                >
-                                  Mark as Empty
-                                </button>
-                              ) : (
-                                <span className="text-[10px] font-black text-brand-red uppercase tracking-widest animate-pulse italic">Awaiting Hub Supply</span>
-                              )}
-                            </>
-                          )}
-                          {materialCategory === 'MOMO' && <span className="text-[10px] font-black text-brand-brown/20 italic tracking-widest">DEDUCTED PER SALE</span>}
+                          <div className="flex justify-end gap-2">
+                            {(isAdmin || user.role === 'STORE_MANAGER') && (
+                              <button 
+                                onClick={() => { setSelectedItem(item); setAdjustValue(item.current_stock.toString()); setIsAdjustModalOpen(true); }}
+                                className="px-4 py-2 bg-brand-brown text-brand-yellow rounded-xl text-[10px] font-black uppercase tracking-widest hover:scale-105 transition-all shadow-sm"
+                              >
+                                Set Stock
+                              </button>
+                            )}
+                            {!isAdmin && materialCategory === 'PACKET' && (
+                              <>
+                                {!item.is_finished ? (
+                                  <button 
+                                    onClick={() => handleStoreAction(item.id, 'finish')} 
+                                    className="px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-md transition-all bg-brand-red/10 text-brand-red hover:bg-brand-red hover:text-white"
+                                  >
+                                    Mark as Empty
+                                  </button>
+                                ) : (
+                                  <span className="text-[10px] font-black text-brand-red uppercase tracking-widest animate-pulse italic">Awaiting Hub Supply</span>
+                                )}
+                              </>
+                            )}
+                            {materialCategory === 'MOMO' && !isAdmin && user.role !== 'STORE_MANAGER' && <span className="text-[10px] font-black text-brand-brown/20 italic tracking-widest">DEDUCTED PER SALE</span>}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -659,38 +743,56 @@ NOTIFY pgrst, 'reload schema';`}
               <tbody className="divide-y divide-brand-stone">
                 {ledgerType === 'BUYING' ? (
                   sortedProcurements.map((p, idx) => (
-                    <tr key={idx} className="hover:bg-brand-cream transition-colors">
-                      <td className="px-8 py-6 text-xs font-bold text-brand-brown/40">{p.date ? new Date(p.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : 'N/A'}</td>
-                      <td className="px-8 py-6 font-black text-brand-brown">{p.item_name}</td>
-                      <td className="px-8 py-6 text-center font-black text-brand-brown">{p.quantity} {p.unit}</td>
-                      <td className="px-8 py-6 text-[10px] font-black text-brand-red uppercase">{p.vendor || 'Local Market'}</td>
+                    <tr key={idx} className={`hover:bg-brand-cream transition-colors ${p.is_voided ? 'bg-red-50/50 grayscale-[0.5]' : ''}`}>
+                      <td className="px-8 py-6 text-xs font-bold text-brand-brown/40">
+                        {p.date ? new Date(p.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : 'N/A'}
+                        {p.is_voided && <span className="block text-[8px] text-brand-red font-black uppercase mt-1">Voided</span>}
+                      </td>
+                      <td className="px-8 py-6">
+                        <p className={`font-black ${p.is_voided ? 'text-brand-brown/40 line-through' : 'text-brand-brown'}`}>{p.item_name}</p>
+                        {p.is_voided && p.void_reason && <p className="text-[9px] font-bold text-brand-red mt-1 italic">Reason: {p.void_reason}</p>}
+                      </td>
+                      <td className={`px-8 py-6 text-center font-black ${p.is_voided ? 'text-brand-brown/40' : 'text-brand-brown'}`}>{p.quantity} {p.unit}</td>
+                      <td className={`px-8 py-6 text-[10px] font-black uppercase ${p.is_voided ? 'text-brand-red/40' : 'text-brand-red'}`}>{p.vendor || 'Local Market'}</td>
                       <td className="px-8 py-6 text-right">
                         <div className="flex flex-col items-end">
-                          <span className="font-black text-brand-brown text-lg">₹{(p.total_cost ?? 0).toLocaleString()}</span>
-                          <button 
-                            onClick={() => { setItemToVoid({ id: p.id, type: 'BUYING' }); setIsVoidModalOpen(true); }}
-                            className="text-[9px] font-black text-brand-red/40 uppercase hover:text-brand-red mt-1"
-                          >
-                            Void Transaction
-                          </button>
+                          <span className={`font-black text-lg ${p.is_voided ? 'text-brand-brown/20 line-through' : 'text-brand-brown'}`}>₹{(p.total_cost ?? 0).toLocaleString()}</span>
+                          {!p.is_voided && (
+                            <button 
+                              onClick={() => { setItemToVoid({ id: p.id, type: 'BUYING' }); setIsVoidModalOpen(true); }}
+                              className="text-[9px] font-black text-brand-red/40 uppercase hover:text-brand-red mt-1"
+                            >
+                              Void Transaction
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
                   ))
                 ) : (
                   sortedAllocations.map((a, idx) => (
-                    <tr key={idx} className="hover:bg-brand-cream transition-colors">
-                      <td className="px-8 py-6 text-xs font-bold text-brand-brown/40">{a.date ? new Date(a.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : 'N/A'}</td>
-                      <td className="px-8 py-6 font-black text-brand-brown">{a.material_name}</td>
-                      <td className="px-8 py-6 text-center font-black text-brand-brown">{a.quantity} {a.unit}</td>
-                      <td className="px-8 py-6 text-[10px] font-black uppercase text-peak-amber">{a.station_name}</td>
+                    <tr key={idx} className={`hover:bg-brand-cream transition-colors ${a.is_voided ? 'bg-red-50/50 grayscale-[0.5]' : ''}`}>
+                      <td className="px-8 py-6 text-xs font-bold text-brand-brown/40">
+                        {a.date ? new Date(a.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : 'N/A'}
+                        {a.is_voided && <span className="block text-[8px] text-brand-red font-black uppercase mt-1">Voided</span>}
+                      </td>
+                      <td className="px-8 py-6">
+                        <p className={`font-black ${a.is_voided ? 'text-brand-brown/40 line-through' : 'text-brand-brown'}`}>{a.material_name}</p>
+                        {a.is_voided && a.void_reason && <p className="text-[9px] font-bold text-brand-red mt-1 italic">Reason: {a.void_reason}</p>}
+                      </td>
+                      <td className={`px-8 py-6 text-center font-black ${a.is_voided ? 'text-brand-brown/40' : 'text-brand-brown'}`}>{a.quantity} {a.unit}</td>
+                      <td className={`px-8 py-6 text-[10px] font-black uppercase ${a.is_voided ? 'text-peak-amber/40' : 'text-peak-amber'}`}>{a.station_name}</td>
                       <td className="px-8 py-6 text-right">
-                        <button 
-                          onClick={() => { setItemToVoid({ id: a.id, type: 'ALLOCATION' }); setIsVoidModalOpen(true); }}
-                          className="text-[9px] font-black text-brand-red/40 uppercase hover:text-brand-red"
-                        >
-                          Void Dispatch
-                        </button>
+                        {!a.is_voided ? (
+                          <button 
+                            onClick={() => { setItemToVoid({ id: a.id, type: 'ALLOCATION' }); setIsVoidModalOpen(true); }}
+                            className="text-[9px] font-black text-brand-red/40 uppercase hover:text-brand-red"
+                          >
+                            Void Dispatch
+                          </button>
+                        ) : (
+                          <span className="text-[9px] font-black text-brand-brown/20 uppercase">Returned to Hub</span>
+                        )}
                       </td>
                     </tr>
                   ))
@@ -891,6 +993,44 @@ NOTIFY pgrst, 'reload schema';`}
                 Confirm Void
               </button>
               <button onClick={() => { setIsVoidModalOpen(false); setItemToVoid(null); setVoidReason(''); }} className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isAdjustModalOpen && (
+        <div className="fixed inset-0 bg-brand-brown/80 backdrop-blur-md flex items-center justify-center z-[120] p-4">
+          <div className="bg-brand-cream rounded-[4rem] p-12 w-full max-w-md border-8 border-brand-yellow shadow-2xl">
+            <h3 className="text-3xl font-black mb-2 italic text-brand-brown uppercase italic">Manual <span className="text-brand-yellow">Correction</span></h3>
+            <p className="text-[10px] font-black text-brand-brown/40 uppercase mb-8 tracking-widest">Adjust stock level for {selectedItem?.name}</p>
+            <div className="space-y-5">
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">New Quantity ({selectedItem?.unit})</label>
+                <input 
+                  type="number" 
+                  step="0.01"
+                  placeholder="Enter new absolute quantity" 
+                  value={adjustValue} 
+                  onChange={e => setAdjustValue(e.target.value)} 
+                  className={inputClasses} 
+                />
+              </div>
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Reason for adjustment</label>
+                <textarea 
+                  placeholder="Explain why this change is needed..." 
+                  value={adjustReason} 
+                  onChange={e => setAdjustReason(e.target.value)} 
+                  className={`${inputClasses} min-h-[100px] resize-none`}
+                />
+              </div>
+              <button 
+                onClick={handleManualAdjust} 
+                className="w-full py-5 bg-brand-brown text-brand-yellow rounded-3xl font-black uppercase tracking-widest shadow-2xl hover:scale-105 transition-transform"
+              >
+                Apply New Stock Level
+              </button>
+              <button onClick={() => { setIsAdjustModalOpen(false); setSelectedItem(null); setAdjustReason(''); setAdjustValue(''); }} className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest text-center">Cancel</button>
             </div>
           </div>
         </div>

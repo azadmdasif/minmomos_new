@@ -139,7 +139,6 @@ export async function fetchProcurements(startDate: string, endDate: string): Pro
     .select('*')
     .gte('date', `${startDate}T00:00:00+05:30`)
     .lte('date', `${endDate}T23:59:59+05:30`)
-    .is('is_voided', false)
     .order('date', { ascending: false });
   
   if (error) console.error("Procurement fetch error:", error);
@@ -183,7 +182,6 @@ export async function fetchAllocations(startDate: string, endDate: string): Prom
     .select('*')
     .gte('date', `${startDate}T00:00:00+05:30`)
     .lte('date', `${endDate}T23:59:59+05:30`)
-    .is('is_voided', false)
     .order('date', { ascending: false });
   return { data: (data as StockAllocation[]) || [], error };
 }
@@ -644,6 +642,52 @@ export async function peekNextBillNumber(): Promise<number> {
 export async function getInventory(branchName: string): Promise<RawMaterial[]> {
   const { data } = await supabase.from('inventory').select('*').eq('branch_name', branchName);
   return data || [];
+}
+
+export async function manuallyAdjustStock(
+  itemId: string, 
+  branchName: string, 
+  newQuantity: number, 
+  reason: string,
+  performedBy: string
+): Promise<void> {
+  const { data: existing } = await supabase
+    .from('inventory')
+    .select('current_stock')
+    .eq('id', itemId)
+    .eq('branch_name', branchName)
+    .maybeSingle();
+
+  const oldStock = existing?.current_stock || 0;
+  const change = newQuantity - oldStock;
+
+  // 1. Update Inventory
+  const { error: updateError } = await supabase
+    .from('inventory')
+    .update({ 
+      current_stock: newQuantity,
+      is_finished: newQuantity <= 0,
+      request_pending: false,
+      last_purchase_date: getISTISOString()
+    })
+    .eq('id', itemId)
+    .eq('branch_name', branchName);
+
+  if (updateError) throw updateError;
+
+  // 2. Log Change
+  const { error: logError } = await supabase
+    .from('inventory_logs')
+    .insert({
+      inventory_id: itemId,
+      branch_name: branchName,
+      quantity_change: change,
+      reason: `MANUAL_ADJUSTMENT: ${reason}`,
+      performed_by: performedBy,
+      date: getISTISOString()
+    });
+
+  if (logError) throw logError;
 }
 
 export async function getOrdersForDateRange(startDate: string, endDate: string): Promise<CompletedOrder[]> {
