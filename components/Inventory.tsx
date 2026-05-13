@@ -21,7 +21,10 @@ import {
   getISTDateString,
   getISTISOString,
   fetchMenuItems,
-  manuallyAdjustStock
+  manuallyAdjustStock,
+  manuallyAdjustCentralStock,
+  fetchManualAdjustments,
+  resetAllStockToZero
 } from '../utils/storage';
 import { 
   PieChart, 
@@ -43,7 +46,7 @@ interface InventoryProps {
 }
 
 type InventoryTab = 'HUB' | 'LEDGER' | 'FINANCE';
-type LedgerType = 'BUYING' | 'ALLOCATION';
+type LedgerType = 'BUYING' | 'ALLOCATION' | 'ADJUSTMENT';
 type DatePreset = 'today' | 'yesterday' | 'week' | 'last-week' | 'month' | 'last-month' | 'custom';
 type SortBy = 'date' | 'quantity' | 'cost';
 
@@ -66,6 +69,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [storeStock, setStoreStock] = useState<RawMaterial[]>([]);
   const [procurements, setProcurements] = useState<any[]>([]);
   const [allocations, setAllocations] = useState<StockAllocation[]>([]);
+  const [adjustments, setAdjustments] = useState<any[]>([]);
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
   const [isTableMissing, setIsTableMissing] = useState(false);
   const pollIntervalRef = useRef<number | null>(null);
@@ -75,6 +79,10 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [isAddItemModalOpen, setIsAddItemModalOpen] = useState(false);
   const [isVoidModalOpen, setIsVoidModalOpen] = useState(false);
   const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
+  const [isMasterResetModalOpen, setIsMasterResetModalOpen] = useState(false);
+  const [masterResetReason, setMasterResetReason] = useState('');
+  const [masterResetType, setMasterResetType] = useState<'HUB' | 'BRANCH'>('HUB');
+
   const [voidReason, setVoidReason] = useState('');
   const [adjustReason, setAdjustReason] = useState('');
   const [adjustValue, setAdjustValue] = useState('');
@@ -132,6 +140,14 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
         } catch (e: any) {
           if (e.code === '42P01') setIsTableMissing(true);
           else console.error("Allocations error", e);
+        }
+
+        // Fetch Adjustments
+        try {
+          const adjRes = await fetchManualAdjustments(startDate, endDate);
+          setAdjustments(adjRes.data || []);
+        } catch (e: any) {
+          console.error("Adjustments error", e);
         }
 
         if (selectedStation) {
@@ -224,6 +240,16 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
       return sortOrder === 'desc' ? valB - valA : valA - valB;
     });
   }, [allocations, sortBy, sortOrder]);
+
+  const sortedAdjustments = useMemo(() => {
+    const list = [...adjustments];
+    return list.sort((a, b) => {
+      let valA: any = a[sortBy === 'cost' || sortBy === 'quantity' ? 'quantity_change' : sortBy]; 
+      let valB: any = b[sortBy === 'cost' || sortBy === 'quantity' ? 'quantity_change' : sortBy];
+      if (sortBy === 'date') { valA = new Date(a.date).getTime(); valB = new Date(b.date).getTime(); }
+      return sortOrder === 'desc' ? valB - valA : valA - valB;
+    });
+  }, [adjustments, sortBy, sortOrder]);
 
   const handleAddNewItem = async () => {
     if (newItemName && newItemUnit) {
@@ -357,9 +383,9 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     }
     try {
       if (itemToVoid.type === 'BUYING') {
-        await voidProcurement(itemToVoid.id, voidReason);
+        await voidProcurement(itemToVoid.id, voidReason, user.username);
       } else {
-        await voidAllocation(itemToVoid.id, voidReason);
+        await voidAllocation(itemToVoid.id, voidReason, user.username);
       }
       setIsVoidModalOpen(false);
       setVoidReason('');
@@ -383,13 +409,24 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     }
 
     try {
-      await manuallyAdjustStock(
-        selectedItem.id, 
-        selectedItem.branch_name || user.stationName || 'Main Station', 
-        newVal, 
-        adjustReason,
-        user.username
-      );
+      if ('branch_name' in selectedItem) {
+        // Station/Branch Adjustment
+        await manuallyAdjustStock(
+          selectedItem.id, 
+          selectedItem.branch_name || user.stationName || 'Main Station', 
+          newVal, 
+          adjustReason,
+          user.username
+        );
+      } else {
+        // Central Hub Adjustment
+        await manuallyAdjustCentralStock(
+          selectedItem.id,
+          newVal,
+          adjustReason,
+          user.username
+        );
+      }
       setIsAdjustModalOpen(false);
       setAdjustValue('');
       setAdjustReason('');
@@ -398,6 +435,35 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
       alert("Stock adjusted successfully.");
     } catch (e: any) {
       alert("Adjustment failed: " + e.message);
+    }
+  };
+
+  const handleMasterReset = async () => {
+    if (!masterResetReason) {
+      alert("Please provide a reason for the master reset.");
+      return;
+    }
+
+    if (!confirm(`CRITICAL WARNING: This will set EVERY single item in the ${masterResetType === 'HUB' ? 'Central Hub' : selectedStation?.name || 'Store'} to ZERO. This action is logged and cannot be undone via this button. Continue?`)) {
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      await resetAllStockToZero(
+        masterResetType,
+        masterResetReason,
+        user.username,
+        masterResetType === 'BRANCH' ? selectedStation?.name : undefined
+      );
+      setIsMasterResetModalOpen(false);
+      setMasterResetReason('');
+      await fetchData();
+      alert("MASTER RESET SUCCESSFUL: All targeted stock levels are now zero.");
+    } catch (e: any) {
+      alert("Master Reset Failed: " + e.message);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -475,15 +541,46 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           <p className="text-brand-brown/60 mb-6 font-bold uppercase tracking-widest text-xs">Run this SQL in Supabase Editor to support the new Allocation Ledger:</p>
           <div className="text-left bg-slate-900 p-8 rounded-3xl mb-8 overflow-x-auto border-4 border-brand-stone">
             <pre className="text-emerald-400 text-[10px] md:text-[11px] font-mono leading-relaxed">
-{`CREATE TABLE IF NOT EXISTS central_inventory (
+{`-- MASTER INVENTORY SYNC SCRIPT
+-- Run this in Supabase SQL Editor if you see errors or missing tables.
+
+-- 1. Base Tables
+CREATE TABLE IF NOT EXISTS inventory (
+  id TEXT NOT NULL,
+  branch_name TEXT NOT NULL,
+  name TEXT NOT NULL,
+  unit TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'MOMO',
+  current_stock NUMERIC DEFAULT 0,
+  reorder_level NUMERIC DEFAULT 10,
+  last_purchase_date TIMESTAMP WITH TIME ZONE,
+  last_purchase_cost NUMERIC,
+  is_finished BOOLEAN DEFAULT false,
+  request_pending BOOLEAN DEFAULT false,
+  PRIMARY KEY (id, branch_name)
+);
+
+CREATE TABLE IF NOT EXISTS central_inventory (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   unit TEXT NOT NULL,
-  category TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'MOMO',
   current_stock NUMERIC DEFAULT 0,
   last_purchase_cost NUMERIC DEFAULT 0,
-  last_purchase_date TIMESTAMPTZ,
+  last_purchase_date TIMESTAMPTZ DEFAULT NOW(),
   is_finished BOOLEAN DEFAULT false
+);
+
+CREATE TABLE IF NOT EXISTS inventory_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  inventory_id TEXT NOT NULL,
+  item_name TEXT,
+  branch_name TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  quantity_change NUMERIC NOT NULL,
+  cost NUMERIC,
+  performed_by TEXT,
+  date TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS procurements (
@@ -511,11 +608,33 @@ CREATE TABLE IF NOT EXISTS stock_allocations (
   void_reason TEXT
 );
 
+-- 2. Schema Evolution
+DO $$ 
+BEGIN 
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='inventory_logs' AND column_name='performed_by') THEN
+        ALTER TABLE inventory_logs ADD COLUMN performed_by TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='inventory_logs' AND column_name='item_name') THEN
+        ALTER TABLE inventory_logs ADD COLUMN item_name TEXT;
+    END IF;
+END $$;
+
+-- 3. Security
+ALTER TABLE inventory ENABLE ROW LEVEL SECURITY;
 ALTER TABLE central_inventory ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inventory_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE procurements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_allocations ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Public Inventory" ON inventory;
+DROP POLICY IF EXISTS "Public Central" ON central_inventory;
+DROP POLICY IF EXISTS "Public Logs" ON inventory_logs;
+DROP POLICY IF EXISTS "Public Proc" ON procurements;
+DROP POLICY IF EXISTS "Public Alloc" ON stock_allocations;
+
+CREATE POLICY "Public Inventory" ON inventory FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Public Central" ON central_inventory FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Public Logs" ON inventory_logs FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Public Proc" ON procurements FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Public Alloc" ON stock_allocations FOR ALL TO anon USING (true) WITH CHECK (true);
 
@@ -540,10 +659,19 @@ NOTIFY pgrst, 'reload schema';`}
         
         <div className="flex flex-wrap gap-4">
           {isAdmin && (
-            <div className="bg-white p-1 rounded-2xl border border-brand-stone flex shadow-sm flex-wrap">
+            <div className="bg-white p-1 rounded-2xl border border-brand-stone flex shadow-sm flex-wrap items-center">
               <button onClick={() => setActiveTab('HUB')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'HUB' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Active Stock</button>
               <button onClick={() => setActiveTab('LEDGER')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'LEDGER' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Transaction Ledger</button>
               <button onClick={() => setActiveTab('FINANCE')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'FINANCE' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Financial View</button>
+              
+              <div className="h-6 w-[2px] bg-brand-stone mx-2 hidden md:block"></div>
+              
+              <button 
+                onClick={() => { setMasterResetType('HUB'); setIsMasterResetModalOpen(true); }}
+                className="px-6 py-3 text-brand-red hover:bg-red-50 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all"
+              >
+                Reset Hub to Zero
+              </button>
             </div>
           )}
           {isAdmin && (activeTab === 'HUB' || activeTab === 'FINANCE') && (
@@ -631,11 +759,19 @@ NOTIFY pgrst, 'reload schema';`}
                           )}
 
                           <div className="mt-auto grid grid-cols-1 gap-3">
-                            {materialCategory !== 'INGREDIENT' ? (
-                              <button onClick={() => { setSelectedItem(item); setIsAllocateModalOpen(true); }} className="w-full py-4 bg-brand-brown text-brand-yellow rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all">Dispatch to Store</button>
-                            ) : (
-                              <button onClick={() => { markCentralFinished(item.id, !item.is_finished); fetchData(); }} className={`full py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg ${item.is_finished ? 'bg-brand-brown text-brand-yellow' : 'bg-brand-red text-white'}`}>{item.is_finished ? 'Receive Hub Stock' : 'Mark as Used Up'}</button>
-                            )}
+                            <div className="grid grid-cols-2 gap-2">
+                              {materialCategory !== 'INGREDIENT' ? (
+                                <button onClick={() => { setSelectedItem(item); setIsAllocateModalOpen(true); }} className="w-full py-4 bg-brand-brown text-brand-yellow rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all">Dispatch</button>
+                              ) : (
+                                <button onClick={() => { markCentralFinished(item.id, !item.is_finished); fetchData(); }} className={`full py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg ${item.is_finished ? 'bg-brand-brown text-brand-yellow' : 'bg-brand-red text-white'}`}>{item.is_finished ? 'Receive' : 'Finish'}</button>
+                              )}
+                              <button 
+                                onClick={() => { setSelectedItem(item); setAdjustValue(item.current_stock.toString()); setIsAdjustModalOpen(true); }}
+                                className="w-full py-4 bg-brand-stone text-brand-brown rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all border border-brand-brown/10"
+                              >
+                                Adjust
+                              </button>
+                            </div>
                           </div>
                         </div>
                       );
@@ -652,12 +788,26 @@ NOTIFY pgrst, 'reload schema';`}
             <section className="animate-in fade-in duration-500 delay-150">
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-2xl font-black text-brand-brown italic uppercase">{isAdmin ? `Branch Monitor: ${selectedStation?.name || '...'}` : `Store Stock: ${user.stationName}`}</h3>
-                {isAdmin && (
-                  <select onChange={(e) => setSelectedStation(stations.find(s => s.id === e.target.value) || null)} className="bg-white border-4 border-brand-brown p-4 rounded-2xl text-[10px] font-black uppercase text-brand-brown shadow-xl outline-none">
-                    <option value="">Select Branch Station...</option>
-                    {stations.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                )}
+                <div className="flex items-center gap-4">
+                  {isAdmin && (
+                    <>
+                      <button 
+                        onClick={() => { 
+                          if (!selectedStation) { alert("Please select a branch first."); return; }
+                          setMasterResetType('BRANCH'); 
+                          setIsMasterResetModalOpen(true); 
+                        }}
+                        className="bg-brand-red/10 text-brand-red border border-brand-red/20 px-6 py-3 rounded-2xl text-[9px] font-black uppercase tracking-widest hover:bg-brand-red hover:text-white transition-all shadow-sm"
+                      >
+                        Reset Branch to Zero
+                      </button>
+                      <select onChange={(e) => setSelectedStation(stations.find(s => s.id === e.target.value) || null)} className="bg-white border-4 border-brand-brown p-4 rounded-2xl text-[10px] font-black uppercase text-brand-brown shadow-xl outline-none">
+                        <option value="">Select Branch Station...</option>
+                        {stations.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                    </>
+                  )}
+                </div>
               </div>
               <div className="bg-white rounded-[3rem] shadow-2xl border-4 border-brand-brown overflow-hidden">
                 <table className="w-full">
@@ -707,9 +857,10 @@ NOTIFY pgrst, 'reload schema';`}
       ) : activeTab === 'LEDGER' ? (
         <section className="animate-in slide-in-from-bottom-6 duration-700">
           <div className="flex flex-col lg:flex-row justify-between items-center gap-6 mb-10 p-8 bg-white rounded-[3rem] border border-brand-stone shadow-sm">
-            <div className="flex bg-brand-brown/5 p-1 rounded-2xl">
+            <div className="flex bg-brand-brown/5 p-1 rounded-2xl flex-wrap">
               <button onClick={() => setLedgerType('BUYING')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${ledgerType === 'BUYING' ? 'bg-emerald-600 text-white shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Buying (Purchases)</button>
               <button onClick={() => setLedgerType('ALLOCATION')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${ledgerType === 'ALLOCATION' ? 'bg-peak-amber text-white shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Allocation (Dispatches)</button>
+              <button onClick={() => setLedgerType('ADJUSTMENT')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${ledgerType === 'ADJUSTMENT' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Adjustments (Manual)</button>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -736,8 +887,8 @@ NOTIFY pgrst, 'reload schema';`}
                   <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest cursor-pointer hover:underline" onClick={() => { setSortBy('date'); setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc'); }}>Date & Time {sortBy === 'date' && (sortOrder === 'desc' ? '▼' : '▲')}</th>
                   <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest">Item Name</th>
                   <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-center" onClick={() => { setSortBy('quantity'); setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc'); }}>Quantity {sortBy === 'quantity' && (sortOrder === 'desc' ? '▼' : '▲')}</th>
-                  <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest">{ledgerType === 'BUYING' ? 'Vendor' : 'Store Station'}</th>
-                  <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-right cursor-pointer hover:underline" onClick={() => { setSortBy('cost'); setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc'); }}>{ledgerType === 'BUYING' ? 'Total Cost' : 'Action'} {sortBy === 'cost' && (sortOrder === 'desc' ? '▼' : '▲')}</th>
+                  <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest">{ledgerType === 'BUYING' ? 'Vendor' : ledgerType === 'ALLOCATION' ? 'Store Station' : 'Branch'}</th>
+                  <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-right cursor-pointer hover:underline" onClick={() => { setSortBy('cost'); setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc'); }}>{ledgerType === 'BUYING' ? 'Total Cost' : ledgerType === 'ALLOCATION' ? 'Action' : 'Reason'} {sortBy === 'cost' && (sortOrder === 'desc' ? '▼' : '▲')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-brand-stone">
@@ -769,7 +920,7 @@ NOTIFY pgrst, 'reload schema';`}
                       </td>
                     </tr>
                   ))
-                ) : (
+                ) : ledgerType === 'ALLOCATION' ? (
                   sortedAllocations.map((a, idx) => (
                     <tr key={idx} className={`hover:bg-brand-cream transition-colors ${a.is_voided ? 'bg-red-50/50 grayscale-[0.5]' : ''}`}>
                       <td className="px-8 py-6 text-xs font-bold text-brand-brown/40">
@@ -796,10 +947,31 @@ NOTIFY pgrst, 'reload schema';`}
                       </td>
                     </tr>
                   ))
+                ) : (
+                  sortedAdjustments.map((adj, idx) => (
+                    <tr key={idx} className="hover:bg-brand-cream transition-colors">
+                      <td className="px-8 py-6 text-xs font-bold text-brand-brown/40">
+                        {adj.date ? new Date(adj.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : 'N/A'}
+                      </td>
+                      <td className="px-8 py-6">
+                        <p className="font-black text-brand-brown">{adj.item_name || adj.inventory_id}</p>
+                        <p className="text-[8px] font-black text-brand-brown/40 uppercase">By: {adj.performed_by || 'Unknown'}</p>
+                      </td>
+                      <td className="px-8 py-6 text-center font-black">
+                        <span className={adj.quantity_change > 0 ? 'text-mountain-green' : 'text-brand-red'}>
+                          {adj.quantity_change > 0 ? '+' : ''}{adj.quantity_change}
+                        </span>
+                      </td>
+                      <td className="px-8 py-6 text-[10px] font-black uppercase text-brand-brown/60">{adj.branch_name}</td>
+                      <td className="px-8 py-6 text-right">
+                         <p className="text-[10px] font-bold text-brand-brown italic leading-tight max-w-[150px] ml-auto">{adj.reason}</p>
+                      </td>
+                    </tr>
+                  ))
                 )}
               </tbody>
             </table>
-            {(ledgerType === 'BUYING' ? sortedProcurements : sortedAllocations).length === 0 && (
+            {(ledgerType === 'BUYING' ? sortedProcurements : ledgerType === 'ALLOCATION' ? sortedAllocations : sortedAdjustments).length === 0 && (
               <div className="p-32 text-center text-brand-brown/10 uppercase font-black text-xs tracking-[0.5em]">Zero Ledger Activity Found</div>
             )}
           </div>
@@ -1031,6 +1203,37 @@ NOTIFY pgrst, 'reload schema';`}
                 Apply New Stock Level
               </button>
               <button onClick={() => { setIsAdjustModalOpen(false); setSelectedItem(null); setAdjustReason(''); setAdjustValue(''); }} className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest text-center">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isMasterResetModalOpen && (
+        <div className="fixed inset-0 bg-brand-brown/80 backdrop-blur-md flex items-center justify-center z-[130] p-4">
+          <div className="bg-brand-cream rounded-[4rem] p-12 w-full max-w-md border-8 border-brand-red shadow-2xl">
+            <h3 className="text-3xl font-black mb-2 italic text-brand-brown uppercase italic underline decoration-brand-red decoration-8 underline-offset-8">MASTER <span className="text-brand-red">RESET</span></h3>
+            <p className="text-[10px] font-black text-brand-brown/40 uppercase mb-8 tracking-widest leading-relaxed">
+              Target: <span className="text-brand-red font-black">{masterResetType === 'HUB' ? 'CENTRAL HUB' : selectedStation?.name}</span><br />
+              This will set all stock items in this location to zero.
+            </p>
+            <div className="space-y-5">
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Mandatory Reason</label>
+                <textarea 
+                  placeholder="Why are you resetting the entire stock to zero?" 
+                  value={masterResetReason} 
+                  onChange={e => setMasterResetReason(e.target.value)} 
+                  className={`${inputClasses} min-h-[120px] resize-none border-brand-red/20 focus:ring-brand-red`}
+                />
+              </div>
+              <button 
+                onClick={handleMasterReset} 
+                disabled={isLoading}
+                className="w-full py-5 bg-brand-red text-white rounded-3xl font-black uppercase tracking-widest shadow-2xl hover:scale-105 active:scale-95 transition-all disabled:opacity-50"
+              >
+                {isLoading ? 'Processing...' : 'Execute Master Reset'}
+              </button>
+              <button onClick={() => { setIsMasterResetModalOpen(false); setMasterResetReason(''); }} className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest text-center">Abort Operation</button>
             </div>
           </div>
         </div>

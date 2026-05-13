@@ -160,15 +160,26 @@ export async function getFinancialSpending(startDate: string, endDate: string): 
   return data || [];
 }
 
-export async function voidProcurement(id: string, reason: string): Promise<void> {
+export async function voidProcurement(id: string, reason: string, performedBy: string = 'SYSTEM'): Promise<void> {
   const { data: p, error: fetchError } = await supabase.from('procurements').select('*').eq('id', id).single();
   if (fetchError || !p) throw new Error("Procurement not found.");
   if (p.is_voided) throw new Error("Already voided.");
 
-  const { data: central } = await supabase.from('central_inventory').select('current_stock').eq('id', p.item_id).single();
+  const { data: central } = await supabase.from('central_inventory').select('current_stock, name').eq('id', p.item_id).single();
   if (central) {
      const newStock = (central.current_stock || 0) - p.quantity;
      await supabase.from('central_inventory').update({ current_stock: newStock }).eq('id', p.item_id);
+
+     // Log stock reversal
+     await supabase.from('inventory_logs').insert({
+       inventory_id: p.item_id,
+       item_name: central.name || p.item_name,
+       branch_name: 'CENTRAL_HUB',
+       quantity_change: -p.quantity,
+       reason: `VOID_PROCUREMENT: ${reason}`,
+       performed_by: performedBy,
+       date: getISTISOString()
+     });
   }
 
   await supabase.from('procurements').update({ is_voided: true, void_reason: reason }).eq('id', id);
@@ -186,21 +197,54 @@ export async function fetchAllocations(startDate: string, endDate: string): Prom
   return { data: (data as StockAllocation[]) || [], error };
 }
 
-export async function voidAllocation(id: string, reason: string): Promise<void> {
+export async function fetchManualAdjustments(startDate: string, endDate: string): Promise<{ data: any[], error: any }> {
+  const { data, error } = await supabase
+    .from('inventory_logs')
+    .select('*')
+    .ilike('reason', '%ADJUSTMENT%')
+    .gte('date', `${startDate}T00:00:00+05:30`)
+    .lte('date', `${endDate}T23:59:59+05:30`)
+    .order('date', { ascending: false });
+  return { data: data || [], error };
+}
+
+export async function voidAllocation(id: string, reason: string, performedBy: string = 'SYSTEM'): Promise<void> {
   const { data: a, error: fetchError } = await supabase.from('stock_allocations').select('*').eq('id', id).single();
   if (fetchError || !a) throw new Error("Allocation not found.");
   if (a.is_voided) throw new Error("Already voided.");
 
-  const { data: central } = await supabase.from('central_inventory').select('current_stock').eq('id', a.material_id).single();
+  const { data: central } = await supabase.from('central_inventory').select('current_stock, name').eq('id', a.material_id).single();
   if (central) {
     const newHubStock = (central.current_stock || 0) + a.quantity;
     await supabase.from('central_inventory').update({ current_stock: newHubStock }).eq('id', a.material_id);
+
+    // Log Hub reversal (adding back)
+    await supabase.from('inventory_logs').insert({
+      inventory_id: a.material_id,
+      item_name: central.name || a.material_name,
+      branch_name: 'CENTRAL_HUB',
+      quantity_change: a.quantity,
+      reason: `VOID_ALLOCATION (RECLAIM): ${reason}`,
+      performed_by: performedBy,
+      date: getISTISOString()
+    });
   }
 
-  const { data: station } = await supabase.from('inventory').select('current_stock').eq('id', a.material_id).eq('branch_name', a.station_name).maybeSingle();
+  const { data: station } = await supabase.from('inventory').select('current_stock, name').eq('id', a.material_id).eq('branch_name', a.station_name).maybeSingle();
   if (station) {
     const newStationStock = (station.current_stock || 0) - a.quantity;
     await supabase.from('inventory').update({ current_stock: newStationStock }).eq('id', a.material_id).eq('branch_name', a.station_name);
+
+    // Log Branch reversal (deducting what was accidentally dispatched)
+    await supabase.from('inventory_logs').insert({
+      inventory_id: a.material_id,
+      item_name: station.name || a.material_name,
+      branch_name: a.station_name,
+      quantity_change: -a.quantity,
+      reason: `VOID_ALLOCATION (REMOVAL): ${reason}`,
+      performed_by: performedBy,
+      date: getISTISOString()
+    });
   }
 
   await supabase.from('stock_allocations').update({ is_voided: true, void_reason: reason }).eq('id', id);
@@ -653,12 +697,13 @@ export async function manuallyAdjustStock(
 ): Promise<void> {
   const { data: existing } = await supabase
     .from('inventory')
-    .select('current_stock')
+    .select('current_stock, name')
     .eq('id', itemId)
     .eq('branch_name', branchName)
     .maybeSingle();
 
   const oldStock = existing?.current_stock || 0;
+  const itemName = existing?.name || itemId;
   const change = newQuantity - oldStock;
 
   // 1. Update Inventory
@@ -680,6 +725,7 @@ export async function manuallyAdjustStock(
     .from('inventory_logs')
     .insert({
       inventory_id: itemId,
+      item_name: itemName,
       branch_name: branchName,
       quantity_change: change,
       reason: `MANUAL_ADJUSTMENT: ${reason}`,
@@ -688,6 +734,75 @@ export async function manuallyAdjustStock(
     });
 
   if (logError) throw logError;
+}
+
+export async function manuallyAdjustCentralStock(
+  itemId: string, 
+  newQuantity: number, 
+  reason: string,
+  performedBy: string
+): Promise<void> {
+  const { data: existing } = await supabase
+    .from('central_inventory')
+    .select('current_stock, name')
+    .eq('id', itemId)
+    .maybeSingle();
+
+  const oldStock = existing?.current_stock || 0;
+  const itemName = existing?.name || itemId;
+  const change = newQuantity - oldStock;
+
+  // 1. Update Central Inventory
+  const { error: updateError } = await supabase
+    .from('central_inventory')
+    .update({ 
+      current_stock: newQuantity,
+      is_finished: newQuantity <= 0,
+      last_purchase_date: getISTISOString()
+    })
+    .eq('id', itemId);
+
+  if (updateError) throw updateError;
+
+  // 2. Log Change (targeting central logs if exists, otherwise general logs with 'CENTRAL' branch)
+  const { error: logError } = await supabase
+    .from('inventory_logs')
+    .insert({
+      inventory_id: itemId,
+      item_name: itemName,
+      branch_name: 'CENTRAL_HUB',
+      quantity_change: change,
+      reason: `CENTRAL_MANUAL_ADJUSTMENT: ${reason}`,
+      performed_by: performedBy,
+      date: getISTISOString()
+    });
+
+  if (logError) throw logError;
+}
+
+export async function resetAllStockToZero(
+  type: 'HUB' | 'BRANCH', 
+  reason: string, 
+  performedBy: string,
+  branchName?: string
+): Promise<void> {
+  if (type === 'HUB') {
+    const { data: items } = await supabase.from('central_inventory').select('id, current_stock');
+    if (!items) return;
+
+    for (const item of items) {
+      if (item.current_stock === 0) continue;
+      await manuallyAdjustCentralStock(item.id, 0, `MASTER_RESET: ${reason}`, performedBy);
+    }
+  } else if (type === 'BRANCH' && branchName) {
+    const { data: items } = await supabase.from('inventory').select('id, current_stock').eq('branch_name', branchName);
+    if (!items) return;
+
+    for (const item of items) {
+      if (item.current_stock === 0) continue;
+      await manuallyAdjustStock(item.id, branchName, 0, `MASTER_RESET: ${reason}`, performedBy);
+    }
+  }
 }
 
 export async function getOrdersForDateRange(startDate: string, endDate: string): Promise<CompletedOrder[]> {

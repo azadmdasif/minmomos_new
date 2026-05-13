@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchProcurements, getCentralInventory, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay } from '../utils/storage';
+import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchProcurements, getCentralInventory, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments } from '../utils/storage';
 import { CompletedOrder, PaymentMethod, Station, User, CentralMaterial, Customer } from '../types';
 import PrintReceipt from './PrintReceipt';
 import DeleteBillModal from './DeleteBillModal';
@@ -71,7 +71,7 @@ interface AnalyticsProps {
 }
 
 type DatePreset = 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'last7' | 'last14' | 'last30' | 'thisMonth' | 'lastMonth' | 'custom';
-type ActiveTab = 'active' | 'deleted';
+type ActiveTab = 'active' | 'deleted' | 'adjustments';
 type ReportView = 'revenue' | 'trends' | 'itemSales' | 'comparison' | 'profitability' | 'customers';
 
 const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
@@ -89,6 +89,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [chartOrders, setChartOrders] = useState<CompletedOrder[]>([]);
   const [allOrdersRaw, setAllOrdersRaw] = useState<CompletedOrder[]>([]);
   const [deletedOrders, setDeletedOrders] = useState<CompletedOrder[]>([]);
+  const [adjustments, setAdjustments] = useState<any[]>([]);
   const [procurements, setProcurements] = useState<any[]>([]);
   const [centralInv, setCentralInv] = useState<CentralMaterial[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -195,6 +196,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     setDeletedOrders([...inVisibleRange].sort((a, b) => b.billNumber - a.billNumber));
   }, [startDate, endDate, selectedStore, isAdmin, user.stationName]);
 
+  const fetchAdjustments = useCallback(async () => {
+    const adjRes = await fetchManualAdjustments(startDate, endDate);
+    if (!adjRes.error) {
+      setAdjustments(adjRes.data || []);
+    }
+  }, [startDate, endDate]);
+
   const handleCustomerClick = async (customer: Customer) => {
     setActiveCustomer(customer);
     setIsEditingProfile(false);
@@ -242,7 +250,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     fetchOrders();
     fetchDeletedOrders();
     fetchFinanceData();
-  }, [fetchOrders, fetchDeletedOrders, fetchFinanceData]);
+    fetchAdjustments();
+  }, [fetchOrders, fetchDeletedOrders, fetchFinanceData, fetchAdjustments]);
 
   const handlePresetChange = (preset: DatePreset) => {
     setActivePreset(preset);
@@ -1145,44 +1154,76 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                 <div className="flex bg-brand-brown/5 p-1 rounded-2xl">
                   <button onClick={() => setActiveTab('active')} className={`px-4 lg:px-8 py-2 lg:py-3 rounded-xl text-[9px] lg:text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'active' ? 'bg-brand-brown text-brand-yellow' : 'text-brand-brown/40'}`}>Active</button>
                   <button onClick={() => setActiveTab('deleted')} className={`px-4 lg:px-8 py-2 lg:py-3 rounded-xl text-[9px] lg:text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'deleted' ? 'bg-brand-brown text-brand-yellow' : 'text-brand-brown/40'}`}>Voided</button>
+                  <button onClick={() => setActiveTab('adjustments')} className={`px-4 lg:px-8 py-2 lg:py-3 rounded-xl text-[9px] lg:text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'adjustments' ? 'bg-brand-brown text-brand-yellow' : 'text-brand-brown/40'}`}>Stock Adjustments</button>
                 </div>
               </div>
               <div className="min-w-[600px]">
-                <table className="w-full text-left">
-                  <thead><tr className="bg-brand-brown/5 text-brand-brown/40 text-[9px] lg:text-[10px] font-black uppercase"><th className="px-4 lg:px-8 py-4">Bill #</th><th className="px-4 lg:px-8 py-4">Date</th><th className="px-4 lg:px-8 py-4">Branch</th><th className="px-4 lg:px-8 py-4">Type</th><th className="px-4 lg:px-8 py-4 text-right">Total</th><th className="px-4 lg:px-8 py-4 text-right">Action</th></tr></thead>
-                  <tbody className="divide-y divide-brand-stone">
-                    {(activeTab === 'active' ? orders : deletedOrders).map(o => (
-                      <tr key={o.id} className="hover:bg-brand-cream/50 transition-colors group">
-                        <td className="px-4 lg:px-8 py-4 font-black text-xs lg:text-sm">#{o.billNumber}</td>
-                        <td className="px-4 lg:px-8 py-4 text-[10px] lg:text-xs">{getISTFullDateTime(o.date)}</td>
-                        <td className="px-4 lg:px-8 py-4 text-[9px] lg:text-[10px] font-bold uppercase">{o.branchName}</td>
-                        <td className="px-4 lg:px-8 py-4">
-                           <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${o.type === 'DELIVERY' ? 'bg-brand-red text-white' : 'bg-brand-brown/5 text-brand-brown/40'}`}>
-                             {o.type.replace('_', ' ')}
-                           </span>
-                        </td>
-                        <td className="px-4 lg:px-8 py-4 text-right font-black text-xs lg:text-sm">
-                           {o.type === 'DELIVERY' && o.manualTotal != null ? (
-                             <div className="flex flex-col items-end">
-                               <span>₹{o.manualTotal}</span>
-                               <span className="text-[7px] text-brand-brown/30 font-bold uppercase tracking-tighter">Menu Price: ₹{o.total}</span>
-                             </div>
-                           ) : (
-                             <span>₹{o.total}</span>
-                           )}
-                        </td>
-                        <td className="px-4 lg:px-8 py-4 text-right">
-                          <button 
-                            onClick={() => handleSearch(o.billNumber)}
-                            className="bg-brand-brown text-brand-yellow px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-brand-red hover:text-white transition-all shadow-md active:scale-95"
-                          >
-                            View
-                          </button>
-                        </td>
+                {activeTab !== 'adjustments' ? (
+                  <table className="w-full text-left">
+                    <thead><tr className="bg-brand-brown/5 text-brand-brown/40 text-[9px] lg:text-[10px] font-black uppercase"><th className="px-4 lg:px-8 py-4">Bill #</th><th className="px-4 lg:px-8 py-4">Date</th><th className="px-4 lg:px-8 py-4">Branch</th><th className="px-4 lg:px-8 py-4">Type</th><th className="px-4 lg:px-8 py-4 text-right">Total</th><th className="px-4 lg:px-8 py-4 text-right">Action</th></tr></thead>
+                    <tbody className="divide-y divide-brand-stone">
+                      {(activeTab === 'active' ? orders : deletedOrders).map(o => (
+                        <tr key={o.id} className="hover:bg-brand-cream/50 transition-colors group">
+                          <td className="px-4 lg:px-8 py-4 font-black text-xs lg:text-sm">#{o.billNumber}</td>
+                          <td className="px-4 lg:px-8 py-4 text-[10px] lg:text-xs">{getISTFullDateTime(o.date)}</td>
+                          <td className="px-4 lg:px-8 py-4 text-[9px] lg:text-[10px] font-bold uppercase">{o.branchName}</td>
+                          <td className="px-4 lg:px-8 py-4">
+                             <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${o.type === 'DELIVERY' ? 'bg-brand-red text-white' : 'bg-brand-brown/5 text-brand-brown/40'}`}>
+                               {o.type.replace('_', ' ')}
+                             </span>
+                          </td>
+                          <td className="px-4 lg:px-8 py-4 text-right font-black text-xs lg:text-sm">
+                             {o.type === 'DELIVERY' && o.manualTotal != null ? (
+                               <div className="flex flex-col items-end">
+                                 <span>₹{o.manualTotal}</span>
+                                 <span className="text-[7px] text-brand-brown/30 font-bold uppercase tracking-tighter">Menu Price: ₹{o.total}</span>
+                               </div>
+                             ) : (
+                               <span>₹{o.total}</span>
+                             )}
+                          </td>
+                          <td className="px-4 lg:px-8 py-4 text-right">
+                            <button 
+                              onClick={() => handleSearch(o.billNumber)}
+                              className="bg-brand-brown text-brand-yellow px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-brand-red hover:text-white transition-all shadow-md active:scale-95"
+                            >
+                              View
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="bg-brand-brown/5 text-brand-brown/40 text-[9px] lg:text-[10px] font-black uppercase">
+                        <th className="px-4 lg:px-8 py-4">Date</th>
+                        <th className="px-4 lg:px-8 py-4">Item ID</th>
+                        <th className="px-4 lg:px-8 py-4">Branch</th>
+                        <th className="px-4 lg:px-8 py-4 text-center">Change</th>
+                        <th className="px-4 lg:px-8 py-4">Performed By</th>
+                        <th className="px-4 lg:px-8 py-4 text-right">Reason</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-brand-stone">
+                      {adjustments.map((adj, idx) => (
+                        <tr key={idx} className="hover:bg-brand-cream/50 transition-colors">
+                          <td className="px-4 lg:px-8 py-4 text-[10px] lg:text-xs">{getISTFullDateTime(adj.date)}</td>
+                          <td className="px-4 lg:px-8 py-4 font-black text-xs lg:text-sm uppercase">{adj.inventory_id}</td>
+                          <td className="px-4 lg:px-8 py-4 text-[9px] lg:text-[10px] font-bold uppercase">{adj.branch_name}</td>
+                          <td className="px-4 lg:px-8 py-4 text-center">
+                            <span className={`px-3 py-1 rounded-full text-[9px] font-black ${adj.quantity_change > 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-brand-red'}`}>
+                              {adj.quantity_change > 0 ? '+' : ''}{adj.quantity_change}
+                            </span>
+                          </td>
+                          <td className="px-4 lg:px-8 py-4 text-[10px] font-bold uppercase text-brand-brown/60">{adj.performed_by || 'System'}</td>
+                          <td className="px-4 lg:px-8 py-4 text-right text-[10px] font-medium italic text-brand-brown/50 italic max-w-[200px] truncate ml-auto" title={adj.reason}>{adj.reason}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </div>
           </div>
