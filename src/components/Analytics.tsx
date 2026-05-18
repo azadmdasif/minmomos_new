@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchProcurements, getCentralInventory, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments } from '../utils/storage';
+import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchProcurements, getCentralInventory, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats } from '../utils/storage';
 import { CompletedOrder, PaymentMethod, Station, User, CentralMaterial, Customer } from '../types';
 import PrintReceipt from './PrintReceipt';
 import DeleteBillModal from './DeleteBillModal';
@@ -9,7 +9,12 @@ import PerformanceChart from './PerformanceChart';
 import RevenueBreakdownChart from './RevenueBreakdownChart';
 import OrderModeChart from './OrderModeChart';
 import TimeWiseRevenueChart from './TimeWiseRevenueChart';
-import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star, Users, TrendingUp as TrendingUpIcon, Gift } from 'lucide-react';
+import CustomerInsights from './CustomerInsights';
+import CohortRetentionChart from './CohortRetentionChart';
+import CohortCompositionChart from './CohortCompositionChart';
+import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star, Users, TrendingUp as TrendingUpIcon, Gift, DollarSign, ShoppingBag, Download, RefreshCw } from 'lucide-react';
+
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
 
 const getTodaysDateString = () => {
   return getISTDateString();
@@ -82,6 +87,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [activePreset, setActivePreset] = useState<DatePreset>('today');
   const [activeTab, setActiveTab] = useState<ActiveTab>('active');
   const [reportView, setReportView] = useState<ReportView>('revenue');
+  const [compareBy, setCompareBy] = useState<'STORE' | 'CASHIER'>('STORE');
   const [selectedStore, setSelectedStore] = useState<string>(isAdmin ? 'All' : (user.stationName || 'All'));
   const [availableStations, setAvailableStations] = useState<Station[]>([]);
   
@@ -97,6 +103,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [customMessage, setCustomMessage] = useState('');
   const [activeCustomer, setActiveCustomer] = useState<Customer | null>(null);
   const [usualOrder, setUsualOrder] = useState<{ name: string, quantity: number } | null>(null);
+  const [cohortRawData, setCohortRawData] = useState<CohortOrder[]>([]);
+  const [compositionPeriod, setCompositionPeriod] = useState<string | null>(null);
+  const [analysisBasis, setAnalysisBasis] = useState<'REVENUE' | 'ORDERS'>('REVENUE');
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [editedProfile, setEditedProfile] = useState<Partial<Customer>>({});
   const [isSavingProfile, setIsSavingProfile] = useState(false);
@@ -117,6 +126,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
   const [customerSortField, setCustomerSortField] = useState<'totalSpent' | 'joinedDate' | 'totalOrders' | 'lastVisit'>('totalSpent');
   const [customerSortOrder, setCustomerSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [customerClassFilter, setCustomerClassFilter] = useState<'ALL' | 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY' | 'UNCLASSIFIED'>('ALL');
+  const [customerOrderStats, setCustomerOrderStats] = useState<Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }>>({});
   const [minLtv, setMinLtv] = useState<string>('');
   const [maxLtv, setMaxLtv] = useState<string>('');
   const [minOrders, setMinOrders] = useState<string>('');
@@ -124,6 +135,162 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [customerActivityStart, setCustomerActivityStart] = useState<string>('');
   const [customerActivityEnd, setCustomerActivityEnd] = useState<string>('');
   const [selectedDayInsights, setSelectedDayInsights] = useState<number | null>(null);
+  const [selectedSequenceDetail, setSelectedSequenceDetail] = useState<{ seq: number | string, orders: CompletedOrder[], label: string } | null>(null);
+
+  const behaviorData = useMemo(() => {
+    if (!orders.length || !cohortRawData.length) return null;
+
+    // 1. Unique customers in the selected period
+    const periodUids = new Set<string>();
+    const periodOrdersByUid: Record<string, CompletedOrder[]> = {};
+    
+    orders.forEach(o => {
+      const uid = o.customerPhone || 'GUEST';
+      if (uid === 'GUEST') return; // Exclude non-registered for sequence precision if preferred, but following "unique customers"
+      periodUids.add(uid);
+      if (!periodOrdersByUid[uid]) periodOrdersByUid[uid] = [];
+      periodOrdersByUid[uid].push(o);
+    });
+
+    const uniqueCustomerCount = periodUids.size;
+
+    // 2. Map all historical orders to sequence numbers for every customer
+    const historicalOrdersByUid: Record<string, CohortOrder[]> = {};
+    cohortRawData.forEach(o => {
+      const uid = normalizePhone(o.customer_phone);
+      if (!uid || uid === 'GUEST') return;
+      
+      const bNum = Number(o.bill_number);
+      if (isNaN(bNum) || bNum <= 0) return;
+
+      if (!historicalOrdersByUid[uid]) historicalOrdersByUid[uid] = [];
+      
+      // De-duplicate by bill number in history - use numeric comparison for robustness
+      if (!historicalOrdersByUid[uid].some(h => Number(h.bill_number) === bNum)) {
+        historicalOrdersByUid[uid].push({
+          ...o,
+          customer_phone: uid,
+          bill_number: bNum
+        });
+      }
+    });
+
+    // Sort historical orders to find sequences
+    Object.keys(historicalOrdersByUid).forEach(uid => {
+      historicalOrdersByUid[uid].sort((a, b) => {
+        const dateA = new Date(a.order_date).getTime();
+        const dateB = new Date(b.order_date).getTime();
+        if (dateA !== dateB) return dateA - dateB;
+        return a.bill_number - b.bill_number;
+      });
+    });
+
+    // Analyze orders IN THE PERIOD
+    const sequenceStats: Record<number | string, { count: number, totalRevenue: number }> = {};
+    const compositionStats = {
+      repeat: { count: 0, revenue: 0 },
+      new: { count: 0, revenue: 0 },
+      unregistered: { count: 0, revenue: 0 },
+      delivery: { count: 0, revenue: 0 }
+    };
+
+    let matchedRevenue = 0;
+    let matchedOrders = 0;
+    const processedBillNumbers = new Set<string | number>();
+
+    orders.forEach(o => {
+      const rev = o.type === 'DELIVERY' && o.manualTotal != null ? o.manualTotal : o.total;
+      const uid = normalizePhone(o.customerPhone);
+      const bNum = Number(o.billNumber);
+      
+      // Prevent double counting the same bill in the period (if duplicates exist in orders array)
+      if (processedBillNumbers.has(bNum)) return;
+      processedBillNumbers.add(bNum);
+
+      // 1. Composition Logic (aligned with Sequence where possible)
+      if (o.type === 'DELIVERY') {
+        compositionStats.delivery.count++;
+        compositionStats.delivery.revenue += rev;
+      } else if (!uid || uid === 'GUEST') {
+        compositionStats.unregistered.count++;
+        compositionStats.unregistered.revenue += rev;
+      }
+
+      // 2. Sequence Logic
+      if (!uid || uid === 'GUEST') return;
+      
+      const userHistory = historicalOrdersByUid[uid];
+      let seq: number | string = 'Other';
+      if (userHistory) {
+        const indexInHistory = userHistory.findIndex(h => Number(h.bill_number) === bNum);
+        if (indexInHistory !== -1) {
+          seq = indexInHistory + 1;
+        }
+      }
+
+      if (!sequenceStats[seq]) sequenceStats[seq] = { count: 0, totalRevenue: 0 };
+      sequenceStats[seq].count++;
+      sequenceStats[seq].totalRevenue += rev;
+      matchedRevenue += rev;
+      matchedOrders++;
+
+      // 3. Fill Composition from Sequence (if not already handled by Delivery/Unreg)
+      if (o.type !== 'DELIVERY') {
+        if (seq === 1) {
+          compositionStats.new.count++;
+          compositionStats.new.revenue += rev;
+        } else {
+          compositionStats.repeat.count++;
+          compositionStats.repeat.revenue += rev;
+        }
+      }
+    });
+
+    const sortedSequences = Object.entries(sequenceStats)
+      .filter(([seq]) => seq !== 'Other')
+      .map(([seq, stats]) => ({
+        seq: parseInt(seq),
+        customers: stats.count,
+        revenue: stats.totalRevenue,
+        aov: stats.count > 0 ? stats.totalRevenue / stats.count : 0,
+        orders: orders.filter(o => {
+          const oUid = normalizePhone(o.customerPhone);
+          if (!oUid || oUid === 'GUEST') return false;
+          const hist = historicalOrdersByUid[oUid];
+          if (!hist) return false;
+          const idx = hist.findIndex(h => Number(h.bill_number) === Number(o.billNumber));
+          return idx + 1 === parseInt(seq);
+        })
+      }))
+      .sort((a, b) => a.seq - b.seq);
+    
+    // Add "Other" if there are unmatched profile orders
+    if (sequenceStats['Other']) {
+      sortedSequences.push({
+        seq: 999, // Special key for display
+        customers: sequenceStats['Other'].count,
+        revenue: sequenceStats['Other'].totalRevenue,
+        aov: sequenceStats['Other'].count > 0 ? sequenceStats['Other'].totalRevenue / sequenceStats['Other'].count : 0,
+        orders: orders.filter(o => {
+           const oUid = normalizePhone(o.customerPhone);
+           if (!oUid || oUid === 'GUEST') return false;
+           const hist = historicalOrdersByUid[oUid];
+           if (!hist) return true; // It was 'Other' because it wasn't in history
+           const idx = hist.findIndex(h => Number(h.bill_number) === Number(o.billNumber));
+           return idx === -1;
+        })
+      });
+    }
+
+    return {
+      uniqueCustomers: uniqueCustomerCount,
+      totalOrders: matchedOrders,
+      sequences: sortedSequences,
+      avgOrdersPerUser: uniqueCustomerCount > 0 ? matchedOrders / uniqueCustomerCount : 0,
+      avgSpendPerUser: uniqueCustomerCount > 0 ? matchedRevenue / uniqueCustomerCount : 0,
+      composition: compositionStats
+    };
+  }, [orders, cohortRawData]);
 
   // Fixed Costs (Persisted in localStorage for convenience)
   const [salaryRate, setSalaryRate] = useState<number>(Number(localStorage.getItem('momo_salary_rate') || 1200));
@@ -138,20 +305,31 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     // Fetch customers for both Admin and Manager
     // Managers only see their own branch customers
     const custFilter = isAdmin ? undefined : user.stationName;
-    const cust = await fetchCustomers(custFilter);
+    const [cust, stats, cohort] = await Promise.all([
+      fetchCustomers(custFilter),
+      fetchCustomerClassificationStats(),
+      fetchCohortRawData()
+    ]);
     
     if (isAdmin) {
       setAvailableStations(s);
       setCentralInv(c);
     }
     setCustomers(cust);
+    setCustomerOrderStats(stats);
+    setCohortRawData(cohort);
   }, [isAdmin, user.stationName, user.role]);
 
   const fetchOrders = useCallback(async () => {
     // Expand start date by 32 days to ensure 30-day SMA is accurate for the start of the visible range
     const expandedStart = getHistoricalStartDate(startDate, 32);
-    const fetchedOrders = await getOrdersForDateRange(expandedStart, endDate);
+    const [fetchedOrders, freshCohortData] = await Promise.all([
+      getOrdersForDateRange(expandedStart, endDate),
+      fetchCohortRawData()
+    ]);
+
     setAllOrdersRaw(fetchedOrders);
+    setCohortRawData(freshCohortData);
     
     // Filter by store - Managers only see their own
     const storeToFilter = isAdmin ? selectedStore : (user.stationName || 'All');
@@ -202,6 +380,68 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       setAdjustments(adjRes.data || []);
     }
   }, [startDate, endDate]);
+
+  const handleSequenceDetailClick = (seq: any) => {
+    const label = seq.seq === 999 ? 'Others' : seq.seq === 1 ? 'New / 1st Order' : `${seq.seq}th Purchase`;
+    setSelectedSequenceDetail({
+      seq: seq.seq,
+      orders: seq.orders || [],
+      label
+    });
+  };
+
+  const handleExportCustomers = () => {
+    if (filteredCustomers.length === 0) return;
+
+    const headers = ['Phone', 'Name', 'Email', 'Birthday', 'Total Spent (LTV)', 'Total Orders', 'MinCoins Balance', 'Joined Date', 'Last Visit', 'Note'];
+    const csvContent = [
+      headers.join(','),
+      ...filteredCustomers.map(c => [
+        c.phone,
+        `"${(c.name || '').replace(/"/g, '""')}"`,
+        `"${(c.email || '').replace(/"/g, '""')}"`,
+        c.birthday || '',
+        c.totalSpent || 0,
+        c.totalOrders || 0,
+        c.minCoins || 0,
+        c.joinedDate ? new Date(c.joinedDate).toLocaleDateString() : '',
+        c.lastVisit ? new Date(c.lastVisit).toLocaleDateString() : '',
+        `"${(c.note || '').replace(/"/g, '""')}"`
+      ].join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `customers_export_${startDate}_to_${endDate}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const [isSyncingStats, setIsSyncingStats] = useState(false);
+  const handleSyncAllStats = async () => {
+    if (isSyncingStats || !filteredCustomers.length) return;
+    setIsSyncingStats(true);
+    try {
+      // Sync in small batches to avoid timeouts or issues
+      const batchSize = 5;
+      for (let i = 0; i < filteredCustomers.length; i += batchSize) {
+        const batch = filteredCustomers.slice(i, i + batchSize);
+        await Promise.all(batch.map(c => syncCustomerStats(c.phone)));
+      }
+      alert(`Successfully synced stats for ${filteredCustomers.length} customers.`);
+      // Refresh local data by reloading
+      window.location.reload(); 
+    } catch (e) {
+      console.error("Sync Error:", e);
+      alert("Error syncing stats. Check console.");
+    } finally {
+      setIsSyncingStats(false);
+    }
+  };
 
   const handleCustomerClick = async (customer: Customer) => {
     setActiveCustomer(customer);
@@ -530,7 +770,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
   const comparisonData = useMemo(() => {
     if (!isAdmin) return [];
-    const stores: Record<string, { revenue: number, orders: number, profit: number }> = {};
+    const groups: Record<string, { revenue: number, orders: number, profit: number }> = {};
     const visibleRaw = allOrdersRaw.filter(o => {
       const d = getISTDateString(o.date);
       return d >= startDate && d <= endDate;
@@ -539,14 +779,16 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     visibleRaw.forEach(order => {
       const actualRev = order.type === 'DELIVERY' && order.manualTotal != null ? order.manualTotal : order.total;
       const roundedTotal = Math.round(actualRev);
-      if (!stores[order.branchName]) stores[order.branchName] = { revenue: 0, orders: 0, profit: 0 };
-      stores[order.branchName].revenue += roundedTotal;
-      stores[order.branchName].orders += 1;
+      const groupKey = compareBy === 'STORE' ? order.branchName : (order.cashierName || 'System/Unknown');
+      
+      if (!groups[groupKey]) groups[groupKey] = { revenue: 0, orders: 0, profit: 0 };
+      groups[groupKey].revenue += roundedTotal;
+      groups[groupKey].orders += 1;
       const orderCogs = order.items?.reduce((acc, item) => acc + (item.cost ?? 0) * item.quantity, 0) || 0;
-      stores[order.branchName].profit += (roundedTotal - Math.round(orderCogs));
+      groups[groupKey].profit += (roundedTotal - Math.round(orderCogs));
     });
-    return Object.entries(stores).map(([name, stats]) => ({ name, ...stats })).sort((a, b) => b.revenue - a.revenue);
-  }, [isAdmin, allOrdersRaw, startDate, endDate]);
+    return Object.entries(groups).map(([name, stats]) => ({ name, ...stats })).sort((a, b) => b.revenue - a.revenue);
+  }, [isAdmin, allOrdersRaw, startDate, endDate, compareBy]);
 
   const customerOverview = useMemo(() => {
     const totalCount = customers.length;
@@ -639,6 +881,26 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const filteredCustomers = useMemo(() => {
     let filtered = customers.filter(c => c.phone.includes(customerSearchTerm));
     
+    // Classification Filter
+    if (customerClassFilter !== 'ALL') {
+      filtered = filtered.filter(c => {
+        const phone = normalizePhone(c.phone);
+        const stats = customerOrderStats[phone];
+        if (!stats || stats.total === 0) return customerClassFilter === 'UNCLASSIFIED';
+        
+        const dineInRate = stats.DINE_IN / stats.total;
+        const takeawayRate = stats.TAKEAWAY / stats.total;
+        const deliveryRate = stats.DELIVERY / stats.total;
+        
+        // Use a 70% threshold for classification. 
+        // For customers with only 1 order, rate will be 100%, so they will be correctly classified.
+        if (dineInRate > 0.7) return customerClassFilter === 'DINE_IN';
+        if (takeawayRate > 0.7) return customerClassFilter === 'TAKEAWAY';
+        if (deliveryRate > 0.7) return customerClassFilter === 'DELIVERY';
+        return customerClassFilter === 'UNCLASSIFIED';
+      });
+    }
+
     // Range Filters
     if (minLtv) filtered = filtered.filter(c => (c.totalSpent ?? 0) >= Number(minLtv));
     if (maxLtv) filtered = filtered.filter(c => (c.totalSpent ?? 0) <= Number(maxLtv));
@@ -675,7 +937,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
       return customerSortOrder === 'desc' ? valB - valA : valA - valB;
     });
-  }, [customers, customerSearchTerm, customerSortField, customerSortOrder, minLtv, maxLtv, minOrders, maxOrders, customerActivityStart, customerActivityEnd, allOrdersRaw]);
+  }, [customers, customerSearchTerm, customerSortField, customerSortOrder, minLtv, maxLtv, minOrders, maxOrders, customerActivityStart, customerActivityEnd, allOrdersRaw, customerClassFilter, customerOrderStats]);
 
   const SummaryCard = ({ title, value, sub, color, textWhite }: any) => (
     <div className={`${color} p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-sm relative overflow-hidden group border border-black/5`}>
@@ -950,7 +1212,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         
         <div className="flex flex-wrap rounded-2xl lg:rounded-[2rem] overflow-hidden border-2 lg:border-4 border-brand-brown shadow-xl mb-10">
           <button onClick={() => setReportView('revenue')} className={`flex-1 min-w-[33%] lg:min-w-0 py-3 lg:py-4 text-[10px] font-black uppercase tracking-widest transition-all ${reportView === 'revenue' ? 'bg-brand-brown text-brand-yellow' : 'bg-white text-brand-brown/40 hover:bg-brand-brown/5'}`}>Revenue</button>
-          <button onClick={() => setReportView('trends')} className={`flex-1 min-w-[33%] lg:min-w-0 py-3 lg:py-4 text-[10px] font-black uppercase tracking-widest transition-all ${reportView === 'trends' ? 'bg-brand-brown text-brand-yellow' : 'bg-white text-brand-brown/40 hover:bg-brand-brown/5'}`}>Trends</button>
+          {user.role !== 'CASHIER' && (
+            <button onClick={() => setReportView('trends')} className={`flex-1 min-w-[33%] lg:min-w-0 py-3 lg:py-4 text-[10px] font-black uppercase tracking-widest transition-all ${reportView === 'trends' ? 'bg-brand-brown text-brand-yellow' : 'bg-white text-brand-brown/40 hover:bg-brand-brown/5'}`}>Trends</button>
+          )}
           <button onClick={() => setReportView('itemSales')} className={`flex-1 min-w-[33%] lg:min-w-0 py-3 lg:py-4 text-[10px] font-black uppercase tracking-widest transition-all ${reportView === 'itemSales' ? 'bg-brand-brown text-brand-yellow' : 'bg-white text-brand-brown/40 hover:bg-brand-brown/5'}`}>Items</button>
           {(isAdmin || user.role === 'STORE_MANAGER') && (
             <button onClick={() => setReportView('customers')} className={`flex-1 min-w-[33%] lg:min-w-0 py-3 lg:py-4 text-[10px] font-black uppercase tracking-widest transition-all ${reportView === 'customers' ? 'bg-brand-brown text-brand-yellow' : 'bg-white text-brand-brown/40 hover:bg-brand-brown/5'}`}>Customers</button>
@@ -965,12 +1229,37 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
         {reportView === 'trends' && (
           <div className="space-y-12 animate-in fade-in duration-700">
+            {/* Master Toggle */}
+            <div className="flex justify-center mb-8">
+              <div className="bg-brand-brown/5 p-2 rounded-[2rem] border-2 border-brand-brown/10 flex items-center gap-2 shadow-inner">
+                <button 
+                  onClick={() => setAnalysisBasis('REVENUE')}
+                  className={`px-8 py-3 rounded-full text-[10px] font-black uppercase tracking-[0.2em] transition-all flex items-center gap-3 ${analysisBasis === 'REVENUE' ? 'bg-brand-brown text-brand-yellow shadow-xl' : 'text-brand-brown/40 hover:bg-brand-brown/10'}`}
+                >
+                  <DollarSign className="w-4 h-4" />
+                  Revenue Analysis
+                </button>
+                <button 
+                  onClick={() => setAnalysisBasis('ORDERS')}
+                  className={`px-8 py-3 rounded-full text-[10px] font-black uppercase tracking-[0.2em] transition-all flex items-center gap-3 ${analysisBasis === 'ORDERS' ? 'bg-brand-brown text-brand-yellow shadow-xl' : 'text-brand-brown/40 hover:bg-brand-brown/10'}`}
+                >
+                  <ShoppingBag className="w-4 h-4" />
+                  Order Volume
+                </button>
+              </div>
+            </div>
+
             {/* 1. Main Line Chart */}
-            <PerformanceChart orders={chartOrders} customers={customers} startDate={startDate} endDate={endDate} />
+            <PerformanceChart orders={chartOrders} customers={customers} startDate={startDate} endDate={endDate} analysisBasis={analysisBasis} />
 
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-              <RevenueBreakdownChart orders={orders} customers={customers} />
-              <OrderModeChart orders={orders} />
+              <RevenueBreakdownChart 
+                orders={orders} 
+                customers={customers} 
+                analysisBasis={analysisBasis} 
+                compositionData={behaviorData?.composition}
+              />
+              <OrderModeChart orders={orders} analysisBasis={analysisBasis} />
             </div>
 
             {/* 2. Insight Summary Cards */}
@@ -996,24 +1285,156 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
               </div>
             </div>
 
-            {/* 3. Improved Rainbow Heatmap */}
+            {/* 3. Customer Behavior Analysis */}
+            {behaviorData && (
+              <div className="bg-brand-brown p-8 lg:p-12 rounded-[3.5rem] shadow-2xl text-white relative overflow-hidden">
+                {/* Background Accent */}
+                <div className="absolute top-0 right-0 w-96 h-96 bg-brand-yellow/5 rounded-full blur-3xl -mr-48 -mt-48" />
+                
+                <div className="relative z-10">
+                  <div className="mb-12">
+                    <h3 className="text-3xl font-black italic uppercase tracking-tighter text-brand-yellow">Customer <span className="text-white">Behavior</span> Analysis</h3>
+                    <p className="text-[10px] font-bold text-white/40 uppercase tracking-[0.2em] mt-2">Purchase frequency & sequence performance for selected period</p>
+                  </div>
+
+                  {/* Top Level Summary Cards */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 mb-12">
+                    <div className="bg-white/5 backdrop-blur-md p-8 rounded-[2.5rem] border border-white/10">
+                      <div className="flex items-center gap-3 mb-4">
+                        <Users className="w-5 h-5 text-brand-yellow" />
+                        <span className="text-[10px] font-black uppercase tracking-widest text-white/40">Unique Customers</span>
+                      </div>
+                      <p className="text-4xl font-black tracking-tighter text-white">{behaviorData.uniqueCustomers.toLocaleString()}</p>
+                      <p className="text-[10px] font-bold text-white/30 uppercase mt-2">Active in this period</p>
+                    </div>
+
+                    <div className="bg-white/10 backdrop-blur-md p-8 rounded-[2.5rem] border border-white/20">
+                      <div className="flex items-center gap-3 mb-4">
+                        <ShoppingBag className="w-5 h-5 text-brand-red" />
+                        <span className="text-[10px] font-black uppercase tracking-widest text-white/40">Total Orders</span>
+                      </div>
+                      <p className="text-4xl font-black tracking-tighter text-white">{behaviorData.totalOrders.toLocaleString()}</p>
+                      <p className="text-[10px] font-bold text-white/30 uppercase mt-2">Placed by profile owners</p>
+                    </div>
+
+                    <div className="bg-white/5 backdrop-blur-md p-8 rounded-[2.5rem] border border-white/10">
+                      <div className="flex items-center gap-3 mb-4">
+                        <Receipt className="w-5 h-5 text-brand-yellow" />
+                        <span className="text-[10px] font-black uppercase tracking-widest text-white/40">Frequency Index</span>
+                      </div>
+                      <p className="text-4xl font-black tracking-tighter text-white">{behaviorData.avgOrdersPerUser.toFixed(2)}</p>
+                      <p className="text-[10px] font-bold text-white/30 uppercase mt-2">Orders per unique user</p>
+                    </div>
+
+                    <div className="bg-white/5 backdrop-blur-md p-8 rounded-[2.5rem] border border-white/10">
+                      <div className="flex items-center gap-3 mb-4">
+                        <DollarSign className="w-5 h-5 text-emerald-400" />
+                        <span className="text-[10px] font-black uppercase tracking-widest text-white/40">Period Yield</span>
+                      </div>
+                      <p className="text-4xl font-black tracking-tighter text-white">₹{Math.round(behaviorData.avgSpendPerUser).toLocaleString()}</p>
+                      <p className="text-[10px] font-bold text-white/30 uppercase mt-2">Spend per unique user</p>
+                    </div>
+                  </div>
+
+                  {/* Purchase Sequence Breakdown - Chart Form */}
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between mb-8">
+                      <h4 className="text-sm font-black uppercase tracking-widest text-white/60">Order Sequence Breakdown</h4>
+                      <div className="h-[1px] flex-1 bg-white/10 mx-6" />
+                    </div>
+
+                    <div className="bg-white/5 rounded-[3rem] p-8 border border-white/10 h-[400px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart 
+                          data={behaviorData.sequences.slice(0, 12)} 
+                          margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
+                          style={{ cursor: 'pointer' }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.05)" />
+                          <XAxis 
+                            dataKey="seq" 
+                            stroke="rgba(255,255,255,0.4)" 
+                            fontSize={10} 
+                            tickFormatter={(v) => v === 999 ? 'Others' : v === 1 ? '1st' : v === 2 ? '2nd' : v === 3 ? '3rd' : `${v}th`}
+                            axisLine={false}
+                            tickLine={false}
+                            dy={10}
+                          />
+                          <YAxis hide />
+                          <RechartsTooltip 
+                             contentStyle={{ backgroundColor: '#2D1D13', border: 'none', borderRadius: '16px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', color: '#fff' }}
+                             itemStyle={{ color: '#FACC15', fontWeight: '900', fontSize: '12px' }}
+                             cursor={{ fill: 'rgba(255,255,255,0.02)' }}
+                             formatter={(value: any, name: any, props: any) => {
+                               const seq = props.payload.seq;
+                               const label = seq === 999 ? 'Unmatched Sequence' : seq === 1 ? 'New / 1st Order' : `${seq}th Purchase`;
+                               return name === 'customers' ? [`${value} Orders`, label] : [`₹${Math.round(value)}`, 'Avg Ticket'];
+                             }}
+                          />
+                          <Bar dataKey="customers" radius={[12, 12, 0, 0]} maxBarSize={60}>
+                            {behaviorData.sequences.slice(0, 12).map((s, index) => (
+                              <Cell 
+                                key={`cell-${index}`} 
+                                fill={s.seq === 999 ? '#6B7280' : index === 0 ? '#EF4444' : index === 1 ? '#F59E0B' : index === 2 ? '#10B981' : index === 3 ? '#3B82F6' : index === 4 ? '#8B5CF6' : '#EC4899'} 
+                                fillOpacity={0.9}
+                                onClick={() => handleSequenceDetailClick(s)}
+                              />
+                            ))}
+                            <LabelList 
+                              dataKey="customers" 
+                              position="top" 
+                              style={{ fill: 'white', fontSize: '12px', fontWeight: '900', opacity: 0.9 }} 
+                            />
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+                      {behaviorData.sequences.slice(0, 6).map((seq, idx) => (
+                        <div key={idx} className="bg-white/5 p-5 rounded-[2rem] border border-white/5 flex flex-col justify-between">
+                           <div>
+                             <p className="text-[8px] font-black uppercase tracking-widest text-white/30 mb-1">{seq.seq === 999 ? 'Other' : seq.seq === 1 ? 'New' : `${seq.seq}th`} AOV</p>
+                             <p className="text-xl font-black text-white tracking-tighter">₹{Math.round(seq.aov).toLocaleString()}</p>
+                           </div>
+                           <button 
+                             onClick={() => handleSequenceDetailClick(seq)}
+                             className="mt-4 w-full py-2 bg-white/5 hover:bg-brand-yellow hover:text-brand-brown rounded-xl text-[8px] font-black uppercase tracking-widest transition-all border border-white/5"
+                           >
+                             View Bills
+                           </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 4. Improved Rainbow Heatmap */}
             <div className="bg-white rounded-[3rem] p-8 shadow-2xl border border-brand-stone">
               <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-6">
                 <div>
                   <h3 className="text-2xl font-black text-brand-brown uppercase italic">Strategic <span className="text-brand-red">Heatmap</span></h3>
-                  <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">Revenue distribution by day and hour</p>
+                  <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">
+                    {analysisBasis === 'REVENUE' ? 'Revenue distribution' : 'Order frequency'} by day and hour
+                  </p>
                 </div>
 
                 {/* Color Legend Bar */}
                 <div className="flex flex-col gap-2 bg-brand-brown/5 p-4 rounded-3xl border border-brand-stone/30">
                   <div className="flex items-center justify-between text-[8px] font-black text-brand-brown/60 uppercase tracking-widest mb-1 px-1">
                     <span>MIN (LOW)</span>
-                    <span>MAX (HIGH REV)</span>
+                    <span>MAX (HIGH {analysisBasis})</span>
                   </div>
                   <div className="h-3 w-48 lg:w-64 rounded-full" style={{ background: heatmapGradient }} />
                   <div className="flex justify-between px-1">
-                     <span className="text-[8px] font-bold text-brand-brown/30">₹0</span>
-                     <span className="text-[8px] font-bold text-brand-brown/30">₹{Math.round(Math.max(...Object.values(insightData.heatmap).flatMap(d => Object.values(d).map(v => v.revenue)))).toLocaleString()}</span>
+                     <span className="text-[8px] font-bold text-brand-brown/30">{analysisBasis === 'REVENUE' ? '₹0' : '0'}</span>
+                     <span className="text-[8px] font-bold text-brand-brown/30">
+                       {analysisBasis === 'REVENUE' 
+                         ? `₹${Math.round(Math.max(...Object.values(insightData.heatmap).flatMap(d => Object.values(d).map(v => v.revenue)))).toLocaleString()}`
+                         : `${Math.round(Math.max(...Object.values(insightData.heatmap).flatMap(d => Object.values(d).map(v => v.orders)))).toLocaleString()}`}
+                     </span>
                   </div>
                 </div>
 
@@ -1042,11 +1463,11 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                     {insightData.days.map((dayName, dIdx) => {
                       const daySlotData = insightData.heatmap[dIdx];
                       const slots = [{ h: 17 }, { h: 18 }, { h: 19 }, { h: 20 }, { h: 21 }];
-                      const otherRev = Object.entries(daySlotData)
+                      const otherValue = Object.entries(daySlotData)
                         .filter(([h]) => !slots.map(s => s.h).includes(parseInt(h)))
-                        .reduce((sum, [_, data]) => sum + data.revenue, 0);
+                        .reduce((sum, [_, data]) => sum + (analysisBasis === 'REVENUE' ? data.revenue : data.orders), 0);
 
-                      const maxGlobalSlotRev = Math.max(...Object.values(insightData.heatmap).flatMap(d => Object.values(d).map(v => v.revenue)), 1);
+                      const maxValue = Math.max(...Object.values(insightData.heatmap).flatMap(d => Object.values(d).map(v => analysisBasis === 'REVENUE' ? v.revenue : v.orders)), 1);
 
                       return (
                         <div 
@@ -1057,8 +1478,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                           <div className="w-24 shrink-0 text-[11px] font-black uppercase text-brand-brown group-hover/row:text-brand-red transition-colors">{dayName}</div>
                           <div className="flex-1 flex gap-2 h-14">
                             {slots.map(s => {
-                              const rev = daySlotData[s.h].revenue;
-                              const intensity = rev / maxGlobalSlotRev;
+                              const val = analysisBasis === 'REVENUE' ? daySlotData[s.h].revenue : daySlotData[s.h].orders;
+                              const intensity = val / maxValue;
                               const bg = getHeatmapColor(intensity);
                               return (
                                 <div 
@@ -1069,7 +1490,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                                   }}
                                 >
                                   <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/slot:opacity-100 transition-opacity z-10 pointer-events-none">
-                                    <span className="text-[10px] font-black text-white px-3 py-1.5 bg-brand-brown rounded-xl shadow-2xl ring-2 ring-white/10">₹{Math.round(rev).toLocaleString()}</span>
+                                    <span className="text-[10px] font-black text-white px-3 py-1.5 bg-brand-brown rounded-xl shadow-2xl ring-2 ring-white/10">
+                                      {analysisBasis === 'REVENUE' ? `₹${Math.round(val).toLocaleString()}` : val}
+                                    </span>
                                   </div>
                                 </div>
                               );
@@ -1077,11 +1500,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                             <div 
                               className="flex-1 rounded-2xl relative group/slot transition-all hover:scale-[1.03] border border-black/5 shadow-sm"
                               style={{ 
-                                backgroundColor: getHeatmapColor(otherRev / maxGlobalSlotRev)
+                                backgroundColor: getHeatmapColor(otherValue / maxValue)
                               }}
                             >
                                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/slot:opacity-100 transition-opacity z-10 pointer-events-none">
-                                    <span className="text-[10px] font-black text-white px-3 py-1.5 bg-brand-brown rounded-xl shadow-2xl ring-2 ring-white/10">₹{Math.round(otherRev).toLocaleString()}</span>
+                                    <span className="text-[10px] font-black text-white px-3 py-1.5 bg-brand-brown rounded-xl shadow-2xl ring-2 ring-white/10">
+                                      {analysisBasis === 'REVENUE' ? `₹${Math.round(otherValue).toLocaleString()}` : otherValue}
+                                    </span>
                                 </div>
                             </div>
                           </div>
@@ -1102,8 +1527,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                     {Object.entries(insightData.heatmap[selectedDayInsights]).map(([h, data]) => {
                       const hour = parseInt(h);
                       const displayHour = hour === 0 ? '12 AM' : hour === 12 ? '12 PM' : hour > 12 ? `${hour - 12} PM` : `${hour} AM`;
-                      const maxGlobalSlotRev = Math.max(...Object.values(insightData.heatmap).flatMap(d => Object.values(d).map(v => v.revenue)), 1);
-                      const intensity = data.revenue / maxGlobalSlotRev;
+                      const maxValue = Math.max(...Object.values(insightData.heatmap).flatMap(d => Object.values(d).map(v => analysisBasis === 'REVENUE' ? v.revenue : v.orders)), 1);
+                      const val = analysisBasis === 'REVENUE' ? data.revenue : data.orders;
+                      const intensity = val / maxValue;
                       const bg = getHeatmapColor(intensity);
 
                       return (
@@ -1112,18 +1538,22 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                             className="aspect-square rounded-[1.5rem] flex flex-col items-center justify-center border transition-all hover:scale-105 hover:shadow-xl group-hover/hour:ring-4 group-hover/hour:ring-brand-brown/5"
                             style={{ 
                               backgroundColor: bg,
-                              borderColor: data.revenue > 0 ? 'transparent' : 'rgba(0,0,0,0.05)'
+                              borderColor: val > 0 ? 'transparent' : 'rgba(0,0,0,0.05)'
                             }}
                           >
                             <span className={`text-[9px] font-black uppercase text-center ${intensity > 0.4 ? 'text-white' : 'text-brand-brown/40'}`}>{displayHour}</span>
-                            {data.revenue > 0 && (
-                              <span className={`text-[11px] font-black mt-1 ${intensity > 0.4 ? 'text-white' : 'text-brand-brown'}`}>₹{Math.round(data.revenue / 1000)}k</span>
+                            {val > 0 && (
+                              <span className={`text-[11px] font-black mt-1 ${intensity > 0.4 ? 'text-white' : 'text-brand-brown'}`}>
+                                {analysisBasis === 'REVENUE' ? `₹${Math.round(val / 1000)}k` : val}
+                              </span>
                             )}
                           </div>
-                          {data.revenue > 0 && (
+                          {val > 0 && (
                              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 opacity-0 group-hover/hour:opacity-100 transition-opacity pointer-events-none z-10">
                                <div className="bg-brand-brown text-white text-[10px] font-black px-4 py-2 rounded-xl shadow-2xl whitespace-nowrap ring-2 ring-white/10">
-                                  {data.orders} Orders • ₹{Math.round(data.revenue).toLocaleString()}
+                                  {analysisBasis === 'REVENUE' 
+                                    ? `${data.orders} Orders • ₹${Math.round(data.revenue).toLocaleString()}`
+                                    : `${data.orders} Orders`}
                                </div>
                              </div>
                           )}
@@ -1134,6 +1564,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                 </div>
               )}
             </div>
+
           </div>
         )}
 
@@ -1282,7 +1713,25 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
               <div className="mb-6 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xl font-black text-brand-brown uppercase italic">Customer <span className="text-brand-red">Base</span></h3>
-                  <span className="text-[10px] font-black text-brand-brown/40 uppercase tracking-widest">{filteredCustomers.length} Found</span>
+                  <div className="flex items-center gap-4">
+                    <button 
+                      onClick={handleSyncAllStats}
+                      disabled={isSyncingStats}
+                      className="flex items-center gap-2 px-3 py-1.5 bg-blue-500 text-white rounded-xl text-[8px] font-black uppercase tracking-widest hover:bg-blue-600 transition-all shadow-md active:scale-95 disabled:opacity-50"
+                      title="Recalculate LTV/Orders for all listed customers"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isSyncingStats ? 'animate-spin' : ''}`} />
+                      {isSyncingStats ? 'Syncing...' : 'Sync Stats'}
+                    </button>
+                    <button 
+                      onClick={handleExportCustomers}
+                      className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500 text-white rounded-xl text-[8px] font-black uppercase tracking-widest hover:bg-emerald-600 transition-all shadow-md active:scale-95"
+                    >
+                      <Download className="w-3 h-3" />
+                      Export CSV
+                    </button>
+                    <span className="text-[10px] font-black text-brand-brown/40 uppercase tracking-widest">{filteredCustomers.length} Found</span>
+                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -1386,28 +1835,67 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         )}
                       </div>
                     </div>
+
+                    <div className="space-y-1">
+                      <p className="text-[8px] font-black uppercase text-brand-brown/30 tracking-widest ml-1">Order Mode Filter</p>
+                      <select 
+                        value={customerClassFilter}
+                        onChange={(e) => setCustomerClassFilter(e.target.value as any)}
+                        className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none cursor-pointer"
+                      >
+                        <option value="ALL">All Modes</option>
+                        <option value="DINE_IN">Dine-in Enthusiast (&gt;70%)</option>
+                        <option value="TAKEAWAY">Takeaway Focused (&gt;70%)</option>
+                        <option value="DELIVERY">Delivery Only (&gt;70%)</option>
+                        <option value="UNCLASSIFIED">Unclassified / Mixed</option>
+                      </select>
+                    </div>
                   </div>
                 </div>
               </div>
               
-              <div className="flex-1 overflow-y-auto no-scrollbar space-y-3">
-                {filteredCustomers.map(c => (
-                  <button 
-                    key={c.id}
-                    onClick={() => handleCustomerClick(c)}
-                    className={`w-full p-4 rounded-2xl flex items-center justify-between border-2 transition-all ${activeCustomer?.id === c.id ? 'bg-brand-brown border-brand-brown text-brand-yellow' : 'bg-white border-brand-stone text-brand-brown hover:border-brand-brown/20'}`}
-                  >
-                    <div className="text-left">
-                      <p className="text-sm font-black tracking-tight">{c.phone}</p>
-                      <p className={`text-[9px] font-bold uppercase tracking-widest ${activeCustomer?.id === c.id ? 'text-brand-yellow/60' : 'text-brand-brown/40'}`}>Joined {c.joinedDate ? getISTDateString(c.joinedDate) : 'N/A'}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs font-black">LTV: ₹{(c.totalSpent ?? 0).toLocaleString()}</p>
-                      <p className={`text-[8px] font-black uppercase ${activeCustomer?.id === c.id ? 'text-brand-yellow/60' : 'text-brand-brown/40'}`}>{c.totalOrders} Orders</p>
-                    </div>
-                  </button>
-                ))}
-              </div>
+               <div className="flex-1 overflow-y-auto no-scrollbar space-y-3">
+                {filteredCustomers.map(c => {
+                   const phone = normalizePhone(c.phone);
+                   const stats = customerOrderStats[phone];
+                   const dineInRate = stats ? stats.DINE_IN / stats.total : 0;
+                   const takeawayRate = stats ? stats.TAKEAWAY / stats.total : 0;
+                   const deliveryRate = stats ? stats.DELIVERY / stats.total : 0;
+                   let label = '';
+                   let labelColor = 'bg-brand-red text-white';
+                   
+                   if (dineInRate > 0.7) label = 'Dine-in';
+                   else if (takeawayRate > 0.7) label = 'Takeaway';
+                   else if (deliveryRate > 0.7) {
+                     label = 'Delivery';
+                     labelColor = 'bg-blue-500 text-white';
+                   }
+
+                   return (
+                     <button 
+                       key={c.id}
+                       onClick={() => handleCustomerClick(c)}
+                       className={`w-full p-4 rounded-2xl flex items-center justify-between border-2 transition-all ${activeCustomer?.id === c.id ? 'bg-brand-brown border-brand-brown text-brand-yellow' : 'bg-white border-brand-stone text-brand-brown hover:border-brand-brown/20'}`}
+                     >
+                       <div className="text-left">
+                         <div className="flex items-center gap-2">
+                           <p className="text-sm font-black tracking-tight">{c.phone}</p>
+                           {label && (
+                             <span className={`text-[7px] font-black uppercase px-1.5 py-0.5 rounded-full ${activeCustomer?.id === c.id ? 'bg-brand-yellow text-brand-brown' : labelColor}`}>
+                               {label}
+                             </span>
+                           )}
+                         </div>
+                         <p className={`text-[9px] font-bold uppercase tracking-widest ${activeCustomer?.id === c.id ? 'text-brand-yellow/60' : 'text-brand-brown/40'}`}>Joined {c.joinedDate ? getISTDateString(c.joinedDate) : 'N/A'}</p>
+                       </div>
+                       <div className="text-right">
+                         <p className="text-xs font-black">LTV: ₹{(c.totalSpent ?? 0).toLocaleString()}</p>
+                         <p className={`text-[8px] font-black uppercase ${activeCustomer?.id === c.id ? 'text-brand-yellow/60' : 'text-brand-brown/40'}`}>{c.totalOrders} Orders</p>
+                       </div>
+                     </button>
+                   );
+                 })}
+               </div>
             </div>
 
             {/* Customer Details & History */}
@@ -1418,8 +1906,29 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                     <UserIcon className="absolute -right-10 -bottom-10 w-64 h-64 text-white/5" />
                     <div className="relative z-10">
                       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-2">
-                        <p className="text-[10px] font-black uppercase text-brand-yellow tracking-[0.3em] font-primary">Profile Record</p>
+                        <div className="flex items-center gap-3">
+                          <p className="text-[10px] font-black uppercase text-brand-yellow tracking-[0.3em] font-primary">Profile Record</p>
+                          {(() => {
+                            const phone = normalizePhone(activeCustomer.phone);
+                            const stats = customerOrderStats[phone];
+                            const dineInRate = stats ? stats.DINE_IN / stats.total : 0;
+                            const takeawayRate = stats ? stats.TAKEAWAY / stats.total : 0;
+                            const deliveryRate = stats ? stats.DELIVERY / stats.total : 0;
+
+                            if (dineInRate > 0.7) return <span className="bg-brand-yellow text-brand-brown text-[8px] font-black px-2 py-0.5 rounded-full uppercase">Dine-in Enthusiast</span>;
+                            if (takeawayRate > 0.7) return <span className="bg-brand-yellow text-brand-brown text-[8px] font-black px-2 py-0.5 rounded-full uppercase">Takeaway Focused</span>;
+                            if (deliveryRate > 0.7) return <span className="bg-blue-400 text-white text-[8px] font-black px-2 py-0.5 rounded-full uppercase">Delivery Only</span>;
+                            return <span className="bg-white/10 text-white/60 text-[8px] font-black px-2 py-0.5 rounded-full uppercase italic">Mixed Preferences</span>;
+                          })()}
+                        </div>
                         <div className="flex items-center gap-2">
+                          <button 
+                            onClick={() => setActiveCustomer(null)}
+                            className="flex items-center gap-2 bg-brand-red/20 hover:bg-brand-red text-white px-4 py-2 rounded-xl transition-all border border-brand-red/30 group"
+                          >
+                            <X className="w-4 h-4" />
+                            <span className="text-[9px] font-black uppercase tracking-widest">Close</span>
+                          </button>
                           {!isEditingProfile ? (
                             <button 
                               onClick={() => setIsEditingProfile(true)}
@@ -1552,6 +2061,57 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         </div>
                       </div>
 
+                      {/* Mode Split */}
+                      {(() => {
+                        const stats = customerOrderStats[activeCustomer.phone.trim()];
+                        if (!stats || stats.total === 0) return null;
+                        
+                        const diPercent = (stats.DINE_IN / stats.total) * 100;
+                        const taPercent = (stats.TAKEAWAY / stats.total) * 100;
+                        const dePercent = (stats.DELIVERY / stats.total) * 100;
+                        
+                        return (
+                          <div className="mb-8 bg-white/5 p-6 rounded-3xl border border-white/10 backdrop-blur-lg">
+                            <div className="flex items-center justify-between mb-4">
+                              <h4 className="text-[10px] font-black uppercase text-white tracking-[0.2em]">Service Mode Affinity</h4>
+                              <div className="flex flex-wrap gap-x-4 gap-y-2">
+                                 <div className="flex items-center gap-2">
+                                   <div className="w-2 h-2 rounded-full bg-brand-yellow" />
+                                   <span className="text-[8px] font-black uppercase text-white/60">Dine-in</span>
+                                 </div>
+                                 <div className="flex items-center gap-2">
+                                   <div className="w-2 h-2 rounded-full bg-brand-red" />
+                                   <span className="text-[8px] font-black uppercase text-white/60">Takeaway</span>
+                                 </div>
+                                 <div className="flex items-center gap-2">
+                                   <div className="w-2 h-2 rounded-full bg-blue-500" />
+                                   <span className="text-[8px] font-black uppercase text-white/60">Delivery</span>
+                                 </div>
+                              </div>
+                            </div>
+                            <div className="h-3 w-full bg-white/10 rounded-full overflow-hidden flex">
+                              <div style={{ width: `${diPercent}%` }} className="h-full bg-brand-yellow transition-all duration-500" />
+                              <div style={{ width: `${taPercent}%` }} className="h-full bg-brand-red transition-all duration-500" />
+                              <div style={{ width: `${dePercent}%` }} className="h-full bg-blue-500 transition-all duration-500" />
+                            </div>
+                            <div className="flex justify-between mt-2">
+                              <div className="text-left">
+                                <p className="text-xs font-black text-brand-yellow">{Math.round(diPercent)}%</p>
+                                <p className="text-[7px] font-bold text-white/30 uppercase">Dine-in ({stats.DINE_IN})</p>
+                              </div>
+                              <div className="text-center">
+                                <p className="text-xs font-black text-brand-red">{Math.round(taPercent)}%</p>
+                                <p className="text-[7px] font-bold text-white/30 uppercase">Takeaway ({stats.TAKEAWAY})</p>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-xs font-black text-blue-400">{Math.round(dePercent)}%</p>
+                                <p className="text-[7px] font-bold text-white/30 uppercase">Delivery ({stats.DELIVERY})</p>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
                       {/* Info Bar */}
                       {!isEditingProfile && (
                         <div className="flex flex-wrap gap-4 mb-8">
@@ -1602,6 +2162,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                           </button>
                         </div>
                       </div>
+
+                      {/* AI Driven Customer Insights */}
+                      <CustomerInsights history={selectedCustomerHistory} />
                     </div>
                   </div>
 
@@ -1661,13 +2224,47 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                   </div>
                 </>
               ) : (
-                <div className="bg-white rounded-[2.5rem] p-20 shadow-xl border border-brand-stone flex flex-col items-center justify-center text-center">
-                  <div className="w-20 h-20 bg-brand-brown/5 rounded-full flex items-center justify-center mb-6">
-                    <UserIcon className="w-10 h-10 text-brand-brown/20" />
+                  <div className="bg-white rounded-[2.5rem] p-10 shadow-xl border border-brand-stone space-y-12">
+                    <div className="flex flex-col items-center justify-center text-center">
+                      <div className="w-20 h-20 bg-brand-brown/5 rounded-full flex items-center justify-center mb-6">
+                        <Users className="w-10 h-10 text-brand-brown/20" />
+                      </div>
+                      <h3 className="text-2xl font-black text-brand-brown uppercase italic mb-2 tracking-tighter">Customer <span className="text-brand-red">Network</span></h3>
+                      <p className="text-xs font-bold text-brand-brown/40 uppercase tracking-widest max-w-sm mx-auto">Select a profile to view deep insights, or analyze the cohort performance below.</p>
+                    </div>
+
+                    <div className="pt-8 border-t border-brand-stone space-y-12">
+                      <CohortRetentionChart 
+                        data={cohortRawData} 
+                        onSelectPeriod={(key) => {
+                          setCompositionPeriod(key);
+                        }}
+                        selectedPeriodKey={compositionPeriod}
+                      />
+
+                      {compositionPeriod && (
+                        <div className="space-y-4">
+                           <div className="flex items-center justify-between px-2">
+                             <div className="flex items-center gap-2">
+                               <TrendingUpIcon className="w-4 h-4 text-brand-red" />
+                               <h4 className="text-xs font-black uppercase text-brand-brown tracking-widest">Selected Week Breakdown</h4>
+                             </div>
+                             <button 
+                               onClick={() => setCompositionPeriod(null)}
+                               className="text-[9px] font-black uppercase text-brand-red hover:underline"
+                             >
+                               Clear Selection
+                             </button>
+                           </div>
+                           <CohortCompositionChart 
+                              data={cohortRawData} 
+                              targetPeriod={compositionPeriod} 
+                              granularity={compositionPeriod.includes('W') ? 'WEEK' : 'MONTH'} 
+                           />
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <h3 className="text-2xl font-black text-brand-brown uppercase italic mb-2 tracking-tighter">Select a <span className="text-brand-red">Customer</span></h3>
-                  <p className="text-xs font-bold text-brand-brown/40 uppercase tracking-widest max-w-xs">Please choose a profile from the left pane to view detailed history and analytics.</p>
-                </div>
               )}
             </div>
           </div>
@@ -1675,22 +2272,41 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         )}
 
         {reportView === 'comparison' && isAdmin && (
-          <div className="grid grid-cols-1 gap-4 lg:gap-8 animate-in slide-in-from-bottom-6 duration-700">
-            {comparisonData.map((store, idx) => (
-              <div key={store.name} className="bg-white p-6 lg:p-8 rounded-2xl lg:rounded-[3rem] border-2 border-brand-stone flex items-center justify-between shadow-xl">
-                <div className="flex items-center gap-4 lg:gap-8">
-                  <span className="text-2xl lg:text-4xl font-black text-brand-brown/10 italic">#{idx + 1}</span>
-                  <div>
-                    <h4 className="text-lg lg:text-2xl font-black text-brand-brown uppercase leading-none">{store.name}</h4>
-                    <p className="text-[8px] lg:text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">{store.orders} Orders</p>
+          <div className="space-y-8 animate-in slide-in-from-bottom-6 duration-700">
+            <div className="flex justify-center">
+              <div className="bg-white p-1 rounded-2xl border-2 border-brand-stone inline-flex gap-1 shadow-md">
+                <button 
+                  onClick={() => setCompareBy('STORE')}
+                  className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${compareBy === 'STORE' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-stone/30'}`}
+                >
+                  By Store
+                </button>
+                <button 
+                  onClick={() => setCompareBy('CASHIER')}
+                  className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${compareBy === 'CASHIER' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-stone/30'}`}
+                >
+                  By Cashier
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 lg:gap-8">
+              {comparisonData.map((group, idx) => (
+                <div key={group.name} className="bg-white p-6 lg:p-8 rounded-2xl lg:rounded-[3rem] border-2 border-brand-stone flex items-center justify-between shadow-xl">
+                  <div className="flex items-center gap-4 lg:gap-8">
+                    <span className="text-2xl lg:text-4xl font-black text-brand-brown/10 italic">#{idx + 1}</span>
+                    <div>
+                      <h4 className="text-lg lg:text-2xl font-black text-brand-brown uppercase leading-none">{group.name}</h4>
+                      <p className="text-[8px] lg:text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">{group.orders} Orders</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-xl lg:text-3xl font-black text-brand-brown">₹{(group.revenue ?? 0).toLocaleString()}</span>
+                    <p className="text-[8px] lg:text-[10px] font-bold text-emerald-600 uppercase tracking-widest mt-1">₹{(group.profit ?? 0).toLocaleString()} GP</p>
                   </div>
                 </div>
-                <div className="text-right">
-                  <span className="text-xl lg:text-3xl font-black text-brand-brown">₹{(store.revenue ?? 0).toLocaleString()}</span>
-                  <p className="text-[8px] lg:text-[10px] font-bold text-emerald-600 uppercase tracking-widest mt-1">₹{(store.profit ?? 0).toLocaleString()} GP</p>
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         )}
 
@@ -1756,6 +2372,73 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       </div>
       
       <DeleteBillModal isOpen={isDeleteModalOpen} onClose={() => setIsDeleteModalOpen(false)} onConfirm={confirmDelete} billNumber={orderToDelete?.billNumber || null} />
+
+      {/* Sequence Detail Modal */}
+      {selectedSequenceDetail && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-brand-brown/80 backdrop-blur-md" onClick={() => setSelectedSequenceDetail(null)} />
+          <div className="relative bg-white w-full max-w-2xl max-h-[85vh] rounded-[3rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 flex flex-col">
+            <div className="bg-brand-brown p-8 flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-black text-brand-yellow uppercase italic">{selectedSequenceDetail.label} <span className="text-white">Orders</span></h3>
+                <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest mt-1">{selectedSequenceDetail.orders.length} transaction found in this period</p>
+              </div>
+              <button onClick={() => setSelectedSequenceDetail(null)} className="p-2 hover:bg-white/10 rounded-full transition-colors text-white">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-8 space-y-4 no-scrollbar">
+              {selectedSequenceDetail.orders.length === 0 ? (
+                <div className="py-20 text-center">
+                   <Receipt className="w-12 h-12 text-brand-brown/10 mx-auto mb-4" />
+                   <p className="text-[10px] font-black uppercase text-brand-brown/30 tracking-widest">No detailed order data available</p>
+                </div>
+              ) : (
+                selectedSequenceDetail.orders.map(o => (
+                  <div 
+                    key={o.id}
+                    className="bg-brand-cream/30 border border-brand-stone p-5 rounded-[2rem] flex items-center justify-between hover:bg-brand-cream transition-all group"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="bg-white shadow-sm w-12 h-12 rounded-xl flex items-center justify-center font-black text-brand-brown text-xs border border-brand-stone">#{o.billNumber}</div>
+                      <div>
+                        <p className="text-sm font-black text-brand-brown uppercase">{getISTFullDateTime(o.date)}</p>
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-[8px] font-black uppercase text-brand-brown/40 tracking-widest flex items-center gap-1">
+                            <UserIcon className="w-2.5 h-2.5" /> {o.customerPhone || 'GUEST'}
+                          </span>
+                          <span className="text-[8px] font-black uppercase text-brand-brown/40 tracking-widest flex items-center gap-1" title={o.paymentMethod}>
+                            <Receipt className="w-2.5 h-2.5" /> {o.paymentMethod}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="text-right flex items-center gap-6">
+                      <div>
+                        <p className="text-lg font-black text-brand-brown">₹{(o.type === 'DELIVERY' && o.manualTotal != null ? o.manualTotal : (o.total ?? 0)).toLocaleString()}</p>
+                        <p className="text-[8px] font-black uppercase text-brand-brown/40 tracking-tighter">
+                          {o.items.length} items
+                        </p>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          handleSearch(o.billNumber);
+                          setSelectedSequenceDetail(null);
+                        }}
+                        className="bg-brand-brown text-brand-yellow p-3 rounded-xl hover:bg-brand-red hover:text-white transition-all shadow-md active:scale-95"
+                      >
+                        <Search className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -43,7 +43,7 @@ function App() {
       />
       
       <main className="flex-1 overflow-hidden relative">
-        {view === 'pos' && <POS branchName={user.stationName || 'Main Station'} />}
+        {view === 'pos' && <POS branchName={user.stationName || 'Main Station'} user={user} />}
         {view === 'tables' && <TableMap />}
         {view === 'kds' && <KDS />}
         {view === 'reports' && <Analytics user={user} />}

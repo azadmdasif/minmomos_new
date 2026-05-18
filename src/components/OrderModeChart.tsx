@@ -5,29 +5,32 @@ import { CompletedOrder } from '../types';
 
 interface OrderModeChartProps {
   orders: CompletedOrder[];
+  analysisBasis: 'REVENUE' | 'ORDERS';
 }
 
-const OrderModeChart: React.FC<OrderModeChartProps> = ({ orders }) => {
+const OrderModeChart: React.FC<OrderModeChartProps> = ({ orders, analysisBasis }) => {
   const data = useMemo(() => {
-    let dineInRev = 0;
-    let takeawayRev = 0;
-    let deliveryRev = 0;
+    let dineInVal = 0;
+    let takeawayVal = 0;
+    let deliveryVal = 0;
 
     orders.forEach(o => {
-      const rev = o.type === 'DELIVERY' && o.manualTotal != null ? o.manualTotal : o.total;
-      if (o.type === 'DINE_IN') dineInRev += rev;
-      else if (o.type === 'TAKEAWAY') takeawayRev += rev;
-      else if (o.type === 'DELIVERY') deliveryRev += rev;
+      const amount = o.type === 'DELIVERY' && o.manualTotal != null ? o.manualTotal : o.total;
+      const valToAdd = analysisBasis === 'REVENUE' ? amount : 1;
+      
+      if (o.type === 'DINE_IN') dineInVal += valToAdd;
+      else if (o.type === 'TAKEAWAY') takeawayVal += valToAdd;
+      else if (o.type === 'DELIVERY') deliveryVal += valToAdd;
     });
 
-    const total = dineInRev + takeawayRev + deliveryRev;
+    const total = dineInVal + takeawayVal + deliveryVal;
     
     return [
-      { name: 'Dine-In', value: dineInRev, color: '#EF4444', pct: total > 0 ? (dineInRev/total*100).toFixed(1) : "0" },
-      { name: 'Takeaway', value: takeawayRev, color: '#4F46E5', pct: total > 0 ? (takeawayRev/total*100).toFixed(1) : "0" },
-      { name: 'Delivery', value: deliveryRev, color: '#db2777', pct: total > 0 ? (deliveryRev/total*100).toFixed(1) : "0" },
+      { name: 'Dine-In', value: dineInVal, color: '#EF4444', pct: total > 0 ? (dineInVal/total*100).toFixed(1) : "0" },
+      { name: 'Takeaway', value: takeawayVal, color: '#4F46E5', pct: total > 0 ? (takeawayVal/total*100).toFixed(1) : "0" },
+      { name: 'Delivery', value: deliveryVal, color: '#db2777', pct: total > 0 ? (deliveryVal/total*100).toFixed(1) : "0" },
     ].filter(d => d.value > 0);
-  }, [orders]);
+  }, [orders, analysisBasis]);
 
   const totalValue = data.reduce((sum, item) => sum + item.value, 0);
 
@@ -37,7 +40,9 @@ const OrderModeChart: React.FC<OrderModeChartProps> = ({ orders }) => {
     <div className="bg-white p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-xl border border-brand-stone">
       <div className="mb-8">
         <h3 className="text-xl font-black text-brand-brown uppercase italic tracking-tighter">Order <span className="text-brand-red">Channels</span></h3>
-        <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">Revenue distribution by ordering mode</p>
+        <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">
+          {analysisBasis === 'REVENUE' ? 'Revenue' : 'Order volume'} distribution by ordering mode
+        </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center">
@@ -59,7 +64,7 @@ const OrderModeChart: React.FC<OrderModeChartProps> = ({ orders }) => {
                 ))}
               </Pie>
               <Tooltip 
-                formatter={(value: any) => `₹${Number(value).toLocaleString()}`}
+                formatter={(value: any) => analysisBasis === 'REVENUE' ? `₹${Number(value).toLocaleString()}` : `${Number(value).toLocaleString()} Orders`}
                 contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 25px rgba(0,0,0,0.1)', fontWeight: 'bold' }}
               />
             </PieChart>
@@ -73,17 +78,23 @@ const OrderModeChart: React.FC<OrderModeChartProps> = ({ orders }) => {
                 <div className="w-3 h-3 rounded-full shadow-sm" style={{ backgroundColor: item.color }} />
                 <div>
                   <p className="text-[10px] font-black uppercase text-brand-brown tracking-widest">{item.name}</p>
-                  <p className="text-[12px] font-black text-brand-brown/60 tracking-tight">{item.pct}% of Revenue</p>
+                  <p className="text-[12px] font-black text-brand-brown/60 tracking-tight">{item.pct}% of {analysisBasis === 'REVENUE' ? 'Revenue' : 'Total Orders'}</p>
                 </div>
               </div>
               <div className="text-right">
-                <p className="text-lg font-black text-brand-brown">₹{item.value.toLocaleString()}</p>
+                <p className="text-lg font-black text-brand-brown">
+                  {analysisBasis === 'REVENUE' ? `₹${item.value.toLocaleString()}` : item.value.toLocaleString()}
+                </p>
               </div>
             </div>
           ))}
           <div className="pt-4 mt-4 border-t border-brand-stone/50 flex justify-between items-center px-4">
-            <p className="text-[10px] font-black uppercase text-brand-brown/40 tracking-widest">Total Sales</p>
-            <p className="text-xl font-black text-brand-brown tracking-tighter">₹{totalValue.toLocaleString()}</p>
+            <p className="text-[10px] font-black uppercase text-brand-brown/40 tracking-widest">
+              {analysisBasis === 'REVENUE' ? 'Total Sales' : 'Total Orders'}
+            </p>
+            <p className="text-xl font-black text-brand-brown tracking-tighter">
+              {analysisBasis === 'REVENUE' ? `₹${totalValue.toLocaleString()}` : totalValue.toLocaleString()}
+            </p>
           </div>
         </div>
       </div>

@@ -5,7 +5,7 @@ export type PaymentMethod = 'Cash' | 'UPI' | 'Card';
 export type Category = 'momo' | 'side' | 'drink' | 'combo' | 'moburg';
 export type OrderType = 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
 export type OrderStatus = 'ORDERED' | 'PREPARING' | 'READY' | 'SERVED' | 'COMPLETED' | 'CANCELLED';
-export type UserRole = 'ADMIN' | 'STORE_MANAGER';
+export type UserRole = 'ADMIN' | 'STORE_MANAGER' | 'CASHIER';
 export type MaterialCategory = 'MOMO' | 'PACKET' | 'INGREDIENT';
 
 export interface Station {
@@ -20,6 +20,7 @@ export interface User {
   role: UserRole;
   station_id?: string;
   stationName?: string;
+  assignedStations?: { id: string, name: string }[];
 }
 
 export interface RawMaterial {
@@ -150,6 +151,8 @@ export interface CompletedOrder {
   customerId?: string;
   manualTotal?: number;
   manualDiscount?: number;
+  cashierId?: string;
+  cashierName?: string;
   deletionInfo?: {
     reason: string;
     date: string;

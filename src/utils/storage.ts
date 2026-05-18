@@ -269,6 +269,8 @@ function mapDatabaseOrderToType(o: any): CompletedOrder {
     customerId: o.customer_id,
     manualTotal: o.manual_total,
     manualDiscount: o.manual_discount,
+    cashierId: o.cashier_id,
+    cashierName: o.cashier_name,
     deletionInfo: o.deletion_info,
     items: rawItems.map((i: any) => ({ 
       id: i.id, 
@@ -293,13 +295,19 @@ export async function saveOrder(
   tableId?: string,
   customerPhone?: string,
   manualTotal?: number,
-  manualDiscount?: number
+  manualDiscount?: number,
+  cashierId?: string,
+  cashierName?: string
 ): Promise<number | null> {
   try {
     const nextBillNumber = await peekNextBillNumber();
     
+    if (customerPhone) {
+      customerPhone = normalizePhone(customerPhone);
+    }
+
     let customerId = null;
-    if (customerPhone && customerPhone.length >= 10) {
+    if (customerPhone && customerPhone.length === 10) {
       // 1. Check if customer exists
       const { data: existingCustomer } = await supabase
         .from('customers')
@@ -345,7 +353,9 @@ export async function saveOrder(
       customer_id: customerId,
       customer_phone: customerPhone || null,
       manual_total: manualTotal != null ? Math.round(manualTotal) : null,
-      manual_discount: manualDiscount != null ? Math.round(manualDiscount) : null
+      manual_discount: manualDiscount != null ? Math.round(manualDiscount) : null,
+      cashier_id: cashierId || null,
+      cashier_name: cashierName || null
     }).select().single();
     
     if (orderError) {
@@ -574,13 +584,70 @@ export async function createStation(name: string, location: string): Promise<voi
 }
 
 export async function getAppUsers(): Promise<any[]> {
-  const { data } = await supabase.from('app_users').select('*, stations(name)');
-  return data || [];
+  const { data: users, error: userError } = await supabase
+    .from('app_users')
+    .select('*, stations!app_users_station_id_fkey(name)');
+  
+  if (userError) throw userError;
+
+  const { data: assignments, error: assignmentError } = await supabase
+    .from('user_stations')
+    .select('user_id, station_id, stations:station_id(name)');
+  
+  if (assignmentError) throw assignmentError;
+
+  return (users || []).map(u => {
+    const assigned = assignments
+      ?.filter(a => a.user_id === u.id)
+      .map(a => ({ id: a.station_id, name: (a.stations as any)?.name })) || [];
+    
+    if (assigned.length === 0 && u.station_id) {
+      assigned.push({ id: u.station_id, name: u.stations?.name });
+    }
+
+    return {
+      ...u,
+      assignedStations: assigned
+    };
+  });
 }
 
-export async function createAppUser(user: any): Promise<void> {
-  const { error } = await supabase.from('app_users').insert(user);
+export async function createAppUser(user: { username: string, password: string, role: string, station_id?: string, station_ids?: string[] }): Promise<void> {
+  const { station_ids, ...userData } = user;
+  const { data, error } = await supabase.from('app_users').insert(userData).select().single();
   if (error) throw error;
+
+  if (station_ids && station_ids.length > 0) {
+    const assignments = station_ids.map(sid => ({ user_id: data.id, station_id: sid }));
+    const { error: relError } = await supabase.from('user_stations').insert(assignments);
+    if (relError) throw relError;
+  }
+}
+
+export async function updateAppUser(userId: string, user: { username: string, password: string, role: string, station_id?: string, station_ids?: string[] }): Promise<void> {
+  const { station_ids, ...userData } = user;
+  
+  // Update main user data
+  const { error: userError } = await supabase
+    .from('app_users')
+    .update(userData)
+    .eq('id', userId);
+    
+  if (userError) throw userError;
+
+  // Update station assignments: delete old and insert new
+  const { error: deleteError } = await supabase
+    .from('user_stations')
+    .delete()
+    .eq('user_id', userId);
+    
+  if (deleteError) throw deleteError;
+
+  if (station_ids && station_ids.length > 0) {
+    const assignments = station_ids.map(sid => ({ user_id: userId, station_id: sid }));
+    const { error: relError } = await supabase.from('user_stations').insert(assignments);
+    if (relError) throw relError;
+  }
 }
 
 export async function getCentralInventory(): Promise<CentralMaterial[]> {
@@ -950,10 +1017,13 @@ export async function getDeletedOrdersForDateRange(startDate: string, endDate: s
 }
 
 export async function syncCustomerStats(phone: string): Promise<void> {
-  const history = await fetchCustomerHistory(phone);
+  const normalized = normalizePhone(phone);
+  if (!normalized) return;
+
+  const history = await fetchCustomerHistory(normalized);
   const totalOrders = history.length;
   const totalSpent = history.reduce((acc, o) => acc + (o.manualTotal != null ? o.manualTotal : o.total), 0);
-  const redeemedCoins = await getRedeemedCoins(phone);
+  const redeemedCoins = await getRedeemedCoins(normalized);
   const minCoins = calculateTotalMinCoins(totalSpent, redeemedCoins);
   const lastVisit = history.length > 0 ? history[0].date : null;
 
@@ -961,11 +1031,11 @@ export async function syncCustomerStats(phone: string): Promise<void> {
     .from('customers')
     .update({ 
       total_orders: totalOrders,
-      total_spent: totalSpent,
+      ltv: totalSpent,
       min_coins: minCoins,
       last_visit: lastVisit
     })
-    .eq('phone', phone);
+    .eq('phone', normalized);
 }
 
 export async function deleteOrderByBillNumber(billNumber: number, reason: string): Promise<void> {
@@ -1081,7 +1151,17 @@ export async function updateTableStatus(tableId: string, status: string): Promis
 }
 
 export async function updateOrderStatus(orderId: string, status: OrderStatus): Promise<void> {
+  const { data: order } = await supabase
+    .from('orders')
+    .select('customer_phone')
+    .eq('id', orderId)
+    .single();
+
   await supabase.from('orders').update({ status }).eq('id', orderId);
+
+  if (order?.customer_phone) {
+    await syncCustomerStats(order.customer_phone);
+  }
 }
 
 export const CUSTOMER_TIERS = [
@@ -1126,11 +1206,12 @@ export function calculateTotalMinCoins(totalSpent: number, redeemedCoins: number
 // --- CUSTOMER MANAGEMENT ---
 
 async function getRedeemedCoins(phone: string): Promise<number> {
+  const normalized = normalizePhone(phone);
   const { data } = await supabase
     .from('order_items')
     .select('coins_price, quantity, orders!inner(customer_phone, deletion_info)')
     .eq('paid_with_coins', true)
-    .eq('orders.customer_phone', phone)
+    .ilike('orders.customer_phone', `%${normalized}`)
     .is('orders.deletion_info', null);
   
   if (!data) return 0;
@@ -1216,30 +1297,40 @@ export async function searchCustomers(query: string): Promise<Customer[]> {
 }
 
 export async function registerCustomer(phone: string, name: string): Promise<Customer> {
-  const couponCode = `DISC15-${phone.slice(-4)}`;
+  const normalized = normalizePhone(phone);
+  const couponCode = `DISC15-${normalized.slice(-4)}`;
   const { data, error } = await supabase
     .from('customers')
-    .upsert({ phone, name, welcome_coupon_code: couponCode }, { onConflict: 'phone' })
+    .upsert({ phone: normalized, name, welcome_coupon_code: couponCode }, { onConflict: 'phone' })
     .select()
     .single();
 
   if (error) throw error;
   
+  // Sync stats in case they have historical orders linked to this phone
+  await syncCustomerStats(normalized);
+  
   return {
     id: data.id,
     phone: data.phone,
     name: data.name,
-    totalOrders: 0,
-    totalSpent: 0,
-    minCoins: 0,
+    totalOrders: Number(data.total_orders || 0),
+    totalSpent: Number(data.ltv || 0),
+    minCoins: Number(data.min_coins || 0),
     joinedDate: data.created_at,
-    lastVisit: null,
-    welcomeCouponUsed: false,
+    lastVisit: data.last_visit,
+    welcomeCouponUsed: data.welcome_coupon_used || false,
     welcomeCouponCode: data.welcome_coupon_code
   };
 }
 
 export async function updateCustomer(id: string, updates: Partial<Customer>): Promise<void> {
+  const { data: customer } = await supabase
+    .from('customers')
+    .select('phone')
+    .eq('id', id)
+    .single();
+
   const { error } = await supabase
     .from('customers')
     .update({
@@ -1251,7 +1342,106 @@ export async function updateCustomer(id: string, updates: Partial<Customer>): Pr
       welcome_coupon_code: updates.welcomeCouponCode
     })
     .eq('id', id);
+    
   if (error) throw error;
+
+  if (customer?.phone) {
+    await syncCustomerStats(customer.phone);
+  }
+}
+
+export function normalizePhone(phone: string | null | undefined): string {
+  if (!phone) return '';
+  const cleaned = phone.toString().replace(/\D/g, '');
+  return cleaned.length >= 10 ? cleaned.slice(-10) : cleaned;
+}
+
+export interface CohortOrder {
+  customer_phone: string;
+  order_date: string;
+  joined_date: string;
+  bill_number: number;
+}
+
+export async function fetchCohortRawData(): Promise<CohortOrder[]> {
+  // 1. Fetch ALL customers (up to 50k) to get their true join dates
+  const { data: customersData } = await supabase
+    .from('customers')
+    .select('phone, created_at')
+    .limit(50000);
+
+  const joinDateMap: Record<string, string> = {};
+  customersData?.forEach(c => {
+    if (c.phone) {
+      joinDateMap[normalizePhone(c.phone)] = c.created_at;
+    }
+  });
+
+  // 2. Fetch RECENT orders to see return rate
+  // We fetch last 70,000 orders which should cover several months
+  const { data: ordersData } = await supabase
+    .from('orders')
+    .select('customer_phone, date, bill_number')
+    .is('deletion_info', null)
+    .order('date', { ascending: false })
+    .limit(70000);
+  
+  if (!ordersData) return [];
+  
+  const results: CohortOrder[] = [];
+  const processedOrders = ordersData.filter(o => o.customer_phone);
+
+  // If a customer isn't in the joinDateMap (unregistered?), we find their earliest order in this set
+  const fallbackJoinDates: Record<string, string> = {};
+  processedOrders.forEach(o => {
+    const phone = normalizePhone(o.customer_phone);
+    if (!joinDateMap[phone]) {
+      if (!fallbackJoinDates[phone] || o.date < fallbackJoinDates[phone]) {
+        fallbackJoinDates[phone] = o.date;
+      }
+    }
+  });
+
+  processedOrders.forEach(o => {
+    const phone = normalizePhone(o.customer_phone);
+    results.push({
+      customer_phone: phone,
+      order_date: o.date,
+      joined_date: joinDateMap[phone] || fallbackJoinDates[phone] || o.date,
+      bill_number: o.bill_number
+    });
+  });
+
+  return results.reverse();
+}
+
+export async function fetchCustomerClassificationStats(): Promise<Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }>> {
+  const { data } = await supabase
+    .from('orders')
+    .select('customer_phone, type')
+    .is('deletion_info', null)
+    .order('date', { ascending: false })
+    .limit(10000); 
+  
+  const stats: Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }> = {};
+  
+  data?.forEach(o => {
+    const rawPhone = o.customer_phone?.toString();
+    if (!rawPhone) return;
+    
+    const normalized = normalizePhone(rawPhone);
+    if (!stats[normalized]) {
+      stats[normalized] = { DINE_IN: 0, TAKEAWAY: 0, DELIVERY: 0, total: 0 };
+    }
+    
+    stats[normalized].total++;
+    const type = o.type?.toUpperCase();
+    if (type === 'DINE_IN') stats[normalized].DINE_IN++;
+    else if (type === 'TAKEAWAY') stats[normalized].TAKEAWAY++;
+    else if (type === 'DELIVERY') stats[normalized].DELIVERY++;
+  });
+  
+  return stats;
 }
 
 export async function fetchUsualOrder(phone: string): Promise<{ name: string, quantity: number } | null> {
@@ -1328,10 +1518,15 @@ export async function fetchCustomers(branchFilter?: string): Promise<Customer[]>
 }
 
 export async function fetchCustomerHistory(phone: string): Promise<CompletedOrder[]> {
+  const normalized = normalizePhone(phone);
+  if (!normalized) return [];
+
+  // Fetch orders matching the normalized phone (last 10 digits) using ilike for robustness
+  // This helps catch formats like +91, 0, or just the 10 digits
   const { data } = await supabase
     .from('orders')
     .select(`*, items:order_items (*)`)
-    .eq('customer_phone', phone)
+    .ilike('customer_phone', `%${normalized}`)
     .is('deletion_info', null)
     .order('date', { ascending: false });
   

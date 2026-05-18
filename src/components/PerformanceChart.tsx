@@ -19,18 +19,22 @@ interface PerformanceChartProps {
   customers: Customer[];
   startDate: string;
   endDate: string;
+  analysisBasis: 'REVENUE' | 'ORDERS';
 }
 
-const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, startDate, endDate }) => {
+const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, startDate, endDate, analysisBasis }) => {
   const [showSMA, setShowSMA] = useState(false);
   const [showSegments, setShowSegments] = useState(false);
   const [showSitTake, setShowSitTake] = useState(false);
   const [showDelivery, setShowDelivery] = useState(false);
-  const [showRevenue, setShowRevenue] = useState(true);
-  const [showProfit, setShowProfit] = useState(true);
+  const [showBaseMetric, setShowBaseMetric] = useState(true);
+  const [showSecondaryMetric, setShowSecondaryMetric] = useState(true);
   const [showAvgTicket, setShowAvgTicket] = useState(true);
   const [hideCurves, setHideCurves] = useState<string[]>([]);
   const [viewType, setViewType] = useState<'daily' | 'weekly' | 'monthly'>('daily');
+
+  const metricLabel = analysisBasis === 'REVENUE' ? 'Revenue' : 'Orders';
+  const secondaryMetricLabel = analysisBasis === 'REVENUE' ? 'Profit' : 'Revenue';
 
   const toggleCurveVisibility = (metric: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -140,6 +144,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             dineInRev: values.dineInRevenue,
             takeawayRev: values.takeawayRevenue,
             deliveryRev: values.deliveryRevenue,
+            dineInOrders: values.dineInOrders,
+            takeawayOrders: values.takeawayOrders,
+            deliveryOrders: values.deliveryOrders,
             dineInProfit: values.dineInRevenue - values.dineInCogs,
             takeawayProfit: values.takeawayRevenue - values.takeawayCogs,
             deliveryProfit: values.deliveryRevenue - values.deliveryCogs,
@@ -150,6 +157,10 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
             zomatoRev: values.zomatoRev,
+            repeatOrders: values.repeatOrders,
+            newRegOrders: values.newRegOrders,
+            unregOrders: values.unregOrders,
+            zomatoOrders: values.zomatoOrders,
             repeatAOV: values.repeatOrders > 0 ? values.repeatRev / values.repeatOrders : 0,
             newRegAOV: values.newRegOrders > 0 ? values.newRegRev / values.newRegOrders : 0,
             unregAOV: values.unregOrders > 0 ? values.unregRev / values.unregOrders : 0,
@@ -189,6 +200,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         return {
           ...day,
           revenueSMA: calculateWMA(arr, idx, 'revenue'),
+          orderSMA: calculateWMA(arr, idx, 'orderCount'),
           profitSMA: calculateWMA(arr, idx, 'profit'),
           ticketSMA: calculateWMA(arr, idx, 'avgTicket'),
           // Segments WMA
@@ -196,6 +208,10 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           newRegRevSMA: calculateWMA(arr, idx, 'newRegRev'),
           unregRevSMA: calculateWMA(arr, idx, 'unregRev'),
           zomatoRevSMA: calculateWMA(arr, idx, 'zomatoRev'),
+          repeatOrdersSMA: calculateWMA(arr, idx, 'repeatOrders'),
+          newRegOrdersSMA: calculateWMA(arr, idx, 'newRegOrders'),
+          unregOrdersSMA: calculateWMA(arr, idx, 'unregOrders'),
+          zomatoOrdersSMA: calculateWMA(arr, idx, 'zomatoOrders'),
           repeatAOVSMA: calculateWMA(arr, idx, 'repeatAOV'),
           newRegAOVSMA: calculateWMA(arr, idx, 'newRegAOV'),
           unregAOVSMA: calculateWMA(arr, idx, 'unregAOV'),
@@ -203,9 +219,12 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           // Sit-Take WMA
           dineInRevSMA: calculateWMA(arr, idx, 'dineInRev'),
           takeawayRevSMA: calculateWMA(arr, idx, 'takeawayRev'),
+          dineInOrdersSMA: calculateWMA(arr, idx, 'dineInOrders'),
+          takeawayOrdersSMA: calculateWMA(arr, idx, 'takeawayOrders'),
           dineInProfitSMA: calculateWMA(arr, idx, 'dineInProfit'),
           takeawayProfitSMA: calculateWMA(arr, idx, 'takeawayProfit'),
           deliveryRevSMA: calculateWMA(arr, idx, 'deliveryRev'),
+          deliveryOrdersSMA: calculateWMA(arr, idx, 'deliveryOrders'),
           deliveryProfitSMA: calculateWMA(arr, idx, 'deliveryProfit'),
           dineInAOVSMA: calculateWMA(arr, idx, 'dineInAOV'),
           takeawayAOVSMA: calculateWMA(arr, idx, 'takeawayAOV'),
@@ -344,6 +363,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             dineInRev: values.dineInRevenue,
             takeawayRev: values.takeawayRevenue,
             deliveryRev: values.deliveryRevenue,
+            dineInOrders: values.dineInOrders,
+            takeawayOrders: values.takeawayOrders,
+            deliveryOrders: values.deliveryOrders,
             dineInProfit: values.dineInRevenue - values.dineInCogs,
             takeawayProfit: values.takeawayRevenue - values.takeawayCogs,
             deliveryProfit: values.deliveryRevenue - values.deliveryCogs,
@@ -354,11 +376,16 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
             zomatoRev: values.zomatoRev,
+            repeatOrders: values.repeatOrders,
+            newRegOrders: values.newRegOrders,
+            unregOrders: values.unregOrders,
+            zomatoOrders: values.zomatoOrders,
             repeatAOV: values.repeatOrders > 0 ? values.repeatRev / values.repeatOrders : 0,
             newRegAOV: values.newRegOrders > 0 ? values.newRegRev / values.newRegOrders : 0,
             unregAOV: values.unregOrders > 0 ? values.unregRev / values.unregOrders : 0,
             zomatoAOV: values.zomatoOrders > 0 ? values.zomatoRev / values.zomatoOrders : 0,
             revenueSMA: 0, // SMA not supported in weekly view yet
+            orderSMA: 0,
             profitSMA: 0,
             ticketSMA: 0
           };
@@ -464,6 +491,9 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             dineInRev: values.dineInRevenue,
             takeawayRev: values.takeawayRevenue,
             deliveryRev: values.deliveryRevenue,
+            dineInOrders: values.dineInOrders,
+            takeawayOrders: values.takeawayOrders,
+            deliveryOrders: values.deliveryOrders,
             dineInProfit: values.dineInRevenue - values.dineInCogs,
             takeawayProfit: values.takeawayRevenue - values.takeawayCogs,
             deliveryProfit: values.deliveryRevenue - values.deliveryCogs,
@@ -474,11 +504,16 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
             zomatoRev: values.zomatoRev,
+            repeatOrders: values.repeatOrders,
+            newRegOrders: values.newRegOrders,
+            unregOrders: values.unregOrders,
+            zomatoOrders: values.zomatoOrders,
             repeatAOV: values.repeatOrders > 0 ? values.repeatRev / values.repeatOrders : 0,
             newRegAOV: values.newRegOrders > 0 ? values.newRegRev / values.newRegOrders : 0,
             unregAOV: values.unregOrders > 0 ? values.unregRev / values.unregOrders : 0,
             zomatoAOV: values.zomatoOrders > 0 ? values.zomatoRev / values.zomatoOrders : 0,
             revenueSMA: 0,
+            orderSMA: 0,
             profitSMA: 0,
             ticketSMA: 0
           };
@@ -495,6 +530,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
     return {
       totalRevenue,
       totalProfit,
+      totalOrders,
       avgTicket: totalOrders > 0 ? totalRevenue / totalOrders : 0
     };
   }, [chartData]);
@@ -528,14 +564,14 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         
         <div className="flex flex-wrap items-center gap-3 bg-brand-brown/5 p-2 rounded-[1.5rem] border border-brand-brown/10">
           <button 
-            onClick={() => setShowRevenue(!showRevenue)}
+            onClick={() => setShowBaseMetric(!showBaseMetric)}
             className={`flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
-              showRevenue ? 'bg-red-500 border-red-600 text-white shadow-red-200' : 'bg-white border-brand-stone/50 text-brand-brown/40'
+              showBaseMetric ? 'bg-red-500 border-red-600 text-white shadow-red-200' : 'bg-white border-brand-stone/50 text-brand-brown/40'
             }`}
           >
-            <div className={`w-2 h-2 rounded-full ${showRevenue ? 'bg-white' : 'bg-gray-300'}`} />
-            <span className="text-[10px] font-black uppercase tracking-wider">Revenue</span>
-            {showRevenue && (
+            <div className={`w-2 h-2 rounded-full ${showBaseMetric ? 'bg-white' : 'bg-gray-300'}`} />
+            <span className="text-[10px] font-black uppercase tracking-wider">{metricLabel}</span>
+            {showBaseMetric && (
               <div 
                 onClick={(e) => toggleCurveVisibility('revenue', e)}
                 className="ml-1 p-1 hover:bg-black/10 rounded-full transition-colors"
@@ -547,14 +583,14 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           </button>
 
           <button 
-            onClick={() => setShowProfit(!showProfit)}
+            onClick={() => setShowSecondaryMetric(!showSecondaryMetric)}
             className={`flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full shadow-sm border transition-all active:scale-95 ${
-              showProfit ? 'bg-green-500 border-green-600 text-white shadow-green-200' : 'bg-white border-brand-stone/50 text-brand-brown/40'
+              showSecondaryMetric ? (analysisBasis === 'REVENUE' ? 'bg-green-500 border-green-600' : 'bg-red-500 border-red-600') + ' text-white shadow-green-200' : 'bg-white border-brand-stone/50 text-brand-brown/40'
             }`}
           >
-            <div className={`w-2 h-2 rounded-full ${showProfit ? 'bg-white' : 'bg-gray-300'}`} />
-            <span className="text-[10px] font-black uppercase tracking-wider">Profit</span>
-            {showProfit && (
+            <div className={`w-2 h-2 rounded-full ${showSecondaryMetric ? 'bg-white' : 'bg-gray-300'}`} />
+            <span className="text-[10px] font-black uppercase tracking-wider">{secondaryMetricLabel}</span>
+            {showSecondaryMetric && (
               <div 
                 onClick={(e) => toggleCurveVisibility('profit', e)}
                 className="ml-1 p-1 hover:bg-black/10 rounded-full transition-colors"
@@ -662,23 +698,23 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           <div className="flex flex-wrap gap-x-8 gap-y-6">
             {showSegments && (
               <div className="flex flex-wrap gap-x-8 gap-y-4 pb-4 border-b border-brand-brown/5 last:border-0 last:pb-0">
-                {showRevenue && (
+                {showBaseMetric && (
                   <>
                     <div className="flex items-center gap-2.5">
                       <div className="w-3 h-3 rounded-full bg-[#10B981] shadow-sm" />
-                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Repeat Revenue</span>
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Repeat {metricLabel}</span>
                     </div>
                     <div className="flex items-center gap-2.5">
                       <div className="w-3 h-3 rounded-full bg-[#F59E0B] shadow-sm" />
-                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">New Reg. Revenue</span>
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">New Reg. {metricLabel}</span>
                     </div>
                     <div className="flex items-center gap-2.5">
                       <div className="w-3 h-3 rounded-full bg-[#6B7280] shadow-sm" />
-                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Unreg. Revenue</span>
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Unreg. {metricLabel}</span>
                     </div>
                     <div className="flex items-center gap-2.5">
                       <div className="w-3 h-3 rounded-full bg-[#E11D48] shadow-sm" />
-                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Zomato Rev.</span>
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Zomato {analysisBasis === 'REVENUE' ? 'Rev' : 'Orders'}.</span>
                     </div>
                   </>
                 )}
@@ -707,15 +743,15 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
 
             {showSitTake && (
               <div className="flex flex-wrap gap-x-8 gap-y-4">
-                {showRevenue && (
+                {showBaseMetric && (
                   <>
                     <div className="flex items-center gap-2.5">
                       <div className="w-3 h-3 rounded-full bg-[#EF4444] shadow-sm" />
-                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Dine-In Revenue</span>
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Dine-In {metricLabel}</span>
                     </div>
                     <div className="flex items-center gap-2.5">
                       <div className="w-3 h-3 rounded-full bg-[#4F46E5] shadow-sm" />
-                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Takeaway Revenue</span>
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Takeaway {metricLabel}</span>
                     </div>
                   </>
                 )}
@@ -731,15 +767,15 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                     </div>
                   </>
                 )}
-                {showProfit && (
+                {showSecondaryMetric && (
                    <>
                     <div className="flex items-center gap-2.5">
                       <div className="w-2.5 h-2.5 bg-[#EF4444] opacity-20 rounded-sm" />
-                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Dine-In Profit</span>
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Dine-In {secondaryMetricLabel}</span>
                     </div>
                     <div className="flex items-center gap-2.5">
                       <div className="w-2.5 h-2.5 bg-[#4F46E5] opacity-20 rounded-sm" />
-                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Takeaway Profit</span>
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Takeaway {secondaryMetricLabel}</span>
                     </div>
                    </>
                 )}
@@ -747,10 +783,10 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             )}
             {showDelivery && (
               <div className="flex flex-wrap gap-x-8 gap-y-4">
-                {showRevenue && (
+                {showBaseMetric && (
                   <div className="flex items-center gap-2.5">
                     <div className="w-3 h-3 rounded-full bg-[#db2777] shadow-sm" />
-                    <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery Revenue</span>
+                    <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery {metricLabel}</span>
                   </div>
                 )}
                 {showAvgTicket && (
@@ -759,10 +795,10 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                     <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery AOV</span>
                   </div>
                 )}
-                {showProfit && (
+                {showSecondaryMetric && (
                   <div className="flex items-center gap-2.5">
                     <div className="w-2.5 h-2.5 bg-[#db2777] opacity-20 rounded-sm" />
-                    <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery Profit</span>
+                    <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery {secondaryMetricLabel}</span>
                   </div>
                 )}
               </div>
@@ -786,7 +822,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                axisLine={false} 
                tickLine={false} 
                tick={{ fill: '#6B7280', fontSize: 12 }}
-               tickFormatter={(value) => `₹${value}`}
+               tickFormatter={(value) => analysisBasis === 'REVENUE' ? `₹${value}` : value}
             />
             <YAxis 
                yAxisId="right"
@@ -800,7 +836,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
               content={({ active, payload }) => {
                 if (active && payload && payload.length) {
                   const data = payload[0].payload;
-                  const totalRevenue = data.revenue;
+                  const totalBase = analysisBasis === 'REVENUE' ? data.revenue : data.orderCount;
                   
                   return (
                     <div className="bg-white p-4 rounded-xl shadow-xl border border-brand-brown/10 min-w-[220px]">
@@ -808,7 +844,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                       <div className="space-y-4">
                         {/* Main Metrics */}
                         <div className="space-y-1.5">
-                          {payload.filter((p: any) => !['repeatRev', 'newRegRev', 'unregRev', 'zomatoRev', 'repeatAOV', 'newRegAOV', 'unregAOV', 'zomatoAOV'].includes(p.dataKey)).map((entry: any, index: number) => (
+                          {payload.filter((p: any) => !['repeatRev', 'newRegRev', 'unregRev', 'zomatoRev', 'repeatOrders', 'newRegOrders', 'unregOrders', 'zomatoOrders', 'repeatAOV', 'newRegAOV', 'unregAOV', 'zomatoAOV'].includes(p.dataKey)).map((entry: any, index: number) => (
                             <div key={`main-${index}`} className="flex items-center justify-between gap-4">
                               <div className="flex items-center gap-2">
                                 <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
@@ -817,7 +853,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                                 </span>
                               </div>
                               <p className="text-xs font-black text-brand-brown tracking-tighter">
-                                ₹{typeof entry.value === 'number' ? entry.value.toLocaleString(undefined, { minimumFractionDigits: 1 }) : '0.0'}
+                                {entry.dataKey.toLowerCase().includes('aov') || entry.dataKey.toLowerCase().includes('ticket') || (analysisBasis === 'REVENUE' && !entry.dataKey.toLowerCase().includes('order')) || (analysisBasis === 'ORDERS' && entry.dataKey === 'revenue') ? '₹' : ''}
+                                {typeof entry.value === 'number' ? entry.value.toLocaleString(undefined, { minimumFractionDigits: (entry.dataKey === 'orderCount' || entry.dataKey.toLowerCase().includes('orders')) ? 0 : 1 }) : '0'}
                               </p>
                             </div>
                           ))}
@@ -828,10 +865,10 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                           <div className="pt-2 border-t border-brand-brown/5 space-y-3">
                             <p className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest">Customer Segments</p>
                             {[
-                              { label: 'Repeat', rev: data.repeatRev, aov: data.repeatAOV, color: '#10B981' },
-                              { label: 'New Registered', rev: data.newRegRev, aov: data.newRegAOV, color: '#F59E0B' },
-                              { label: 'Unregistered', rev: data.unregRev, aov: data.unregAOV, color: '#6B7280' },
-                              { label: 'Zomato User', rev: data.zomatoRev, aov: data.zomatoAOV, color: '#E11D48' }
+                              { label: 'Repeat', val: analysisBasis === 'REVENUE' ? data.repeatRev : data.repeatOrders, aov: data.repeatAOV, color: '#10B981' },
+                              { label: 'New Registered', val: analysisBasis === 'REVENUE' ? data.newRegRev : data.newRegOrders, aov: data.newRegAOV, color: '#F59E0B' },
+                              { label: 'Unregistered', val: analysisBasis === 'REVENUE' ? data.unregRev : data.unregOrders, aov: data.unregAOV, color: '#6B7280' },
+                              { label: 'Zomato User', val: analysisBasis === 'REVENUE' ? data.zomatoRev : data.zomatoOrders, aov: data.zomatoAOV, color: '#E11D48' }
                             ].map((seg, idx) => (
                               <div key={idx} className="flex flex-col gap-1 bg-brand-brown/5 p-2 rounded-lg">
                                 <div className="flex items-center justify-between">
@@ -839,15 +876,17 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                                     <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: seg.color }} />
                                     <span className="text-[9px] font-black uppercase text-brand-brown tracking-wider">{seg.label}</span>
                                   </div>
-                                  {showRevenue && (
-                                    <span className="text-[9px] font-black text-brand-brown/40">{totalRevenue > 0 ? ((seg.rev / totalRevenue) * 100).toFixed(0) : 0}%</span>
+                                  {showBaseMetric && (
+                                    <span className="text-[9px] font-black text-brand-brown/40">{totalBase > 0 ? ((seg.val / totalBase) * 100).toFixed(0) : 0}%</span>
                                   )}
                                 </div>
                                 <div className="flex justify-between items-baseline">
-                                  {showRevenue && (
-                                    <span className="text-[11px] font-black text-brand-brown">₹{seg.rev.toLocaleString()}</span>
+                                  {showBaseMetric && (
+                                    <span className="text-[11px] font-black text-brand-brown">
+                                      {analysisBasis === 'REVENUE' ? `₹${seg.val.toLocaleString()}` : `${seg.val} Orders`}
+                                    </span>
                                   )}
-                                  {true && ( /* Always show AOV in segments if space permits, or follow showAvgTicket */
+                                  {showAvgTicket && ( 
                                     <span className="text-[9px] font-bold text-brand-brown/40 uppercase">AOV: ₹{(seg.aov || 0).toFixed(1)}</span>
                                   )}
                                 </div>
@@ -861,8 +900,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                           <div className="pt-2 border-t border-brand-brown/5 space-y-3">
                             <p className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest">Sit-Take Breakdown</p>
                             {[
-                              { label: 'Dine-In', rev: data.dineInRev, aov: data.dineInAOV, profit: data.dineInProfit, color: '#EF4444' },
-                              { label: 'Takeaway', rev: data.takeawayRev, aov: data.takeawayAOV, profit: data.takeawayProfit, color: '#4F46E5' }
+                              { label: 'Dine-In', rev: data.dineInRev, orders: data.dineInOrders, aov: data.dineInAOV, profit: data.dineInProfit, color: '#EF4444' },
+                              { label: 'Takeaway', rev: data.takeawayRev, orders: data.takeawayOrders, aov: data.takeawayAOV, profit: data.takeawayProfit, color: '#4F46E5' }
                             ].map((seg, idx) => (
                               <div key={idx} className="flex flex-col gap-1 bg-brand-brown/5 p-2 rounded-lg">
                                 <div className="flex items-center justify-between">
@@ -870,18 +909,24 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                                     <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: seg.color }} />
                                     <span className="text-[9px] font-black uppercase text-brand-brown tracking-wider">{seg.label}</span>
                                   </div>
-                                  {showRevenue && (
-                                    <span className="text-[9px] font-black text-brand-brown/40">{totalRevenue > 0 ? ((seg.rev / totalRevenue) * 100).toFixed(0) : 0}%</span>
+                                  {showBaseMetric && (
+                                    <span className="text-[9px] font-black text-brand-brown/40">
+                                      {totalBase > 0 ? (((analysisBasis === 'REVENUE' ? seg.rev : seg.orders) / totalBase) * 100).toFixed(0) : 0}%
+                                    </span>
                                   )}
                                 </div>
                                 <div className="flex flex-col gap-0.5">
-                                  {showRevenue && <div className="flex justify-between items-baseline px-1">
-                                    <span className="text-[8px] font-bold text-brand-brown/40 uppercase">Revenue</span>
-                                    <span className="text-[10px] font-black text-brand-brown">₹{seg.rev.toLocaleString()}</span>
+                                  {showBaseMetric && <div className="flex justify-between items-baseline px-1">
+                                    <span className="text-[8px] font-bold text-brand-brown/40 uppercase">{metricLabel}</span>
+                                    <span className="text-[10px] font-black text-brand-brown">
+                                      {analysisBasis === 'REVENUE' ? `₹${seg.rev.toLocaleString()}` : `${seg.orders} Orders`}
+                                    </span>
                                   </div>}
-                                  {showProfit && <div className="flex justify-between items-baseline px-1">
-                                    <span className="text-[8px] font-bold text-brand-brown/40 uppercase">Profit</span>
-                                    <span className="text-[10px] font-black text-emerald-600">₹{seg.profit.toLocaleString()}</span>
+                                  {showSecondaryMetric && <div className="flex justify-between items-baseline px-1">
+                                    <span className="text-[8px] font-bold text-brand-brown/40 uppercase">{secondaryMetricLabel}</span>
+                                    <span className="text-[10px] font-black text-emerald-600">
+                                      {analysisBasis === 'REVENUE' ? `₹${seg.profit.toLocaleString()}` : `₹${seg.rev.toLocaleString()}`}
+                                    </span>
                                   </div>}
                                   {showAvgTicket && <div className="flex justify-between items-baseline px-1">
                                     <span className="text-[8px] font-bold text-brand-brown/40 uppercase">AOV</span>
@@ -902,18 +947,24 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                                   <div className="w-1.5 h-1.5 rounded-full bg-[#db2777]" />
                                   <span className="text-[9px] font-black uppercase text-brand-brown tracking-wider">Zomato/Delivery</span>
                                 </div>
-                                {showRevenue && (
-                                  <span className="text-[9px] font-black text-brand-brown/40">{totalRevenue > 0 ? ((data.deliveryRev / totalRevenue) * 100).toFixed(0) : 0}%</span>
+                                {showBaseMetric && (
+                                  <span className="text-[9px] font-black text-brand-brown/40">
+                                    {totalBase > 0 ? (((analysisBasis === 'REVENUE' ? data.deliveryRev : data.deliveryOrders) / totalBase) * 100).toFixed(0) : 0}%
+                                  </span>
                                 )}
                               </div>
                               <div className="flex flex-col gap-0.5">
-                                {showRevenue && <div className="flex justify-between items-baseline px-1">
-                                  <span className="text-[8px] font-bold text-brand-brown/40 uppercase">Revenue</span>
-                                  <span className="text-[10px] font-black text-brand-brown">₹{data.deliveryRev.toLocaleString()}</span>
+                                {showBaseMetric && <div className="flex justify-between items-baseline px-1">
+                                  <span className="text-[8px] font-bold text-brand-brown/40 uppercase">{metricLabel}</span>
+                                  <span className="text-[10px] font-black text-brand-brown">
+                                    {analysisBasis === 'REVENUE' ? `₹${data.deliveryRev.toLocaleString()}` : `${data.deliveryOrders} Orders`}
+                                  </span>
                                 </div>}
-                                {showProfit && <div className="flex justify-between items-baseline px-1">
-                                  <span className="text-[8px] font-bold text-brand-brown/40 uppercase">Profit</span>
-                                  <span className="text-[10px] font-black text-pink-600">₹{data.deliveryProfit.toLocaleString()}</span>
+                                {showSecondaryMetric && <div className="flex justify-between items-baseline px-1">
+                                  <span className="text-[8px] font-bold text-brand-brown/40 uppercase">{secondaryMetricLabel}</span>
+                                  <span className="text-[10px] font-black text-pink-600">
+                                    {analysisBasis === 'REVENUE' ? `₹${data.deliveryProfit.toLocaleString()}` : `₹${data.deliveryRev.toLocaleString()}`}
+                                  </span>
                                 </div>}
                                 {showAvgTicket && <div className="flex justify-between items-baseline px-1">
                                   <span className="text-[8px] font-bold text-brand-brown/40 uppercase">AOV</span>
@@ -932,12 +983,12 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             />
             {/* Legend removed in favor of custom interactive toggles */}
             
-            {showRevenue && isCurveVisible('revenue') && (
+            {showBaseMetric && isCurveVisible('revenue') && (
               <Area 
                  yAxisId="left"
                  type="monotone" 
-                 dataKey="revenue" 
-                 name="Revenue" 
+                 dataKey={analysisBasis === 'REVENUE' ? "revenue" : "orderCount"} 
+                 name={metricLabel} 
                  stroke="#EF4444" 
                  fill="#FEE2E2" 
                  strokeWidth={3}
@@ -946,14 +997,14 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             
             {showSegments && (
               <>
-                {/* Revenue Lines - Only if Revenue metric is on */}
-                {showRevenue && isCurveVisible('segments') && (
+                {/* Main metric Lines - Only if corresponding metric is on */}
+                {showBaseMetric && isCurveVisible('segments') && (
                   <>
                     <Line 
                        yAxisId="left"
                        type="monotone" 
-                       dataKey="repeatRev" 
-                       name="Repeat Customers Revenue" 
+                       dataKey={analysisBasis === 'REVENUE' ? "repeatRev" : "repeatOrders"} 
+                       name={`Repeat ${metricLabel}`} 
                        stroke="#10B981" 
                        strokeWidth={3}
                        dot={{ r: 3, fill: '#10B981' }}
@@ -961,8 +1012,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                     <Line 
                        yAxisId="left"
                        type="monotone" 
-                       dataKey="newRegRev" 
-                       name="New Registered Revenue" 
+                       dataKey={analysisBasis === 'REVENUE' ? "newRegRev" : "newRegOrders"} 
+                       name={`New Registered ${metricLabel}`} 
                        stroke="#F59E0B" 
                        strokeWidth={3}
                        dot={{ r: 3, fill: '#F59E0B' }}
@@ -970,8 +1021,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                     <Line 
                        yAxisId="left"
                        type="monotone" 
-                       dataKey="unregRev" 
-                       name="Unregistered Revenue" 
+                       dataKey={analysisBasis === 'REVENUE' ? "unregRev" : "unregOrders"} 
+                       name={`Unregistered ${metricLabel}`} 
                        stroke="#6B7280" 
                        strokeWidth={3}
                        dot={{ r: 3, fill: '#6B7280' }}
@@ -979,8 +1030,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                     <Line 
                        yAxisId="left"
                        type="monotone" 
-                       dataKey="zomatoRev" 
-                       name="Zomato Revenue" 
+                       dataKey={analysisBasis === 'REVENUE' ? "zomatoRev" : "zomatoOrders"} 
+                       name={`Zomato ${analysisBasis === 'REVENUE' ? 'Rev' : 'Orders'}`} 
                        stroke="#E11D48" 
                        strokeWidth={3}
                        dot={{ r: 3, fill: '#E11D48' }}
@@ -1035,12 +1086,12 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                 )}
               </>
             )}
-            {showProfit && isCurveVisible('profit') && (
+            {showSecondaryMetric && isCurveVisible('profit') && (
               <Area 
                  yAxisId="left"
                  type="monotone" 
-                 dataKey="profit" 
-                 name="Gross Profit" 
+                 dataKey={analysisBasis === 'REVENUE' ? "profit" : "revenue"} 
+                 name={secondaryMetricLabel} 
                  stroke="#10B981" 
                  fill="#D1FAE5" 
                  strokeWidth={3}
@@ -1050,14 +1101,14 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
 
             {showSitTake && (
               <>
-                {/* Sit-Take Revenue Lines */}
-                {showRevenue && isCurveVisible('sit-take') && (
+                {/* Sit-Take Main Metric Lines */}
+                {showBaseMetric && isCurveVisible('sit-take') && (
                   <>
                     <Line 
                        yAxisId="left"
                        type="monotone" 
-                       dataKey="dineInRev" 
-                       name="Dine-In Revenue" 
+                       dataKey={analysisBasis === 'REVENUE' ? "dineInRev" : "dineInOrders"} 
+                       name={`Dine-In ${metricLabel}`} 
                        stroke="#EF4444" 
                        strokeWidth={2}
                        dot={{ r: 2, fill: '#EF4444' }}
@@ -1065,8 +1116,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                     <Line 
                        yAxisId="left"
                        type="monotone" 
-                       dataKey="takeawayRev" 
-                       name="Takeaway Revenue" 
+                       dataKey={analysisBasis === 'REVENUE' ? "takeawayRev" : "takeawayOrders"} 
+                       name={`Takeaway ${metricLabel}`} 
                        stroke="#4F46E5" 
                        strokeWidth={2}
                        dot={{ r: 2, fill: '#4F46E5' }}
@@ -1074,14 +1125,14 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                   </>
                 )}
 
-                {/* Sit-Take Profit Lines */}
-                {showProfit && isCurveVisible('sit-take') && (
+                {/* Sit-Take Secondary Metric Lines */}
+                {showSecondaryMetric && isCurveVisible('sit-take') && (
                   <>
                     <Line 
                        yAxisId="left"
                        type="monotone" 
-                       dataKey="dineInProfit" 
-                       name="Dine-In Profit" 
+                       dataKey={analysisBasis === 'REVENUE' ? "dineInProfit" : "dineInRev"} 
+                       name={`Dine-In ${secondaryMetricLabel}`} 
                        stroke="#EF4444" 
                        strokeWidth={2}
                        strokeDasharray="2 2"
@@ -1090,8 +1141,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                     <Line 
                        yAxisId="left"
                        type="monotone" 
-                       dataKey="takeawayProfit" 
-                       name="Takeaway Profit" 
+                       dataKey={analysisBasis === 'REVENUE' ? "takeawayProfit" : "takeawayRev"} 
+                       name={`Takeaway ${secondaryMetricLabel}`} 
                        stroke="#4F46E5" 
                        strokeWidth={2}
                        strokeDasharray="2 2"
@@ -1141,24 +1192,24 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
 
             {showSMA && (
               <>
-                {showRevenue && (
+                {showBaseMetric && (
                   <Line 
                      yAxisId="left"
                      type="monotone" 
-                     dataKey="revenueSMA" 
-                     name="Revenue (WMA)" 
+                     dataKey={analysisBasis === 'REVENUE' ? "revenueSMA" : "orderSMA"} 
+                     name={`${metricLabel} (WMA)`} 
                      stroke="#B91C1C" 
                      strokeWidth={2}
                      strokeDasharray="5 5"
                      dot={false}
                   />
                 )}
-                {showProfit && (
+                {showSecondaryMetric && (
                   <Line 
                      yAxisId="left"
                      type="monotone" 
-                     dataKey="profitSMA" 
-                     name="Profit (WMA)" 
+                     dataKey={analysisBasis === 'REVENUE' ? "profitSMA" : "revenueSMA"} 
+                     name={`${secondaryMetricLabel} (WMA)`} 
                      stroke="#047857" 
                      strokeWidth={2}
                      strokeDasharray="5 5"
@@ -1181,12 +1232,12 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                 {/* Segment WMAs */}
                 {showSegments && (
                   <>
-                    {showRevenue && (
+                    {showBaseMetric && (
                       <>
-                        <Line yAxisId="left" type="monotone" dataKey="repeatRevSMA" name="Repeat Rev (WMA)" stroke="#10B981" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
-                        <Line yAxisId="left" type="monotone" dataKey="newRegRevSMA" name="New Reg Rev (WMA)" stroke="#F59E0B" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
-                        <Line yAxisId="left" type="monotone" dataKey="unregRevSMA" name="Unreg Rev (WMA)" stroke="#6B7280" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
-                        <Line yAxisId="left" type="monotone" dataKey="zomatoRevSMA" name="Zomato Rev (WMA)" stroke="#E11D48" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                        <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "repeatRevSMA" : "repeatOrdersSMA"} name={`Repeat ${metricLabel} (WMA)`} stroke="#10B981" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                        <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "newRegRevSMA" : "newRegOrdersSMA"} name={`New Reg ${metricLabel} (WMA)`} stroke="#F59E0B" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                        <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "unregRevSMA" : "unregOrdersSMA"} name={`Unreg ${metricLabel} (WMA)`} stroke="#6B7280" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                        <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "zomatoRevSMA" : "zomatoOrdersSMA"} name={`Zomato ${analysisBasis === 'REVENUE' ? 'Rev' : 'Orders'} (WMA)`} stroke="#E11D48" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
                       </>
                     )}
                     {showAvgTicket && (
@@ -1203,16 +1254,16 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                 {/* Sit-Take WMAs */}
                 {showSitTake && (
                   <>
-                    {showRevenue && (
+                    {showBaseMetric && (
                       <>
-                        <Line yAxisId="left" type="monotone" dataKey="dineInRevSMA" name="Dine-In Rev (WMA)" stroke="#EF4444" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
-                        <Line yAxisId="left" type="monotone" dataKey="takeawayRevSMA" name="Takeaway Rev (WMA)" stroke="#4F46E5" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                        <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "dineInRevSMA" : "dineInOrdersSMA"} name={`Dine-In ${metricLabel} (WMA)`} stroke="#EF4444" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                        <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "takeawayRevSMA" : "takeawayOrdersSMA"} name={`Takeaway ${metricLabel} (WMA)`} stroke="#4F46E5" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
                       </>
                     )}
-                    {showProfit && (
+                    {showSecondaryMetric && (
                       <>
-                        <Line yAxisId="left" type="monotone" dataKey="dineInProfitSMA" name="Dine-In Profit (WMA)" stroke="#EF4444" strokeWidth={1} strokeDasharray="1 3" dot={false} />
-                        <Line yAxisId="left" type="monotone" dataKey="takeawayProfitSMA" name="Takeaway Profit (WMA)" stroke="#4F46E5" strokeWidth={1} strokeDasharray="1 3" dot={false} />
+                        <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "dineInProfitSMA" : "dineInRevSMA"} name={`Dine-In ${secondaryMetricLabel} (WMA)`} stroke="#EF4444" strokeWidth={1} strokeDasharray="1 3" dot={false} />
+                        <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "takeawayProfitSMA" : "takeawayRevSMA"} name={`Takeaway ${secondaryMetricLabel} (WMA)`} stroke="#4F46E5" strokeWidth={1} strokeDasharray="1 3" dot={false} />
                       </>
                     )}
                     {showAvgTicket && (
@@ -1227,24 +1278,24 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             )}
             {showDelivery && (
               <>
-                {showRevenue && isCurveVisible('delivery') && (
+                {showBaseMetric && isCurveVisible('delivery') && (
                   <Area 
                     yAxisId="left"
                     type="monotone" 
-                    dataKey="deliveryRev" 
-                    name="Delivery Revenue" 
+                    dataKey={analysisBasis === 'REVENUE' ? "deliveryRev" : "deliveryOrders"} 
+                    name={`Delivery ${metricLabel}`} 
                     stroke="#db2777" 
                     fill="#fce7f3" 
                     strokeWidth={2}
                     fillOpacity={0.2}
                   />
                 )}
-                {showProfit && isCurveVisible('delivery') && (
+                {showSecondaryMetric && isCurveVisible('delivery') && (
                   <Line 
                     yAxisId="left"
                     type="monotone" 
-                    dataKey="deliveryProfit" 
-                    name="Delivery Profit" 
+                    dataKey={analysisBasis === 'REVENUE' ? "deliveryProfit" : "deliveryRev"} 
+                    name={`Delivery ${secondaryMetricLabel}`} 
                     stroke="#db2777" 
                     strokeWidth={2}
                     strokeDasharray="2 2"
@@ -1265,8 +1316,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                 )}
                 {showSMA && (
                   <>
-                    {showRevenue && <Line yAxisId="left" type="monotone" dataKey="deliveryRevSMA" name="Delivery Rev (WMA)" stroke="#db2777" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />}
-                    {showProfit && <Line yAxisId="left" type="monotone" dataKey="deliveryProfitSMA" name="Delivery Prof (WMA)" stroke="#db2777" strokeWidth={1} strokeDasharray="1 3" dot={false} />}
+                    {showBaseMetric && <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "deliveryRevSMA" : "deliveryOrdersSMA"} name={`Delivery ${metricLabel} (WMA)`} stroke="#db2777" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />}
+                    {showSecondaryMetric && <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "deliveryProfitSMA" : "deliveryRevSMA"} name={`Delivery ${secondaryMetricLabel} (WMA)`} stroke="#db2777" strokeWidth={1} strokeDasharray="1 3" dot={false} />}
                   </>
                 )}
               </>
@@ -1278,20 +1329,20 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
           <div className="bg-brand-red/5 p-4 rounded-xl border border-brand-red/10">
               <div className="flex items-center gap-2 mb-1">
-                  <DollarSign className="w-4 h-4 text-brand-red" />
-                  <span className="text-xs font-bold text-brand-brown/60 uppercase">Total Revenue</span>
+                  {analysisBasis === 'REVENUE' ? <DollarSign className="w-4 h-4 text-brand-red" /> : <ShoppingBag className="w-4 h-4 text-brand-red" />}
+                  <span className="text-xs font-bold text-brand-brown/60 uppercase">Total {analysisBasis === 'REVENUE' ? 'Revenue' : 'Orders'}</span>
               </div>
               <p className="text-2xl font-black text-brand-red">
-                  ₹{stats.totalRevenue.toFixed(2)}
+                  {analysisBasis === 'REVENUE' ? `₹${stats.totalRevenue.toFixed(2)}` : stats.totalOrders.toLocaleString()}
               </p>
           </div>
           <div className="bg-green-50 p-4 rounded-xl border border-green-100">
               <div className="flex items-center gap-2 mb-1">
-                  <TrendingUp className="w-4 h-4 text-green-600" />
-                  <span className="text-xs font-bold text-brand-brown/60 uppercase">Gross Profit</span>
+                  {analysisBasis === 'REVENUE' ? <TrendingUp className="w-4 h-4 text-green-600" /> : <DollarSign className="w-4 h-4 text-green-600" />}
+                  <span className="text-xs font-bold text-brand-brown/60 uppercase">{analysisBasis === 'REVENUE' ? 'Gross Profit' : 'Total Revenue'}</span>
               </div>
               <p className="text-2xl font-black text-green-600">
-                  ₹{stats.totalProfit.toFixed(2)}
+                  ₹{analysisBasis === 'REVENUE' ? stats.totalProfit.toFixed(2) : stats.totalRevenue.toFixed(2)}
               </p>
           </div>
           <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100">

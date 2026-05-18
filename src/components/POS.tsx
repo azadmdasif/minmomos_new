@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { MenuItem as MenuItemType, OrderItem, OrderType, PaymentMethod } from '../types';
+import { MenuItem as MenuItemType, OrderItem, OrderType, PaymentMethod, User as UserType } from '../types';
 import Menu from './Menu';
 import Bill from './Bill';
 import VariantSelectionModal from './VariantSelectionModal';
@@ -17,7 +17,7 @@ const CATEGORIES = [
   { id: 'combo', label: 'Combos', icon: '🍱' }
 ];
 
-const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
+const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, user }) => {
   const UPSELL_ITEM_ID = 'item-1778060358624';
   const [menuItems, setMenuItems] = useState<MenuItemType[]>([]);
   const [order, setOrder] = useState<OrderItem[]>([]);
@@ -136,7 +136,9 @@ const POS: React.FC<{ branchName: string }> = ({ branchName }) => {
         undefined,
         customerPhone,
         manualTotal,
-        manualDiscount
+        manualDiscount,
+        user.id,
+        user.username
       );
       
       if (savedNum) {
