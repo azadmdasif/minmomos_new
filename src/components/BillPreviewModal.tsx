@@ -194,6 +194,10 @@ Initial Balance: ${customer?.minCoins || 0}
 Coins Earned: +${earnedCoins}
 ${coinsRequired > 0 ? `Coins Redeemed: -${coinsRequired}\n` : ''}*Final Balance: ${finalBalance}*${couponMsg}${giftMsg}
 
+📝 *LEAVE A REVIEW & GET A FREE DRINK!* 📝
+Please leave us a 5-star review here: https://g.page/r/CTktYzZw4C0KEBE/review
+Recieve your free campa cola after replying the  review screenshot here.
+
 _Thank you for visiting MinMomos!_`;
 
     const encodedMessage = encodeURIComponent(message);

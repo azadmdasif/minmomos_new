@@ -4,6 +4,7 @@ import { OrderItem, OrderType, Customer, MenuItem } from '../types';
 import BillItem from './BillItem';
 import { GIFT_CAMPA_COLA } from '../constants';
 import { fetchUsualOrder, fetchLastOrderPriorityItem, getCustomerByPhone, getTierInfo, registerCustomer, searchCustomers, updateCustomer, fetchMenuItems } from '../utils/storage';
+import { getActiveCouponForCustomer } from '../utils/marketingStorage';
 import CelebrationOverlay from './CelebrationOverlay';
 import NewCustomerModal from './NewCustomerModal';
 
@@ -49,6 +50,22 @@ const Bill: React.FC<BillProps> = ({
 
   const tier = customer ? getTierInfo(customer.totalSpent) : null;
   const isStale = customer?.lastVisit ? (new Date().getTime() - new Date(customer.lastVisit).getTime()) > 30 * 24 * 60 * 60 * 1000 : false;
+  
+  const activePromoCoupon = React.useMemo(() => {
+    return customer ? getActiveCouponForCustomer(customer.phone) : null;
+  }, [customer]);
+
+  const subtotalWithoutPromo = React.useMemo(() => {
+    return orderItems.reduce((acc, i) => acc + (i.id !== 'promo-mojito' && i.id !== 'loyalty-discount' && i.price > 0 ? i.price * i.quantity : 0), 0);
+  }, [orderItems]);
+
+  const hasPromoMojitoApplied = orderItems.some(i => i.id === 'promo-mojito');
+
+  React.useEffect(() => {
+    if (hasPromoMojitoApplied && subtotalWithoutPromo <= 99) {
+      onUpdateQuantity('promo-mojito', 0);
+    }
+  }, [subtotalWithoutPromo, hasPromoMojitoApplied, onUpdateQuantity]);
   
   const hasAppliedLoyaltyDiscount = orderItems.find(item => item.id === 'loyalty-discount');
 
@@ -323,8 +340,56 @@ const Bill: React.FC<BillProps> = ({
             </div>
           </div>
 
-          {customer && (loyaltyDiscount || usualOrder || lastPriorityItem || canRedeemSomething || isCloseToNextTier || isStale) && (
+          {customer && (loyaltyDiscount || usualOrder || lastPriorityItem || canRedeemSomething || isCloseToNextTier || isStale || activePromoCoupon) && (
             <div className="flex flex-wrap gap-3 animate-in fade-in slide-in-from-top-3 duration-700">
+               {activePromoCoupon && (
+                 <div className="flex items-center gap-2 w-full lg:w-auto">
+                   {hasPromoMojitoApplied ? (
+                     <div className="bg-emerald-600/95 border border-emerald-500/25 px-4 py-2 rounded-2xl flex items-center gap-3 backdrop-blur-xl group cursor-default shadow-2xl shrink-0 text-white">
+                       <div className="w-6 h-6 bg-white/20 rounded-lg flex items-center justify-center shrink-0">
+                         <span className="text-[12px]">🍹</span>
+                       </div>
+                       <div className="flex flex-col min-w-[124px]">
+                         <span className="text-[7px] font-black text-emerald-100 uppercase tracking-[0.2em] leading-none mb-1">Coupon Applied!</span>
+                         <span className="text-[10px] font-black uppercase tracking-wider">Free Mojito Added</span>
+                       </div>
+                     </div>
+                   ) : (
+                     <button
+                       type="button"
+                       onClick={() => {
+                         if (subtotalWithoutPromo > 99) {
+                           onAddItem([{
+                             id: 'promo-mojito',
+                             menuItemId: 'promo-mojito',
+                             name: 'Free Virgin Mojito (Promo)',
+                             price: 0,
+                             quantity: 1,
+                             cost: 0
+                           }]);
+                         } else {
+                           alert(`Add items worth ₹99 or more to unlock this promo! (Current subtotal: ₹${Math.round(subtotalWithoutPromo)})`);
+                         }
+                       }}
+                       className={`px-4 py-2 rounded-2xl flex items-center gap-3 shadow-xl backdrop-blur-xl group border-2 transition-all hover:scale-105 active:scale-95 cursor-pointer text-white shrink-0 ${
+                         subtotalWithoutPromo > 99
+                           ? 'bg-rose-600 border-rose-500/30'
+                           : 'bg-zinc-700/60 border-zinc-600/10 opacity-75'
+                       }`}
+                     >
+                       <div className="w-6 h-6 bg-white/20 rounded-lg flex items-center justify-center shrink-0">
+                         <span className="text-[12px]">🎁</span>
+                       </div>
+                       <div className="flex flex-col text-left min-w-[130px]">
+                         <span className="text-[7px] font-black text-white/70 uppercase tracking-[0.2em] mb-1">{activePromoCoupon.couponCode}</span>
+                         <span className="text-[10px] font-black uppercase tracking-wider">
+                           {subtotalWithoutPromo > 99 ? 'Claim Free Mojito!' : 'Min ₹99 Order'}
+                         </span>
+                       </div>
+                     </button>
+                   )}
+                 </div>
+               )}
                {loyaltyDiscount && (
                  <div className="flex items-center gap-2 w-full lg:w-auto">
                     <button 

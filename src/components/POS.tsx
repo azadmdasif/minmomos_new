@@ -7,6 +7,7 @@ import VariantSelectionModal from './VariantSelectionModal';
 import BillPreviewModal from './BillPreviewModal';
 import CrossSellModal from './CrossSellModal';
 import { saveOrder, peekNextBillNumber, fetchMenuItems } from '../utils/storage';
+import { useCouponForCustomer } from '../utils/marketingStorage';
 import { printerService } from '../utils/bluetoothPrinter';
 
 const CATEGORIES = [
@@ -142,6 +143,9 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
       );
       
       if (savedNum) {
+        if (customerPhone) {
+          useCouponForCustomer(customerPhone);
+        }
         if (useBluetooth && printerService.isConnected()) {
           const success = await printerService.printReceipt({
             orderItems: order,

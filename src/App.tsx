@@ -10,10 +10,12 @@ import StationManagement from './components/StationManagement';
 import UserManagement from './components/UserManagement';
 import TableMap from './components/TableMap';
 import MenuManager from './components/MenuManager';
+import { FinanceLedger } from './components/FinanceLedger';
+import Marketing from './components/Marketing';
 import { getCurrentUser, setCurrentUser } from './utils/storage';
 import { User } from './types';
 
-type View = 'pos' | 'tables' | 'kds' | 'reports' | 'inventory' | 'users' | 'stations' | 'menu';
+type View = 'pos' | 'tables' | 'kds' | 'reports' | 'inventory' | 'users' | 'stations' | 'menu' | 'ledger' | 'marketing';
 
 function App() {
   const [view, setView] = useState<View>('reports');
@@ -51,6 +53,8 @@ function App() {
         {view === 'stations' && <StationManagement />}
         {view === 'users' && <UserManagement />}
         {view === 'menu' && <MenuManager />}
+        {view === 'ledger' && <FinanceLedger user={user} />}
+        {view === 'marketing' && <Marketing />}
       </main>
     </div>
   );
