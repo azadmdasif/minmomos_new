@@ -158,3 +158,54 @@ export interface CompletedOrder {
     date: string;
   };
 }
+
+export interface CustomOffer {
+  id: string;
+  name: string;
+  minOrderValue: number;
+  freeItemName?: string;
+  offerType?: 'free_item' | 'discount';
+  discountType?: 'percentage' | 'flat';
+  discountValue?: number;
+  targetGroup: 'all' | 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface FreeItemTag {
+  id: string;
+  code: string;
+  itemName: string;
+  expiresAt: string; // ISO format
+  createdAt: string;
+}
+
+export interface FreeItemClaim {
+  id: string;
+  phone: string;
+  tagCode: string;
+  itemName: string;
+  expiresAt: string; // ISO format
+  sentAt: string;
+  isClaimed: boolean;
+}
+
+export interface DiscountTag {
+  id: string;
+  code: string;
+  discountPercentage: number;
+  expiresAt: string; // ISO format
+  createdAt: string;
+}
+
+export interface DiscountClaim {
+  id: string;
+  phone: string;
+  tagCode: string;
+  discountPercentage: number;
+  expiresAt: string; // ISO format
+  sentAt: string;
+  isClaimed: boolean;
+}
+
+

@@ -4,7 +4,7 @@ import { OrderItem, OrderType, Customer, MenuItem } from '../types';
 import BillItem from './BillItem';
 import { GIFT_CAMPA_COLA } from '../constants';
 import { fetchUsualOrder, fetchLastOrderPriorityItem, getCustomerByPhone, getTierInfo, registerCustomer, searchCustomers, updateCustomer, fetchMenuItems } from '../utils/storage';
-import { getActiveCouponForCustomer } from '../utils/marketingStorage';
+import { getActiveCouponForCustomer, syncCouponFromSupabase, getMarketingCoupons, saveMarketingCoupons, MarketingCoupon, getLocalCustomOffers, saveLocalCustomOffers, fetchCustomOffersFromSupabase, CustomOffer, getActiveClaimsForCustomer, syncFreeItemClaimsFromSupabaseForCustomer, getActiveDiscountClaimsForCustomer, syncDiscountClaimsFromSupabaseForCustomer } from '../utils/marketingStorage';
 import CelebrationOverlay from './CelebrationOverlay';
 import NewCustomerModal from './NewCustomerModal';
 
@@ -51,9 +51,138 @@ const Bill: React.FC<BillProps> = ({
   const tier = customer ? getTierInfo(customer.totalSpent) : null;
   const isStale = customer?.lastVisit ? (new Date().getTime() - new Date(customer.lastVisit).getTime()) > 30 * 24 * 60 * 60 * 1000 : false;
   
-  const activePromoCoupon = React.useMemo(() => {
-    return customer ? getActiveCouponForCustomer(customer.phone) : null;
+  const [activePromoCoupon, setActivePromoCoupon] = React.useState<MarketingCoupon | null>(null);
+
+  // Custom POS Offers State
+  const [customOffers, setCustomOffers] = React.useState<CustomOffer[]>([]);
+
+  React.useEffect(() => {
+    // 1. Get cached local state
+    setCustomOffers(getLocalCustomOffers());
+    // 2. Refresh from Supabase
+    fetchCustomOffersFromSupabase().then(dbOffers => {
+      if (dbOffers && dbOffers.length > 0) {
+        saveLocalCustomOffers(dbOffers);
+        setCustomOffers(dbOffers);
+      }
+    });
+  }, []);
+
+  React.useEffect(() => {
+    setCustomOffers(getLocalCustomOffers());
+  }, [customerPhone, orderItems]);
+
+  const subtotal = React.useMemo(() => {
+    return orderItems.reduce((acc, i) => acc + (i.price > 0 && i.id !== 'promo-mojito' && i.id !== 'loyalty-discount' && !i.id.startsWith('free-gift-') && !i.id.startsWith('custom-discount-') ? i.price * i.quantity : 0), 0);
+  }, [orderItems]);
+
+  const qualifiedOffer = React.useMemo(() => {
+    // Find active offer that matches customer stage and is above min order value
+    let stage: 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5' = 'L0';
+    if (customer) {
+      if (customer.totalOrders === 0) stage = 'L0';
+      else if (customer.totalOrders === 1) stage = 'L1';
+      else if (customer.totalOrders === 2) stage = 'L2';
+      else if (customer.totalOrders === 3) stage = 'L3';
+      else if (customer.totalOrders === 4) stage = 'L4';
+      else if (customer.totalOrders >= 5) stage = 'L5';
+    }
+    
+    return customOffers.find(offer => {
+      if (!offer.isActive) return false;
+      const matchesGroup = offer.targetGroup === 'all' || offer.targetGroup === stage;
+      const matchesValue = subtotal >= offer.minOrderValue;
+      return matchesGroup && matchesValue;
+    });
+  }, [customer, customOffers, orderItems]);
+
+  React.useEffect(() => {
+    if (!customer) {
+      setActivePromoCoupon(null);
+      return;
+    }
+
+    // 1. Load active coupon instantly from local storage
+    const localCoupon = getActiveCouponForCustomer(customer.phone);
+    setActivePromoCoupon(localCoupon);
+
+    // 2. Fetch latest coupon from Supabase in the background
+    let mounted = true;
+    const fetchLatest = async () => {
+      try {
+        const dbCoupon = await syncCouponFromSupabase(customer.phone);
+        if (!mounted) return;
+        
+        if (dbCoupon) {
+          const currentCoupons = getMarketingCoupons();
+          const exists = currentCoupons.find(c => c.couponCode === dbCoupon.couponCode);
+          if (!exists) {
+            // Unify: invalidate older coupons in localStorage
+            const cleaned = customer.phone.replace(/\D/g, '');
+            const digits = cleaned.length >= 10 ? cleaned.slice(-10) : cleaned;
+            const updated = currentCoupons.map(c => {
+              if (c.phone === digits && !c.isUsed) {
+                return { ...c, isUsed: true };
+              }
+              return c;
+            });
+            updated.push(dbCoupon);
+            saveMarketingCoupons(updated);
+            setActivePromoCoupon(dbCoupon);
+          } else {
+            // Update the used status if it differed
+            if (exists.isUsed !== dbCoupon.isUsed) {
+              const updated = currentCoupons.map(c => {
+                if (c.couponCode === dbCoupon.couponCode) {
+                  return { ...c, isUsed: dbCoupon.isUsed };
+                }
+                return c;
+              });
+              saveMarketingCoupons(updated);
+            }
+            if (!dbCoupon.isUsed) {
+              setActivePromoCoupon(dbCoupon);
+            } else {
+              setActivePromoCoupon(null);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed background sync of coupon from Supabase:', err);
+      }
+    };
+    fetchLatest();
+
+    return () => {
+      mounted = false;
+    };
   }, [customer]);
+
+  const [activeFreeClaims, setActiveFreeClaims] = React.useState<any[]>([]);
+
+  React.useEffect(() => {
+    if (customerPhone && customerPhone.length === 10) {
+      syncFreeItemClaimsFromSupabaseForCustomer(customerPhone).then(() => {
+        const claims = getActiveClaimsForCustomer(customerPhone);
+        setActiveFreeClaims(claims);
+      });
+    } else {
+      setActiveFreeClaims([]);
+    }
+  }, [customerPhone]);
+
+  const [activeDiscountClaims, setActiveDiscountClaims] = React.useState<any[]>([]);
+
+  React.useEffect(() => {
+    if (customerPhone && customerPhone.length === 10) {
+      syncDiscountClaimsFromSupabaseForCustomer(customerPhone).then(() => {
+        const claims = getActiveDiscountClaimsForCustomer(customerPhone);
+        setActiveDiscountClaims(claims || []);
+      });
+    } else {
+      setActiveDiscountClaims([]);
+    }
+  }, [customerPhone]);
 
   const subtotalWithoutPromo = React.useMemo(() => {
     return orderItems.reduce((acc, i) => acc + (i.id !== 'promo-mojito' && i.id !== 'loyalty-discount' && i.price > 0 ? i.price * i.quantity : 0), 0);
@@ -340,8 +469,75 @@ const Bill: React.FC<BillProps> = ({
             </div>
           </div>
 
-          {customer && (loyaltyDiscount || usualOrder || lastPriorityItem || canRedeemSomething || isCloseToNextTier || isStale || activePromoCoupon) && (
+          {customer && (loyaltyDiscount || usualOrder || lastPriorityItem || canRedeemSomething || isCloseToNextTier || isStale || activePromoCoupon || activeFreeClaims.length > 0 || activeDiscountClaims.length > 0 || qualifiedOffer) && (
             <div className="flex flex-wrap gap-3 animate-in fade-in slide-in-from-top-3 duration-700">
+               {activeFreeClaims.map((claim) => {
+                 const promoId = `free-promo-${claim.id}`;
+                 const hasPromoApplied = orderItems.some(i => i.id === promoId);
+                 const standardSubtotal = orderItems
+                   .filter(i => !i.id.startsWith('free-promo-') && !i.id.startsWith('loyalty-discount'))
+                   .reduce((acc, i) => acc + (i.price > 0 ? i.price * i.quantity : 0), 0);
+
+                 return (
+                   <div key={claim.id} className="flex items-center gap-2 w-full lg:w-auto overflow-hidden">
+                     {hasPromoApplied ? (
+                       <div className="bg-emerald-600/95 border border-emerald-500/25 px-4 py-2 rounded-2xl flex items-center gap-3 backdrop-blur-xl group cursor-default shadow-2xl shrink-0 text-white animate-fade-in">
+                         <div className="w-6 h-6 bg-white/20 rounded-lg flex items-center justify-center shrink-0">
+                           <span className="text-[12px]">🎁</span>
+                         </div>
+                         <div className="flex flex-col text-left min-w-[124px]">
+                           <span className="text-[7px] font-black text-emerald-100 uppercase tracking-[0.2em] leading-none mb-1">Promo Tag: {claim.tagCode}</span>
+                           <span className="text-[10px] font-black uppercase tracking-wider">Free {claim.itemName} Added!</span>
+                         </div>
+                       </div>
+                     ) : (
+                       <div className="bg-zinc-800/85 border border-zinc-700/50 px-4 py-2 rounded-2xl flex items-center gap-3 backdrop-blur-xl group cursor-default shadow-2xl shrink-0 text-white animate-fade-in">
+                         <div className="w-6 h-6 bg-white/10 rounded-lg flex items-center justify-center shrink-0 animate-pulse">
+                           <span className="text-[11px]">⏳</span>
+                         </div>
+                         <div className="flex flex-col text-left min-w-[130px]">
+                           <span className="text-[7px] font-black text-zinc-400 uppercase tracking-[0.2em] leading-none mb-1">Tag Code: {claim.tagCode}</span>
+                           <span className="text-[10px] font-black uppercase tracking-wider text-amber-400">
+                             Add ₹{50 - Math.round(standardSubtotal)} More
+                           </span>
+                         </div>
+                       </div>
+                     )}
+                   </div>
+                 );
+               })}
+               {activeDiscountClaims.map((claim) => {
+                 const promoId = `promo-discount-${claim.id}`;
+                 const hasPromoApplied = orderItems.some(i => i.id === promoId);
+
+                 return (
+                   <div key={claim.id} className="flex items-center gap-2 w-full lg:w-auto overflow-hidden animate-fade-in_quick">
+                     {hasPromoApplied ? (
+                       <div className="bg-indigo-600 border border-indigo-500/25 px-4 py-2 rounded-2xl flex items-center gap-3 backdrop-blur-xl group cursor-default shadow-2xl shrink-0 text-white">
+                         <div className="w-6 h-6 bg-white/25 rounded-lg flex items-center justify-center shrink-0">
+                           <span className="text-[12px]">🏷️</span>
+                         </div>
+                         <div className="flex flex-col text-left min-w-[124px]">
+                           <span className="text-[7px] font-black text-indigo-100 uppercase tracking-[0.2em] leading-none mb-1">Promo Tag: {claim.tagCode}</span>
+                           <span className="text-[10px] font-black uppercase tracking-wider">{claim.discountPercentage}% Discount Claimed!</span>
+                         </div>
+                       </div>
+                     ) : (
+                       <div className="bg-zinc-800/85 border border-zinc-700/50 px-4 py-2 rounded-2xl flex items-center gap-3 backdrop-blur-xl group cursor-default shadow-2xl shrink-0 text-white animate-fade-in">
+                         <div className="w-6 h-6 bg-white/10 rounded-lg flex items-center justify-center shrink-0 animate-pulse">
+                           <span className="text-[11px]">⏳</span>
+                         </div>
+                         <div className="flex flex-col text-left min-w-[130px]">
+                           <span className="text-[7px] font-black text-zinc-400 uppercase tracking-[0.2em] leading-none mb-1">Tag Code: {claim.tagCode}</span>
+                           <span className="text-[10px] font-black uppercase tracking-wider text-amber-400">
+                             Discount Claim Pending
+                           </span>
+                         </div>
+                       </div>
+                     )}
+                   </div>
+                 );
+               })}
                {activePromoCoupon && (
                  <div className="flex items-center gap-2 w-full lg:w-auto">
                    {hasPromoMojitoApplied ? (
@@ -424,6 +620,45 @@ const Bill: React.FC<BillProps> = ({
                     </button>
                  </div>
                )}
+                {qualifiedOffer && (
+                  <div className="flex items-center gap-2 w-full lg:w-auto font-sans">
+                     <button 
+                       type="button"
+                       onClick={() => {
+                         const freeItemId = qualifiedOffer.offerType === 'discount' ? `custom-discount-${qualifiedOffer.id}` : `free-gift-${qualifiedOffer.id}`;
+                         const isAlreadyAdded = orderItems.some(item => item.id === freeItemId);
+                         
+                         if (isAlreadyAdded) {
+                            onUpdateQuantity(freeItemId, 0);
+                         } else {
+                            onAddItem([{
+                              id: freeItemId,
+                              menuItemId: 'discount',
+                              name: qualifiedOffer.offerType === 'discount' ? `🏷️ ${qualifiedOffer.name} (${qualifiedOffer.discountType === 'percentage' ? `${qualifiedOffer.discountValue}%` : `₹${qualifiedOffer.discountValue}`} Off)` : `🎁 Free ${qualifiedOffer.freeItemName} (Offer: ${qualifiedOffer.name})`,
+                              price: qualifiedOffer.offerType === 'discount' ? (qualifiedOffer.discountType === 'percentage' ? -Math.round(subtotal * ((qualifiedOffer.discountValue || 0) / 100)) : -(qualifiedOffer.discountValue || 0)) : 0,
+                              quantity: 1,
+                              cost: 0
+                            }]);
+                         }
+                       }}
+                       className={`px-4 py-2 rounded-2xl flex items-center gap-3 shadow-xl text-white group border-2 border-white/20 hover:scale-105 active:scale-95 transition-all ${
+                         orderItems.some(item => item.id === `free-gift-${qualifiedOffer.id}` || item.id === `custom-discount-${qualifiedOffer.id}`) 
+                           ? (qualifiedOffer.offerType === 'discount' ? 'bg-indigo-600 border-indigo-550' : 'bg-rose-600 border-rose-505') 
+                           : 'bg-emerald-600 border-emerald-550'
+                       }`}
+                     >
+                       <div className="flex flex-col items-start leading-none py-0.5 text-left">
+                         <span className="text-[7px] font-black uppercase tracking-[0.2em] opacity-60 mb-1">{qualifiedOffer.name}</span>
+                         <span className="text-[10px] font-black uppercase tracking-wider">
+                           {orderItems.some(item => item.id === `free-gift-${qualifiedOffer.id}` || item.id === `custom-discount-${qualifiedOffer.id}`) ? (qualifiedOffer.offerType === 'discount' ? 'Discount Applied!' : 'Free Gift Applied!') : (qualifiedOffer.offerType === 'discount' ? 'Apply Checkout Discount!' : `Claim Free ${qualifiedOffer.freeItemName}!`)}
+                         </span>
+                       </div>
+                       <div className="w-6 h-6 bg-white/20 rounded-lg flex items-center justify-center shrink-0">
+                         <span className="text-[12px]">{orderItems.some(item => item.id === `free-gift-${qualifiedOffer.id}` || item.id === `custom-discount-${qualifiedOffer.id}`) ? '✅' : (qualifiedOffer.offerType === 'discount' ? '🏷️' : '🎁')}</span>
+                       </div>
+                     </button>
+                  </div>
+                )}
                {usualOrder && (
                   <div className="bg-white/10 lg:bg-white/5 px-4 py-3 rounded-2xl border-2 border-brand-yellow/30 flex items-center gap-3 backdrop-blur-xl group hover:bg-white/20 transition-all cursor-default shadow-2xl shrink-0">
                     <div className="w-8 h-8 bg-brand-yellow/30 rounded-xl flex items-center justify-center shrink-0 shadow-inner">

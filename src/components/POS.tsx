@@ -7,8 +7,19 @@ import VariantSelectionModal from './VariantSelectionModal';
 import BillPreviewModal from './BillPreviewModal';
 import CrossSellModal from './CrossSellModal';
 import { saveOrder, peekNextBillNumber, fetchMenuItems } from '../utils/storage';
-import { useCouponForCustomer } from '../utils/marketingStorage';
+import { 
+  useCouponForCustomer, 
+  syncFreeItemClaimsFromSupabaseForCustomer, 
+  getActiveClaimsForCustomer, 
+  markFreeItemClaimAsUsed,
+  syncDiscountClaimsFromSupabaseForCustomer,
+  getActiveDiscountClaimsForCustomer,
+  markDiscountClaimAsUsed,
+  getLocalCustomOffers
+} from '../utils/marketingStorage';
 import { printerService } from '../utils/bluetoothPrinter';
+import { CustomOffersModal } from './CustomOffersModal';
+
 
 const CATEGORIES = [
   { id: 'momo', label: 'Momos', icon: '♨️' },
@@ -25,6 +36,8 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
   const [activeCategory, setActiveCategory] = useState<string>('momo');
   const [selectedItem, setSelectedItem] = useState<MenuItemType | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
+  const [isOffersOpen, setIsOffersOpen] = useState(false);
+
   const [isSaving, setIsSaving] = useState(false);
   const [pendingBillNumber, setPendingBillNumber] = useState<number | null>(null);
   const [orderType, setOrderType] = useState<OrderType>('TAKEAWAY');
@@ -56,6 +69,143 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
       setIsPrinterConnected(false);
     });
   }, []);
+
+  const [activePromoClaims, setActivePromoClaims] = useState<any[]>([]);
+  const [customerDiscountClaim, setCustomerDiscountClaim] = useState<any | null>(null);
+
+  // Fetch campaigns/claims for entered customer dynamically
+  useEffect(() => {
+    if (customerPhone && customerPhone.length === 10) {
+      syncFreeItemClaimsFromSupabaseForCustomer(customerPhone).then(() => {
+        const activeClaims = getActiveClaimsForCustomer(customerPhone);
+        setActivePromoClaims(activeClaims);
+      });
+
+      syncDiscountClaimsFromSupabaseForCustomer(customerPhone).then(() => {
+        const activeDiscounts = getActiveDiscountClaimsForCustomer(customerPhone);
+        if (activeDiscounts && activeDiscounts.length > 0) {
+          setCustomerDiscountClaim(activeDiscounts[0]);
+        } else {
+          setCustomerDiscountClaim(null);
+        }
+      });
+    } else {
+      setActivePromoClaims([]);
+      setCustomerDiscountClaim(null);
+    }
+  }, [customerPhone]);
+
+  // Reactive auto-add or remove of the free campaign item/discount claim when cart meets condition
+  useEffect(() => {
+    const promoItemsInOrder = order.filter(i => i.id.startsWith('free-promo-'));
+    const discountPromoInOrder = order.filter(i => i.id.startsWith('promo-discount-'));
+    
+    // Calculates standard subtotal of standard items
+    const standardSubtotal = order
+      .filter(i => !i.id.startsWith('free-promo-') && !i.id.startsWith('promo-discount-') && !i.id.startsWith('loyalty-discount') && !i.id.startsWith('free-gift-') && !i.id.startsWith('custom-discount-'))
+      .reduce((acc, i) => acc + i.price * i.quantity, 0);
+
+    // 1. FREE ITEM PROMO CLAIM
+    if (customerPhone && customerPhone.length === 10 && activePromoClaims.length > 0) {
+      const firstClaim = activePromoClaims[0];
+      const promoId = `free-promo-${firstClaim.id}`;
+      const hasThisPromo = order.some(i => i.id === promoId);
+
+      if (standardSubtotal > 49) {
+        if (!hasThisPromo) {
+          // Find original item menu details if exists to get item id/cost
+          const matchedMenu = menuItems.find(m => m.name === firstClaim.itemName);
+          const newPromoItem: OrderItem = {
+            id: promoId,
+            menuItemId: matchedMenu?.id || 'free-promo',
+            name: `🎁 Free ${firstClaim.itemName} (Promo)`,
+            price: 0,
+            cost: 0,
+            quantity: 1
+          };
+          
+          setOrder(prev => {
+            // Remove any other older promo items just in case and push current one
+            const filtered = prev.filter(i => !i.id.startsWith('free-promo-'));
+            return [...filtered, newPromoItem];
+          });
+        }
+      } else {
+        // Subtotal below threshold, remove promo items
+        if (promoItemsInOrder.length > 0) {
+          setOrder(prev => prev.filter(i => !i.id.startsWith('free-promo-')));
+        }
+      }
+    } else {
+      // Customer phone cleared or no claims, remove any promo items from cart
+      if (promoItemsInOrder.length > 0) {
+        setOrder(prev => prev.filter(i => !i.id.startsWith('free-promo-')));
+      }
+    }
+
+    // 2. PERCENTAGE DISCOUNT PROMO CLAIM
+    if (customerPhone && customerPhone.length === 10 && customerDiscountClaim) {
+      const promoId = `promo-discount-${customerDiscountClaim.id}`;
+      const existingPromo = order.find(i => i.id === promoId);
+      const expectedDiscount = -Math.round(standardSubtotal * (customerDiscountClaim.discountPercentage / 100));
+
+      if (standardSubtotal > 0) {
+        if (!existingPromo) {
+          const promoItem: OrderItem = {
+            id: promoId,
+            menuItemId: 'discount',
+            name: `🏷️ Promo ${customerDiscountClaim.discountPercentage}% off (${customerDiscountClaim.tagCode})`,
+            price: expectedDiscount,
+            cost: 0,
+            quantity: 1
+          };
+          setOrder(prev => {
+            const filtered = prev.filter(i => !i.id.startsWith('promo-discount-'));
+            return [...filtered, promoItem];
+          });
+        } else if (existingPromo.price !== expectedDiscount) {
+          setOrder(prev => prev.map(i => i.id === promoId ? { ...i, price: expectedDiscount } : i));
+        }
+      } else {
+        if (discountPromoInOrder.length > 0) {
+          setOrder(prev => prev.filter(i => !i.id.startsWith('promo-discount-')));
+        }
+      }
+    } else {
+      if (discountPromoInOrder.length > 0) {
+        setOrder(prev => prev.filter(i => !i.id.startsWith('promo-discount-')));
+      }
+    }
+
+    // 3. CUSTOM CHECKOUT TRIGGERED DISCOUNTS AUTO-UPDATE PRICE
+    const customOffers = getLocalCustomOffers();
+    const customDiscountItemInOrder = order.find(i => i.id.startsWith('custom-discount-'));
+    if (customDiscountItemInOrder) {
+      const offerId = customDiscountItemInOrder.id.replace('custom-discount-', '');
+      const matchedOffer = customOffers.find(o => o.id === offerId);
+      if (matchedOffer && matchedOffer.isActive) {
+        let expectedDiscount = 0;
+        if (matchedOffer.discountType === 'percentage') {
+          expectedDiscount = -Math.round(standardSubtotal * ((matchedOffer.discountValue || 0) / 100));
+        } else {
+          expectedDiscount = -(matchedOffer.discountValue || 0);
+        }
+
+        // Only enforce rule if standard subtotal qualifies
+        if (standardSubtotal >= matchedOffer.minOrderValue) {
+          if (customDiscountItemInOrder.price !== expectedDiscount) {
+            setOrder(prev => prev.map(i => i.id === customDiscountItemInOrder.id ? { ...i, price: expectedDiscount } : i));
+          }
+        } else {
+          // If subtotal fell below minOrderValue, remove it
+          setOrder(prev => prev.filter(i => i.id !== customDiscountItemInOrder.id));
+        }
+      } else {
+        // Offer no longer active, remove it
+        setOrder(prev => prev.filter(i => i.id !== customDiscountItemInOrder.id));
+      }
+    }
+  }, [customerPhone, activePromoClaims, customerDiscountClaim, order, menuItems]);
 
   const handleConnectPrinter = async () => {
     const connected = await printerService.connect();
@@ -145,6 +295,24 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
       if (savedNum) {
         if (customerPhone) {
           useCouponForCustomer(customerPhone);
+          // Auto-mark any claimed free tag promos
+          order.forEach(item => {
+            if (item.id.startsWith('free-promo-')) {
+              const claimId = item.id.replace('free-promo-', '');
+              const claim = activePromoClaims.find(c => c.id === claimId);
+              if (claim) {
+                markFreeItemClaimAsUsed(customerPhone, claim.tagCode);
+              }
+            }
+          });
+          // Auto-mark any claimed promo discounts
+          order.forEach(item => {
+            if (item.id.startsWith('promo-discount-')) {
+              if (customerDiscountClaim) {
+                markDiscountClaimAsUsed(customerPhone, customerDiscountClaim.tagCode);
+              }
+            }
+          });
         }
         if (useBluetooth && printerService.isConnected()) {
           const success = await printerService.printReceipt({
@@ -221,7 +389,15 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
                 <p className="text-[8px] lg:text-[10px] font-bold text-stone-400 uppercase tracking-widest mt-1">Flavor Station: {branchName}</p>
              </div>
              <div className="flex gap-2 w-full sm:w-auto items-center">
+               <button
+                 type="button"
+                 onClick={() => setIsOffersOpen(true)}
+                 className="flex items-center gap-1.5 px-4 py-2 rounded-full text-[9px] font-black uppercase tracking-widest transition-all bg-rose-600 hover:bg-rose-700 text-white border-2 border-rose-700 shadow-sm cursor-pointer shadow-rose-900/10"
+               >
+                 <span>🎁</span> Offers
+               </button>
                {printerService.isSupported() && (
+
                  <button 
                   onClick={handleConnectPrinter}
                   className={`flex items-center gap-2 px-4 py-2 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${isPrinterConnected ? 'bg-mountain-green text-white' : 'bg-brand-stone text-brand-brown'}`}
@@ -325,7 +501,13 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
         upsellItem={upsellItem}
         onConfirm={(item) => handleAddItem([item])}
       />
+      <CustomOffersModal
+        isOpen={isOffersOpen}
+        onClose={() => setIsOffersOpen(false)}
+        menuItems={menuItems}
+      />
     </div>
+
   );
 };
 

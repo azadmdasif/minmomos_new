@@ -264,7 +264,15 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
       try {
         const id = newItemName.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
         
-        // Only log procurement if there's actual stock or cost being added
+        // 1. Create the central item first so it exists in central_inventory
+        try {
+          await createCentralItem(newItemName, newItemUnit, q, c, materialCategory, id);
+        } catch (createErr: any) {
+          console.error("Failed to create central item:", createErr);
+          throw new Error(`Database Entry Failed: ${createErr.message}`);
+        }
+
+        // 2. Only log procurement if there's actual stock or cost being added, and now the FK is satisfied!
         if (q > 0 || c > 0) {
           try {
             await logProcurement({
@@ -278,17 +286,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
             });
           } catch (logErr: any) {
             console.error("Failed to log initial procurement:", logErr);
-            // We might continue if createCentralItem is more important, 
-            // but let's fail fast to be safe and inform user
             throw new Error(`Procurement Log Failed: ${logErr.message}`);
           }
-        }
-
-        try {
-          await createCentralItem(newItemName, newItemUnit, q, c, materialCategory, id);
-        } catch (createErr: any) {
-          console.error("Failed to create central item:", createErr);
-          throw new Error(`Database Entry Failed: ${createErr.message}`);
         }
 
         setIsAddItemModalOpen(false);

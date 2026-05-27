@@ -13,6 +13,7 @@ import CustomerInsights from './CustomerInsights';
 import CohortRetentionChart from './CohortRetentionChart';
 import CohortCompositionChart from './CohortCompositionChart';
 import { CustomerHistogram } from './CustomerHistogram';
+import { OrderIntervalChart } from './OrderIntervalChart';
 import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star, Users, TrendingUp as TrendingUpIcon, Gift, DollarSign, ShoppingBag, Download, RefreshCw } from 'lucide-react';
 
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
@@ -2244,6 +2245,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         }}
                         selectedPeriodKey={compositionPeriod}
                       />
+
+                      <OrderIntervalChart data={cohortRawData} />
 
                       {compositionPeriod && (
                         <div className="space-y-4">
