@@ -4,7 +4,7 @@ export type Size = 'small' | 'medium' | 'large';
 export type PaymentMethod = 'Cash' | 'UPI' | 'Card';
 export type Category = 'momo' | 'side' | 'drink' | 'combo' | 'moburg';
 export type OrderType = 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
-export type OrderStatus = 'ORDERED' | 'PREPARING' | 'READY' | 'SERVED' | 'COMPLETED' | 'CANCELLED';
+export type OrderStatus = 'ORDERED' | 'PREPARING' | 'READY' | 'SERVED' | 'COMPLETED' | 'CANCELLED' | 'REVIEW_COLLECTED' | 'REVIEW_DENIED';
 export type UserRole = 'ADMIN' | 'STORE_MANAGER' | 'CASHIER';
 export type MaterialCategory = 'MOMO' | 'PACKET' | 'INGREDIENT';
 

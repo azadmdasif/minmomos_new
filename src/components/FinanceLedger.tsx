@@ -19,7 +19,10 @@ import {
   Pencil,
   History,
   Download,
-  Briefcase
+  Briefcase,
+  Camera,
+  RotateCw,
+  CameraOff
 } from 'lucide-react';
 import { 
   ResponsiveContainer,
@@ -51,9 +54,8 @@ interface FinanceLedgerProps {
 }
 
 const DEBIT_CATEGORIES = [
-  'gas', 'rent', 'salary', 'vegetables', 'momo', 'store investment', 
-  'packaging', 'oil', 'butter', 'ketchup', 'mayonnaise', 'water', 
-  'campa cola', 'syrups', 'zomato commission and ads', 'debt', 'others'
+  'gas', 'rent', 'salary', 'momo', 'store investment', 'zomato commission and ads', 'debt',
+  'grocery', 'soft drinks', 'ice', 'packaginf', 'veggies', 'burger buns', 'others'
 ];
 
 const CREDIT_CATEGORIES = [
@@ -120,6 +122,14 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
   // Bill file states
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
+
+  // Camera Capture States
+  const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [cameraFacingMode, setCameraFacingMode] = useState<'user' | 'environment'>('environment');
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [hasMultipleCameras, setHasMultipleCameras] = useState(false);
 
   // Custom Confirmation Dialog States
   const [deletingTxIdx, setDeletingTxIdx] = useState<number | null>(null);
@@ -191,6 +201,57 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
       setTxCategory(DEBIT_CATEGORIES[0]);
     }
   }, [txType]);
+
+  // Reactive camera media lifecycle hook
+  useEffect(() => {
+    let activeStream: MediaStream | null = null;
+    
+    const initCamera = async () => {
+      if (!isCameraModalOpen) return;
+      setCameraError(null);
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { 
+            facingMode: cameraFacingMode,
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        });
+        
+        activeStream = stream;
+        setCameraStream(stream);
+
+        // Enumerate devices to check for multiple cameras
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+        setHasMultipleCameras(videoDevices.length > 1);
+      } catch (err: any) {
+        console.error("Camera access error:", err);
+        setCameraError(err.message || "Failed to access camera. Please confirm permissions and connection.");
+      }
+    };
+
+    if (isCameraModalOpen) {
+      initCamera();
+    }
+
+    return () => {
+      if (activeStream) {
+        activeStream.getTracks().forEach(track => track.stop());
+      }
+      setCameraStream(null);
+    };
+  }, [isCameraModalOpen, cameraFacingMode]);
+
+  const videoRef = React.useRef<HTMLVideoElement | null>(null);
+
+  // Play stream through video tag once stream is available
+  useEffect(() => {
+    if (videoRef.current && cameraStream) {
+      videoRef.current.srcObject = cameraStream;
+    }
+  }, [cameraStream, isCameraModalOpen]);
 
   // Load existing tabs (equivalent inside Supabase flow)
   const loadSpreadsheetMeta = async () => {
@@ -612,6 +673,51 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
       alert(`Editing transaction failed: ${err.message}`);
     } finally {
       setIsSavingTxEdit(false);
+    }
+  };
+
+  // Capture photo from video element
+  const handleCapturePhoto = () => {
+    if (!videoRef.current) return;
+    const video = videoRef.current;
+    
+    // Create temporary canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+    
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      // Mirror image horizontally if front camera is used for standard natural preview
+      if (cameraFacingMode === 'user') {
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      setPhotoPreviewUrl(dataUrl);
+    }
+  };
+
+  // Convert preview base64 to File object and set selectedFile
+  const handleUsePhoto = async () => {
+    if (!photoPreviewUrl) return;
+
+    try {
+      // Fetch base64 data and convert to blob
+      const res = await fetch(photoPreviewUrl);
+      const blob = await res.blob();
+      
+      const file = new File([blob], `receipt_capture_${Date.now()}.jpg`, { type: 'image/jpeg' });
+      setSelectedFile(file);
+      
+      // Close modal and reset state
+      setIsCameraModalOpen(false);
+      setPhotoPreviewUrl(null);
+    } catch (err: any) {
+      console.error("Error preparing file from captured photo:", err);
+      alert("Failed to prepare photo for upload. Please try again.");
     }
   };
 
@@ -1671,13 +1777,14 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                           File will be securely saved in Supabase Storage and referenced as a clean clickable receipt link.
                         </p>
                         
-                        {!selectedFile ? (
-                          <div className="flex items-center justify-center w-full">
-                            <label className="flex flex-col items-center justify-center w-full h-24 border-2 border-brand-brown/15 border-dashed rounded-xl cursor-pointer hover:bg-brand-stone/20 duration-150">
-                              <div className="flex flex-col items-center justify-center pt-2 pb-2">
-                                <Upload className="w-6 h-6 text-zinc-400 mb-1" />
-                                <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Select bill file</p>
-                                <p className="text-[8px] text-zinc-400 mt-0.5">PDF, PNG, JPG, JPEG up to 10MB</p>
+                         {!selectedFile ? (
+                          <div className="grid grid-cols-2 gap-3 w-full">
+                            {/* Option 1: File Uploader Card */}
+                            <label className="flex flex-col items-center justify-center h-24 border-2 border-brand-brown/15 border-dashed rounded-xl cursor-pointer hover:bg-brand-stone/20 duration-150">
+                              <div className="flex flex-col items-center justify-center p-2 text-center">
+                                <Upload className="w-5 h-5 text-zinc-500 mb-1" />
+                                <p className="text-[9px] text-zinc-600 font-bold uppercase tracking-wider leading-tight">Select File</p>
+                                <p className="text-[7px] text-zinc-400 mt-0.5 font-medium leading-none">PDF, Images up to 10MB</p>
                               </div>
                               <input 
                                 type="file" 
@@ -1688,6 +1795,22 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                                 }} 
                               />
                             </label>
+
+                            {/* Option 2: Live Camera Capture Card */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsCameraModalOpen(true);
+                                setCameraError(null);
+                              }}
+                              className="flex flex-col items-center justify-center h-24 border-2 border-brand-brown/15 border-dashed rounded-xl cursor-pointer hover:bg-brand-stone/20 duration-150 outline-none"
+                            >
+                              <div className="flex flex-col items-center justify-center p-2 text-center">
+                                <Camera className="w-5 h-5 text-zinc-500 mb-1" />
+                                <p className="text-[9px] text-zinc-600 font-bold uppercase tracking-wider leading-tight">Take Photo</p>
+                                <p className="text-[7px] text-zinc-400 mt-0.5 font-medium leading-none font-sans">Use device camera</p>
+                              </div>
+                            </button>
                           </div>
                         ) : (
                           <div className="bg-white border border-brand-brown/10 rounded-xl p-3 flex justify-between items-center text-xs">
@@ -3062,6 +3185,127 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Live Camera Capture Modal */}
+      {isCameraModalOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[150] p-4 animate-in fade-in duration-200">
+          <div className="bg-brand-cream border border-brand-brown/15 rounded-3xl shadow-2xl w-full max-w-md text-brand-brown flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="p-5 border-b border-brand-brown/10 flex justify-between items-center bg-white">
+              <div>
+                <h3 className="text-sm font-black uppercase tracking-wide flex items-center gap-2">
+                  <Camera className="w-4 h-4 text-emerald-600" />
+                  Capture Bill Receipt
+                </h3>
+                <p className="text-[10px] text-zinc-400 font-medium mt-0.5">
+                  Take a clear, sharp photo of the receipt to log as a secure record.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCameraModalOpen(false);
+                  setPhotoPreviewUrl(null);
+                }}
+                className="text-xs font-bold text-zinc-400 hover:text-brand-brown border border-brand-brown/10 rounded-lg p-1.5 px-2.5 hover:bg-zinc-50 transition-all font-sans uppercase tracking-wider"
+              >
+                Cancel
+              </button>
+            </div>
+
+            {/* Main Content Area */}
+            <div className="p-5 flex-1 flex flex-col space-y-4">
+              {cameraError ? (
+                <div className="p-6 bg-rose-50 border border-rose-100 rounded-2xl flex flex-col items-center text-center space-y-3">
+                  <CameraOff className="w-10 h-10 text-rose-500 animate-bounce" />
+                  <div className="space-y-1">
+                    <p className="font-black uppercase text-xs text-rose-800">Camera Access Error</p>
+                    <p className="text-[10px] text-rose-700/80 font-medium leading-relaxed max-w-[280px]">
+                      {cameraError}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCameraModalOpen(false);
+                      setCameraError(null);
+                    }}
+                    className="px-4 py-2 bg-rose-600 text-white font-bold text-[10px] uppercase tracking-wider rounded-xl hover:bg-rose-700"
+                  >
+                    Select Option Instead
+                  </button>
+                </div>
+              ) : !photoPreviewUrl ? (
+                /* Live Camera Stream Mode */
+                <div className="space-y-4">
+                  <div className="relative aspect-[4/3] bg-black rounded-2xl overflow-hidden border border-brand-brown/10 shadow-lg flex items-center justify-center">
+                    <video 
+                      ref={videoRef} 
+                      autoPlay 
+                      playsInline 
+                      muted
+                      className="w-full h-full object-cover"
+                      style={{ transform: cameraFacingMode === 'user' ? 'scaleX(-1)' : 'none' }}
+                    />
+                    
+                    {/* Switch Camera Overlay */}
+                    {hasMultipleCameras && (
+                      <button
+                        type="button"
+                        onClick={() => setCameraFacingMode(prev => prev === 'user' ? 'environment' : 'user')}
+                        className="absolute bottom-3 right-3 bg-black/60 hover:bg-black/80 text-white p-2.5 rounded-full transition-all outline-none flex items-center justify-center z-10"
+                        title="Switch Camera Face"
+                      >
+                        <RotateCw className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col items-center justify-center pt-2">
+                    {/* Capture Shutter Button */}
+                    <button
+                      type="button"
+                      onClick={handleCapturePhoto}
+                      className="group relative w-16 h-16 rounded-full border-4 border-emerald-600 bg-white hover:bg-emerald-50 active:scale-90 transition-all flex items-center justify-center shadow-lg cursor-pointer outline-none"
+                    >
+                      <div className="w-11 h-11 bg-emerald-600 rounded-full group-hover:scale-95 transition-transform"></div>
+                    </button>
+                    <p className="text-[9px] font-black uppercase text-zinc-400 tracking-widest mt-2">TAP TO SHUTTER</p>
+                  </div>
+                </div>
+              ) : (
+                /* Photo Capture Preview Mode */
+                <div className="space-y-4 animate-in fade-in duration-200">
+                  <div className="relative aspect-[4/3] bg-black rounded-2xl overflow-hidden border border-brand-brown/10 shadow-lg flex items-center justify-center">
+                    <img 
+                      src={photoPreviewUrl} 
+                      className="w-full h-full object-cover" 
+                      alt="Receipt capture preview" 
+                    />
+                  </div>
+
+                  <div className="flex gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setPhotoPreviewUrl(null)}
+                      className="flex-1 py-3 bg-brand-brown/10 hover:bg-brand-brown/20 text-brand-brown font-black rounded-xl text-xs uppercase tracking-wider text-center"
+                    >
+                      Retake Photo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleUsePhoto}
+                      className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl text-xs uppercase tracking-widest text-center shadow-md flex items-center justify-center gap-1.5"
+                    >
+                      Use Capture
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats } from '../utils/storage';
+import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats, updateOrderStatus } from '../utils/storage';
 import { CompletedOrder, PaymentMethod, Station, User, Customer } from '../types';
 import PrintReceipt from './PrintReceipt';
 import DeleteBillModal from './DeleteBillModal';
@@ -152,6 +152,31 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     } else {
       setRevSortField(field);
       setRevSortOrder('desc');
+    }
+  };
+
+  const setReviewStatus = async (orderId: string, targetStatus: 'REVIEW_COLLECTED' | 'REVIEW_DENIED') => {
+    // Current status of the order before update
+    const currentOrder = orders.find(o => o.id === orderId);
+    if (!currentOrder) return;
+    const currentStatus = currentOrder.status;
+
+    // Toggle: if already set to target targetStatus, toggle it back to 'COMPLETED' (null/unselected state)
+    const nextStatus = currentStatus === targetStatus ? 'COMPLETED' : targetStatus;
+    
+    // Optimistic UI update
+    setOrders(prevOrders => 
+      prevOrders.map(o => o.id === orderId ? { ...o, status: nextStatus as any } : o)
+    );
+    
+    try {
+      await updateOrderStatus(orderId, nextStatus as any);
+    } catch (error) {
+      console.error("Failed to update status in Supabase:", error);
+      // Revert status on error
+      setOrders(prevOrders => 
+        prevOrders.map(o => o.id === orderId ? { ...o, status: currentStatus as any } : o)
+      );
     }
   };
 
@@ -839,14 +864,30 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     let deliveryRevenue = 0;
     let deliveryDiscount = 0;
     let deliveryMenuTotal = 0;
-    let cogs = 0;
+    
+    let inStoreCogs = 0;
+    let deliveryCogs = 0;
+    
+    let inStoreOrdersCount = 0;
+    let deliveryOrdersCount = 0;
+    
+    let reviewsCollectedCount = 0;
+    let reviewsDeniedCount = 0;
+
+    let dineInOrdersCount = 0;
+    let dineInReviewsCollected = 0;
+    let takeawayOrdersCount = 0;
+    let takeawayReviewsCollected = 0;
+
     const breakdown: Record<PaymentMethod, number> = { 'Cash': 0, 'UPI': 0, 'Card': 0 };
 
     orders.forEach(order => {
       const orderCogs = order.items.reduce((acc, item) => acc + (item.cost ?? 0) * item.quantity, 0);
-      cogs += Math.round(orderCogs);
 
       if (order.type === 'DELIVERY') {
+        deliveryOrdersCount++;
+        deliveryCogs += Math.round(orderCogs);
+        
         const dRev = order.manualTotal != null ? Math.round(order.manualTotal) : Math.round(order.total);
         deliveryRevenue += dRev;
         deliveryDiscount += (order.manualDiscount || 0);
@@ -857,26 +898,84 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
           breakdown[order.paymentMethod as PaymentMethod] += dRev;
         }
       } else {
+        inStoreOrdersCount++;
+        inStoreCogs += Math.round(orderCogs);
+        
         const roundedTotal = Math.round(order.total);
         revenue += roundedTotal;
+        
+        if (order.status === 'REVIEW_COLLECTED') {
+          reviewsCollectedCount++;
+        } else if (order.status === 'REVIEW_DENIED') {
+          reviewsDeniedCount++;
+        }
+
         if (order.paymentMethod && order.paymentMethod in breakdown) {
           breakdown[order.paymentMethod as PaymentMethod] += roundedTotal;
         }
       }
+
+      // Track Dine-In and Takeaway reviews separately
+      if (order.type === 'DINE_IN') {
+        dineInOrdersCount++;
+        if (order.status === 'REVIEW_COLLECTED') {
+          dineInReviewsCollected++;
+        }
+      } else if (order.type === 'TAKEAWAY') {
+        takeawayOrdersCount++;
+        if (order.status === 'REVIEW_COLLECTED') {
+          takeawayReviewsCollected++;
+        }
+      }
     });
 
-    const grossProfit = (revenue + deliveryRevenue) - cogs;
+    const inStoreProfit = revenue - inStoreCogs;
+    const deliveryProfit = deliveryRevenue - deliveryCogs;
+    const combinedCogs = inStoreCogs + deliveryCogs;
+    const combinedRevenue = revenue + deliveryRevenue;
+    const combinedProfit = combinedRevenue - combinedCogs;
+    const reviewCollectedPercent = inStoreOrdersCount > 0 ? (reviewsCollectedCount / inStoreOrdersCount) * 100 : 0;
+
     return { 
       totalRevenue: revenue, 
       deliveryRevenue: deliveryRevenue,
       deliveryDiscount: deliveryDiscount,
       deliveryMenuTotal: deliveryMenuTotal,
-      totalCogs: cogs,
-      grossProfit,
-      profitMargin: (revenue + deliveryRevenue) > 0 ? (grossProfit / (revenue + deliveryRevenue)) * 100 : 0,
-      averageOrderValue: orders.length > 0 ? (revenue + deliveryRevenue) / orders.length : 0,
+      totalCogs: combinedCogs,
+      grossProfit: combinedProfit,
+      profitMargin: combinedRevenue > 0 ? (combinedProfit / combinedRevenue) * 100 : 0,
+      averageOrderValue: orders.length > 0 ? combinedRevenue / orders.length : 0,
       paymentBreakdown: breakdown,
       totalOrders: orders.length,
+      
+      // Detailed new properties for the expanded metrics view
+      inStoreOrdersCount,
+      inStoreRevenue: revenue,
+      inStoreCogs,
+      inStoreProfit,
+      
+      deliveryOrdersCount,
+      deliveryCogs,
+      deliveryProfit,
+      
+      combinedOrdersCount: orders.length,
+      combinedRevenue,
+      combinedCogs,
+      combinedProfit,
+      
+      reviewsCollectedCount,
+      reviewsDeniedCount,
+      reviewCollectedPercent,
+
+      // Dine-in to be displayed separately
+      dineInOrdersCount,
+      dineInReviewsCollected,
+      dineInReviewPercent: dineInOrdersCount > 0 ? (dineInReviewsCollected / dineInOrdersCount) * 100 : 0,
+
+      // Takeaway to be displayed separately
+      takeawayOrdersCount,
+      takeawayReviewsCollected,
+      takeawayReviewPercent: takeawayOrdersCount > 0 ? (takeawayReviewsCollected / takeawayOrdersCount) * 100 : 0
     };
   }, [orders]);
 
@@ -1050,14 +1149,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       return customerSortOrder === 'desc' ? valB - valA : valA - valB;
     });
   }, [customers, customerSearchTerm, customerSortField, customerSortOrder, minLtv, maxLtv, minOrders, maxOrders, customerActivityStart, customerActivityEnd, allOrdersRaw, customerClassFilter, customerOrderStats]);
-
-  const SummaryCard = ({ title, value, sub, color, textWhite }: any) => (
-    <div className={`${color} p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-sm relative overflow-hidden group border border-black/5`}>
-      <p className={`text-[9px] lg:text-[10px] font-black uppercase tracking-[0.2em] mb-2 ${textWhite ? 'text-white/60' : 'text-brand-brown/40'}`}>{title}</p>
-      <h3 className={`text-3xl lg:text-4xl font-black tracking-tighter ${textWhite ? 'text-white' : 'text-brand-brown'}`}>₹{(value ?? 0).toLocaleString()}</h3>
-      <p className={`text-[8px] lg:text-[9px] font-bold uppercase tracking-widest mt-2 ${textWhite ? 'text-white/40' : 'text-brand-brown/60'}`}>{sub}</p>
-    </div>
-  );
 
   return (
     <div className="p-4 lg:p-8 h-full bg-brand-cream overflow-y-auto no-scrollbar pb-24 lg:pb-8">
@@ -1680,14 +1771,121 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
           </div>
         )}
 
-        {reportView === 'revenue' && (
+         {reportView === 'revenue' && (
           <div className="space-y-6 lg:space-y-8 animate-in fade-in duration-500">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 lg:gap-6">
-              <SummaryCard title="In-Store Sales" value={financialData.totalRevenue} sub="Dine-in / Takeaway" color="bg-brand-yellow" />
-              <SummaryCard title="Delivery Sales" value={financialData.deliveryRevenue} sub={`Menu Price Total: ₹${financialData.deliveryMenuTotal.toLocaleString()}`} color="bg-brand-red" textWhite />
-              <SummaryCard title="Combined Revenue" value={financialData.totalRevenue + financialData.deliveryRevenue} sub="Total Collected" color="bg-brand-brown" textWhite />
-              <SummaryCard title="Gross Profit" value={financialData.grossProfit} sub="Direct Margin" color="bg-emerald-500" textWhite />
-              <SummaryCard title="Order COGS" value={financialData.totalCogs} sub="Materials Used" color="bg-brand-stone" />
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
+              
+              {/* Card 1: In-Store Performance */}
+              <div className="bg-brand-yellow p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-md relative overflow-hidden group border border-black/5 flex flex-col justify-between">
+                <div>
+                  <p className="text-[9px] lg:text-[10px] font-black uppercase tracking-[0.2em] mb-2 text-brand-brown/50">IN-STORE SALES</p>
+                  <h3 className="text-3xl lg:text-4xl font-black tracking-tighter text-brand-brown">₹{(financialData.inStoreRevenue ?? 0).toLocaleString()}</h3>
+                  <p className="text-[8px] lg:text-[9px] font-bold uppercase tracking-widest mt-1 text-brand-brown/40">DINE-IN / TAKEAWAY</p>
+                </div>
+                
+                <div className="mt-6 pt-4 border-t border-brand-brown/10 grid grid-cols-3 gap-2">
+                  <div>
+                    <p className="text-[7.5px] font-black uppercase text-brand-brown/45 tracking-wider">Orders</p>
+                    <p className="text-sm lg:text-base font-black text-brand-brown">{financialData.inStoreOrdersCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-[7.5px] font-black uppercase text-brand-brown/45 tracking-wider">Profit</p>
+                    <p className="text-sm lg:text-base font-black text-emerald-800">₹{(financialData.inStoreProfit ?? 0).toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-[7.5px] font-black uppercase text-brand-brown/45 tracking-wider">COGS</p>
+                    <p className="text-sm lg:text-base font-black text-brand-brown/60">₹{(financialData.inStoreCogs ?? 0).toLocaleString()}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 2: Delivery Performance */}
+              <div className="bg-brand-red p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-md relative overflow-hidden group border border-black/5 flex flex-col justify-between text-white">
+                <div>
+                  <p className="text-[9px] lg:text-[10px] font-black uppercase tracking-[0.2em] mb-2 text-white/60">DELIVERY SALES</p>
+                  <h3 className="text-3xl lg:text-4xl font-black tracking-tighter text-white">₹{(financialData.deliveryRevenue ?? 0).toLocaleString()}</h3>
+                  <p className="text-[8px] lg:text-[9px] font-bold uppercase tracking-widest mt-1 text-white/40">HOME &amp; APP DELIVERY</p>
+                </div>
+                
+                <div className="mt-6 pt-4 border-t border-white/10 grid grid-cols-3 gap-2">
+                  <div>
+                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Orders</p>
+                    <p className="text-sm lg:text-base font-black text-white">{financialData.deliveryOrdersCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Profit</p>
+                    <p className="text-sm lg:text-base font-black text-[#ffeaa7]">₹{(financialData.deliveryProfit ?? 0).toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">COGS</p>
+                    <p className="text-sm lg:text-base font-black text-white/60">₹{(financialData.deliveryCogs ?? 0).toLocaleString()}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 3: Combined Performance */}
+              <div className="bg-brand-brown p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-md relative overflow-hidden group border border-black/5 flex flex-col justify-between text-white">
+                <div>
+                  <p className="text-[9px] lg:text-[10px] font-black uppercase tracking-[0.2em] mb-2 text-white/60">COMBINED REVENUE</p>
+                  <h3 className="text-3xl lg:text-4xl font-black tracking-tighter text-white">₹{(financialData.combinedRevenue ?? 0).toLocaleString()}</h3>
+                  <p className="text-[8px] lg:text-[9px] font-bold uppercase tracking-widest mt-1 text-white/40">TOTAL COLLECTED</p>
+                </div>
+                
+                <div className="mt-6 pt-4 border-t border-white/10 grid grid-cols-3 gap-2">
+                  <div>
+                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Orders</p>
+                    <p className="text-sm lg:text-base font-black text-white">{financialData.combinedOrdersCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Profit</p>
+                    <p className="text-sm lg:text-base font-black text-emerald-400 font-extrabold">₹{(financialData.combinedProfit ?? 0).toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">COGS</p>
+                    <p className="text-sm lg:text-base font-black text-white/60">₹{(financialData.combinedCogs ?? 0).toLocaleString()}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 4: Reviews & Feedback */}
+              <div className="bg-emerald-600 p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-md relative overflow-hidden group border border-black/5 flex flex-col justify-between text-white">
+                <div>
+                  <p className="text-[9px] lg:text-[10px] font-black uppercase tracking-[0.2em] mb-2 text-white/60">ORDER REVIEWS</p>
+                  
+                  <div className="flex gap-4 mt-2">
+                    <div>
+                      <h4 className="text-xl lg:text-2xl font-black text-white">{financialData.dineInReviewPercent.toFixed(1)}%</h4>
+                      <p className="text-[7.5px] font-bold uppercase tracking-wider text-white/50">Dine-in</p>
+                    </div>
+                    <div className="h-8 w-px bg-white/20 self-center"></div>
+                    <div>
+                      <h4 className="text-xl lg:text-2xl font-black text-rose-150">{financialData.takeawayReviewPercent.toFixed(1)}%</h4>
+                      <p className="text-[7.5px] font-bold uppercase tracking-wider text-white/50">Takeaway</p>
+                    </div>
+                    <div className="h-8 w-px bg-white/20 self-center"></div>
+                    <div>
+                      <h4 className="text-[10px] font-black uppercase tracking-wider text-emerald-200 mt-2 leading-none">NO OPTION</h4>
+                      <p className="text-[7.5px] font-bold uppercase tracking-wider text-emerald-200/50 mt-1">Delivery</p>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="mt-6 pt-4 border-t border-white/10 grid grid-cols-3 gap-2">
+                  <div>
+                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Collected</p>
+                    <p className="text-sm lg:text-base font-black text-white">{financialData.reviewsCollectedCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Denied</p>
+                    <p className="text-sm lg:text-base font-black text-rose-200">{financialData.reviewsDeniedCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">No Option</p>
+                    <p className="text-[9px] font-bold text-white/70 pt-0.5 leading-tight">Delivery Excl.</p>
+                  </div>
+                </div>
+              </div>
+
             </div>
 
             <TimeWiseRevenueChart orders={orders} />
@@ -1919,7 +2117,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         >
                           Date {revSortField === 'date' ? (revSortOrder === 'desc' ? '▼' : '▲') : '↕'}
                         </th>
-                        <th className="px-4 lg:px-8 py-4">Branch</th>
                         <th className="px-4 lg:px-8 py-4">Type</th>
                         <th 
                           onClick={() => handleToggleRevSort('total')} 
@@ -1927,7 +2124,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         >
                           Total {revSortField === 'total' ? (revSortOrder === 'desc' ? '▼' : '▲') : '↕'}
                         </th>
-                        <th className="px-4 lg:px-8 py-4 text-right">Action</th>
+                        <th className="px-4 lg:px-8 py-4 text-center">Action</th>
+                        <th className="px-4 lg:px-8 py-4 text-right">Branch</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-brand-stone">
@@ -1935,7 +2133,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         <tr key={o.id} className="hover:bg-brand-cream/50 transition-colors group">
                           <td className="px-4 lg:px-8 py-4 font-black text-xs lg:text-sm">#{o.billNumber}</td>
                           <td className="px-4 lg:px-8 py-4 text-[10px] lg:text-xs">{getISTFullDateTime(o.date)}</td>
-                          <td className="px-4 lg:px-8 py-4 text-[9px] lg:text-[10px] font-bold uppercase">{o.branchName}</td>
                           <td className="px-4 lg:px-8 py-4">
                              <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${o.type === 'DELIVERY' ? 'bg-brand-red text-white' : 'bg-brand-brown/5 text-brand-brown/40'}`}>
                                {o.type.replace('_', ' ')}
@@ -1951,14 +2148,46 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                                <span>₹{o.total}</span>
                              )}
                           </td>
-                          <td className="px-4 lg:px-8 py-4 text-right">
-                            <button 
-                              onClick={() => handleSearch(o.billNumber)}
-                              className="bg-brand-brown text-brand-yellow px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-brand-red hover:text-white transition-all shadow-md active:scale-95"
-                            >
-                              View
-                            </button>
+                          <td className="px-4 lg:px-8 py-4">
+                            <div className="flex items-center justify-center gap-2">
+                              <button 
+                                onClick={() => handleSearch(o.billNumber)}
+                                className="bg-brand-brown text-brand-yellow px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-brand-red hover:text-white transition-all shadow-md active:scale-95 cursor-pointer"
+                              >
+                                View
+                              </button>
+                              
+                              {o.type !== 'DELIVERY' ? (
+                                <div className="flex items-center gap-1 bg-brand-brown/5 p-1 rounded-lg">
+                                  <button
+                                    onClick={() => setReviewStatus(o.id, 'REVIEW_COLLECTED')}
+                                    className={`px-2 py-1 rounded text-[8px] font-black uppercase tracking-wider transition-all cursor-pointer whitespace-nowrap ${
+                                      o.status === 'REVIEW_COLLECTED'
+                                        ? 'bg-emerald-600 text-white shadow-sm font-extrabold'
+                                        : 'bg-transparent text-emerald-700/60 hover:text-emerald-700 hover:bg-emerald-50'
+                                    }`}
+                                  >
+                                    Collected
+                                  </button>
+                                  <button
+                                    onClick={() => setReviewStatus(o.id, 'REVIEW_DENIED')}
+                                    className={`px-2 py-1 rounded text-[8px] font-black uppercase tracking-wider transition-all cursor-pointer whitespace-nowrap ${
+                                      o.status === 'REVIEW_DENIED'
+                                        ? 'bg-rose-600 text-white shadow-sm font-extrabold'
+                                        : 'bg-transparent text-rose-700/60 hover:text-rose-700 hover:bg-rose-50'
+                                    }`}
+                                  >
+                                    Denied
+                                  </button>
+                                </div>
+                              ) : (
+                                <span className="text-[8px] font-black uppercase text-brand-brown/20 italic tracking-wider whitespace-nowrap">
+                                  No review option
+                                </span>
+                              )}
+                            </div>
                           </td>
+                          <td className="px-4 lg:px-8 py-4 text-[9px] lg:text-[10px] font-bold uppercase text-right">{o.branchName}</td>
                         </tr>
                       ))}
                     </tbody>
