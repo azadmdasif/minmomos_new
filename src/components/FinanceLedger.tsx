@@ -14,7 +14,12 @@ import {
   TrendingUp,
   Filter,
   ArrowRight,
-  TrendingDown
+  TrendingDown,
+  Database,
+  Pencil,
+  History,
+  Download,
+  Briefcase
 } from 'lucide-react';
 import { 
   ResponsiveContainer,
@@ -28,12 +33,7 @@ import {
   Pie,
   Cell
 } from 'recharts';
-import { 
-  googleSignIn, 
-  googleLogout, 
-  initGoogleAuth
-} from '../utils/googleAuth';
-import { User as FirebaseUser } from 'firebase/auth';
+import { supabase } from '../utils/supabase';
 import ConfirmationModal from './ConfirmationModal';
 
 interface TabInfo {
@@ -53,11 +53,11 @@ interface FinanceLedgerProps {
 const DEBIT_CATEGORIES = [
   'gas', 'rent', 'salary', 'vegetables', 'momo', 'store investment', 
   'packaging', 'oil', 'butter', 'ketchup', 'mayonnaise', 'water', 
-  'campa cola', 'syrups', 'others'
+  'campa cola', 'syrups', 'zomato commission and ads', 'debt', 'others'
 ];
 
 const CREDIT_CATEGORIES = [
-  'revenue', 'zomato payout', 'investment', 'previous balance'
+  'revenue', 'zomato payout', 'investment', 'debt', 'previous balance', 'other'
 ];
 
 const HEADERS = [
@@ -81,19 +81,7 @@ const MONTHS = [
 ];
 
 export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
-  // Auth state
-  const [googleUser, setGoogleUser] = useState<FirebaseUser | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [needsAuth, setNeedsAuth] = useState(true);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-
-  // Sheets configuration state
-  const [spreadsheetId, setSpreadsheetId] = useState<string>(
-    localStorage.getItem('MOMOMAYA_LEDGER_SPREADSHEET_ID') || ''
-  );
-  const [spreadsheetUrl, setSpreadsheetUrl] = useState<string>('');
-  const [spreadsheetTitle, setSpreadsheetTitle] = useState<string>('');
-  const [isConnectingSheet, setIsConnectingSheet] = useState(false);
+  // Database configuration state
   const [availableTabs, setAvailableTabs] = useState<TabInfo[]>([]);
 
   // Current selected month & year (for tabs)
@@ -115,11 +103,12 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
   const [txAmount, setTxAmount] = useState<number>(0);
   const [txDate, setTxDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [isAddingTx, setIsAddingTx] = useState(false);
+  const [txFundingSource, setTxFundingSource] = useState<'revenue' | 'investment'>('revenue');
+  const [editTxFundingSource, setEditTxFundingSource] = useState<'revenue' | 'investment'>('revenue');
 
   // Dashboard & Analytics states
-  const [activeLedgerView, setActiveLedgerView] = useState<'sheet' | 'dashboard'>('sheet');
-  const [dashboardPeriod, setDashboardPeriod] = useState<'month' | 'week' | 'custom'>('month');
-  const [selectedWeek, setSelectedWeek] = useState<number>(1);
+  const [activeLedgerView, setActiveLedgerView] = useState<'sheet' | 'pnl' | 'dashboard'>('sheet');
+  const [dashboardPeriod, setDashboardPeriod] = useState<'today' | 'yesterday' | 'this_week' | 'last_week' | 'this_month' | 'last_month' | 'custom'>('this_month');
   const [customStartDate, setCustomStartDate] = useState<string>(
     `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-01`
   );
@@ -134,13 +123,47 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
 
   // Custom Confirmation Dialog States
   const [deletingTxIdx, setDeletingTxIdx] = useState<number | null>(null);
-  const [showUnlinkConfirm, setShowUnlinkConfirm] = useState<boolean>(false);
 
   // Balance edits
   const [isEditingOpening, setIsEditingOpening] = useState(false);
   const [editOpeningCash, setEditOpeningCash] = useState<number>(0);
   const [editOpeningBank, setEditOpeningBank] = useState<number>(0);
+  const [editOpeningReason, setEditOpeningReason] = useState<string>('');
   const [isSavingOpening, setIsSavingOpening] = useState(false);
+
+  // Editing standard transactions states
+  const [editingRowIdx, setEditingRowIdx] = useState<number | null>(null);
+  const [editTxDate, setEditTxDate] = useState<string>('');
+  const [editTxType, setEditTxType] = useState<'credit' | 'debit'>('credit');
+  const [editTxMethod, setEditTxMethod] = useState<'cash' | 'bank'>('cash');
+  const [editTxAmount, setEditTxAmount] = useState<number>(0);
+  const [editTxDetails, setEditTxDetails] = useState<string>('');
+  const [editTxReason, setEditTxReason] = useState<string>('');
+  const [isSavingTxEdit, setIsSavingTxEdit] = useState<boolean>(false);
+
+  // Soft Deletion Reason
+  const [deleteReasonText, setDeleteReasonText] = useState<string>('');
+
+  // Deleted / Voided log list representation
+  const [deletedRecords, setDeletedRecords] = useState<any[]>([]);
+  const [showDeletedLog, setShowDeletedLog] = useState<boolean>(false);
+  const [activeAuditRec, setActiveAuditRec] = useState<any | null>(null);
+
+  const loadDeletedRecords = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('finance_ledger')
+        .select('*')
+        .eq('tab_name', activeTabName)
+        .eq('is_deleted', true)
+        .order('deleted_at', { ascending: false });
+
+      if (error) throw error;
+      setDeletedRecords(data || []);
+    } catch (err) {
+      console.error('Error fetching deleted items:', err);
+    }
+  };
 
   // Calculations from sheet
   const [openingCash, setOpeningCash] = useState<number>(0);
@@ -150,45 +173,15 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
   const [totalDebitCash, setTotalDebitCash] = useState<number>(0);
   const [totalDebitBank, setTotalDebitBank] = useState<number>(0);
 
-  // Subscribe to Google Authentication state
+  // Fetch available month tabs on mount and whenever months are initialized
   useEffect(() => {
-    const unsubscribe = initGoogleAuth(
-      (user, token) => {
-        setGoogleUser(user);
-        setAccessToken(token);
-        setNeedsAuth(false);
-      },
-      () => {
-        setGoogleUser(null);
-        setAccessToken(null);
-        setNeedsAuth(true);
-      }
-    );
-    return () => unsubscribe();
+    loadSpreadsheetMeta();
   }, []);
 
-  // Sync spreadsheet URL input if spreadsheetId changed
+  // Effect to load active tab whenever we switch months/years or availableTabs list updates
   useEffect(() => {
-    if (spreadsheetId) {
-      setSpreadsheetUrl(`https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`);
-    } else {
-      setSpreadsheetUrl('');
-    }
-  }, [spreadsheetId]);
-
-  // Effect to load Spreadsheet metadata and rows when Google auth is active and we have a sheet ID
-  useEffect(() => {
-    if (accessToken && spreadsheetId) {
-      loadSpreadsheetMeta();
-    }
-  }, [accessToken, spreadsheetId]);
-
-  // Effect to load active tab whenever we switch months/years
-  useEffect(() => {
-    if (accessToken && spreadsheetId && availableTabs.length > 0) {
-      loadSheetRows();
-    }
-  }, [selectedMonth, selectedYear, availableTabs, accessToken, spreadsheetId]);
+    loadSheetRows();
+  }, [selectedMonth, selectedYear, availableTabs]);
 
   // Re-sync categories when active transaction type changes
   useEffect(() => {
@@ -199,137 +192,21 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
     }
   }, [txType]);
 
-  const handleGoogleLogin = async () => {
-    setIsLoggingIn(true);
+  // Load existing tabs (equivalent inside Supabase flow)
+  const loadSpreadsheetMeta = async () => {
     try {
-      const result = await googleSignIn();
-      if (result) {
-        setGoogleUser(result.user);
-        setAccessToken(result.accessToken);
-        setNeedsAuth(false);
-      }
-    } catch (err) {
-      console.error('Failed Google Sheets sign in:', err);
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
+      const { data, error } = await supabase
+        .from('finance_ledger')
+        .select('tab_name')
+        .eq('is_opening', true)
+        .neq('is_deleted', true);
 
-  const handleGoogleLogout = async () => {
-    try {
-      await googleLogout();
-      setGoogleUser(null);
-      setAccessToken(null);
-      setNeedsAuth(true);
-    } catch (err) {
-      console.error('Failed logout:', err);
-    }
-  };
+      if (error) throw error;
 
-  // Create a brand new ledger spreadsheet
-  const handleCreateNewSpreadsheet = async () => {
-    if (!accessToken) return;
-    setIsConnectingSheet(true);
-    try {
-      const response = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
-        },
-        body: JSON.stringify({
-          properties: {
-            title: `Momomaya POS Financial Ledger - ${currentYear}`
-          }
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to create new spreadsheet');
-      }
-
-      const data = await response.json();
-      const newId = data.spreadsheetId;
-      setSpreadsheetId(newId);
-      localStorage.setItem('MOMOMAYA_LEDGER_SPREADSHEET_ID', newId);
-      
-      // Load spreadsheet metadata, which initializes tabs
-      await loadSpreadsheetMeta(newId);
-    } catch (err: any) {
-      alert(`Error creating spreadsheet: ${err.message}`);
-    } finally {
-      setIsConnectingSheet(false);
-    }
-  };
-
-  // Link existing spreadsheet ID or URL
-  const handleLinkSpreadsheet = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!spreadsheetUrl.trim() || !accessToken) return;
-
-    setIsConnectingSheet(true);
-    try {
-      let extractedId = spreadsheetUrl.trim();
-      // Try to parse URL if user pasted a full Link
-      if (spreadsheetUrl.includes('/d/')) {
-        const parts = spreadsheetUrl.split('/d/');
-        if (parts[1]) {
-          extractedId = parts[1].split('/')[0];
-        }
-      }
-
-      // Verify the sheet is accessible
-      const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${extractedId}?fields=properties`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-      });
-
-      if (!response.ok) {
-        throw new Error('Spreadsheet ID is invalid or cannot be accessed by this account.');
-      }
-
-      setSpreadsheetId(extractedId);
-      localStorage.setItem('MOMOMAYA_LEDGER_SPREADSHEET_ID', extractedId);
-      await loadSpreadsheetMeta(extractedId);
-    } catch (err: any) {
-      alert(`Linking error: ${err.message}`);
-    } finally {
-      setIsConnectingSheet(false);
-    }
-  };
-
-  // Reset or unlink spreadsheet
-  const handleUnlinkSpreadsheet = () => {
-    setShowUnlinkConfirm(true);
-  };
-
-  const triggerUnlinkSpreadsheet = () => {
-    setSpreadsheetId('');
-    setSpreadsheetTitle('');
-    setAvailableTabs([]);
-    setSheetRows([]);
-    localStorage.removeItem('MOMOMAYA_LEDGER_SPREADSHEET_ID');
-    setShowUnlinkConfirm(false);
-  };
-
-  // Get metadata including sheet tabs
-  const loadSpreadsheetMeta = async (idToUse = spreadsheetId) => {
-    if (!accessToken || !idToUse) return;
-
-    try {
-      const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${idToUse}?fields=properties,sheets.properties`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to load spreadsheet details');
-      }
-
-      const data = await response.json();
-      setSpreadsheetTitle(data.properties.title);
-      
-      const tabs = (data.sheets || []).map((s: any) => ({
-        title: s.properties.title,
-        id: s.properties.sheetId
+      const tabTitles = Array.from(new Set((data || []).map(r => r.tab_name)));
+      const tabs = tabTitles.map((t, idx) => ({
+        title: t,
+        id: idx
       }));
       setAvailableTabs(tabs);
     } catch (err) {
@@ -337,36 +214,96 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
     }
   };
 
-  // Load rows of activeTabName
+  // Load rows from Supabase on-the-fly and compute running balances to feed into grid
   const loadSheetRows = async () => {
-    if (!accessToken || !spreadsheetId) return;
-
     setIsSheetLoading(true);
     setSheetError(null);
     try {
-      // Decode active Tab Name
-      const encodedRange = encodeURIComponent(`'${activeTabName}'!A1:L500`);
-      const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodedRange}`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-      });
+      const { data, error } = await supabase
+        .from('finance_ledger')
+        .select('*')
+        .eq('tab_name', activeTabName)
+        .neq('is_deleted', true)
+        .order('is_opening', { ascending: false })
+        .order('date', { ascending: true })
+        .order('created_at', { ascending: true });
 
-      if (response.status === 404) {
-        // Tab does not exist yet
+      if (error) {
+        throw error;
+      }
+
+      // Also load deleted records for the audit log in background
+      loadDeletedRecords();
+
+      if (!data || data.length === 0) {
         setSheetRows([]);
-        // This is fine, we will display an "Initialization Required" UI
         return;
       }
 
-      if (!response.ok) {
-        throw new Error('Failed to retrieve worksheet rows');
+      const formattedRows: any[][] = [HEADERS];
+
+      const openingRecord = data.find(r => r.is_opening);
+      const transactionRecords = data.filter(r => !r.is_opening);
+
+      if (!openingRecord) {
+        setSheetRows([]);
+        return;
       }
 
-      const data = await response.json();
-      const rows = data.values || [];
-      setSheetRows(rows);
-      
-      // Calculate balances and summaries dynamically from the loaded rows
-      calculateSummaries(rows);
+      const openingCashVal = parseFloat(openingRecord.credit_cash) || 0;
+      const openingBankVal = parseFloat(openingRecord.credit_bank) || 0;
+
+      const openingRow = [
+        openingRecord.date,
+        "",
+        "Opening Balance",
+        "",
+        "Opening Balance",
+        "",
+        "Opening Balance",
+        "",
+        "Opening Balance",
+        openingCashVal,
+        openingBankVal,
+        openingCashVal + openingBankVal,
+        openingRecord.id,
+        openingRecord
+      ];
+      formattedRows.push(openingRow);
+
+      let currentCash = openingCashVal;
+      let currentBank = openingBankVal;
+
+      transactionRecords.forEach(rec => {
+        const crCash = parseFloat(rec.credit_cash) || 0;
+        const crBank = parseFloat(rec.credit_bank) || 0;
+        const dbCash = parseFloat(rec.debit_cash) || 0;
+        const dbBank = parseFloat(rec.debit_bank) || 0;
+
+        currentCash = currentCash + crCash - dbCash;
+        currentBank = currentBank + crBank - dbBank;
+
+        const row = [
+          rec.date,
+          rec.credit_cash > 0 ? rec.credit_cash.toString() : "",
+          rec.credit_cash_details || "",
+          rec.credit_bank > 0 ? rec.credit_bank.toString() : "",
+          rec.credit_bank_details || "",
+          rec.debit_cash > 0 ? rec.debit_cash.toString() : "",
+          rec.debit_cash_details || "",
+          rec.debit_bank > 0 ? rec.debit_bank.toString() : "",
+          rec.debit_bank_details || "",
+          currentCash,
+          currentBank,
+          currentCash + currentBank,
+          rec.id,
+          rec
+        ];
+        formattedRows.push(row);
+      });
+
+      setSheetRows(formattedRows);
+      calculateSummaries(formattedRows);
     } catch (err: any) {
       setSheetError(err.message || 'Unknown error occurred while loading ledger grid');
     } finally {
@@ -421,68 +358,21 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
 
   // Initialize a new month sheet tab with columns and starter balances
   const handleInitializeMonth = async () => {
-    if (!accessToken || !spreadsheetId) return;
-
     setIsSheetLoading(true);
     try {
-      // 1. Send command to create the sheets tab
-      const addSheetResponse = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
-        },
-        body: JSON.stringify({
-          requests: [
-            {
-              addSheet: {
-                properties: {
-                  title: activeTabName
-                }
-              }
-            }
-          ]
-        })
-      });
+      const { error } = await supabase
+        .from('finance_ledger')
+        .insert({
+          tab_name: activeTabName,
+          date: new Date().toISOString().split('T')[0],
+          credit_cash: 0,
+          credit_bank: 0,
+          is_opening: true
+        });
 
-      if (!addSheetResponse.ok) {
-        throw new Error('Failed to create sheet tab for this month');
-      }
+      if (error) throw error;
 
-      // 2. Put headers and initial opening balances into it
-      const range = `'${activeTabName}'!A1:L2`;
-      const values = [
-        HEADERS,
-        [
-          new Date().toISOString().split('T')[0], // Date
-          "",               // Credit cash
-          "Opening Balance", // details
-          "",               // credit bank
-          "Opening Balance", // details
-          "",               // debit cash
-          "Opening Balance", // details
-          "",               // debit bank
-          "Opening Balance", // details
-          0,                // Total rem cash 
-          0,                // Total bank 
-          "=J2+K2"          // Total All (Formula adding opening balances)
-        ]
-      ];
-
-      const writeDataResponse = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
-        },
-        body: JSON.stringify({ values })
-      });
-
-      if (!writeDataResponse.ok) {
-        throw new Error('Failed to write default headers and starter balances');
-      }
-
-      // 3. Refresh available tabs and reload sheet rows
+      // Refresh available tabs and reload rows
       await loadSpreadsheetMeta();
     } catch (err: any) {
       alert(`Initialization failed: ${err.message}`);
@@ -493,26 +383,50 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
 
   // Save changes to Opening Balances
   const handleSaveOpeningBalances = async () => {
-    if (!accessToken || !spreadsheetId) return;
+    if (!editOpeningReason.trim()) {
+      alert("Please provide a proper reason for editing the opening balance.");
+      return;
+    }
+
     setIsSavingOpening(true);
 
     try {
-      const range = `'${activeTabName}'!J2:K2`;
-      const values = [[editOpeningCash, editOpeningBank]];
+      // Find the opening record id and original object from sheetRows
+      const openingRow = sheetRows[1];
+      const openingRecordId = openingRow[12];
+      const openingRecord = openingRow[13];
 
-      const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
-        },
-        body: JSON.stringify({ values })
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to save opening balances');
+      if (!openingRecordId) {
+        throw new Error("Opening record ID not found");
       }
 
+      const prevHistory = openingRecord?.edit_history || [];
+      const newHistoryItem = {
+        edited_at: new Date().toISOString(),
+        edited_by: user.username,
+        reason: editOpeningReason,
+        previous_values: {
+          credit_cash: parseFloat(openingRecord?.credit_cash) || 0,
+          credit_bank: parseFloat(openingRecord?.credit_bank) || 0
+        },
+        new_values: {
+          credit_cash: editOpeningCash,
+          credit_bank: editOpeningBank
+        }
+      };
+
+      const { error } = await supabase
+        .from('finance_ledger')
+        .update({
+          credit_cash: editOpeningCash,
+          credit_bank: editOpeningBank,
+          edit_history: [...prevHistory, newHistoryItem]
+        })
+        .eq('id', openingRecordId);
+
+      if (error) throw error;
+
+      setEditOpeningReason('');
       setIsEditingOpening(false);
       await loadSheetRows();
     } catch (err: any) {
@@ -522,102 +436,36 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
     }
   };
 
-  const uploadFileToDrive = async (file: File): Promise<string | null> => {
-    if (!accessToken) return null;
-    setIsUploadingFile(true);
-    try {
-      const metadata = {
-        name: `Momomaya_Receipt_${Date.now()}_${file.name}`,
-        mimeType: file.type
-      };
-
-      const formData = new FormData();
-      formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-      formData.append('file', file);
-
-      const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`
-        },
-        body: formData
-      });
-
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Drive upload failed: ${errText}`);
-      }
-
-      const data = await response.json();
-      const fileId = data.id;
-
-      // Try sharing standard view permissions so others can click & view the file
-      try {
-        await fetch(`https://www.googleapis.com/v3/files/${fileId}/permissions`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            role: 'reader',
-            type: 'anyone'
-          })
-        });
-      } catch (permErr) {
-        console.warn('Could not set file permissions publicly:', permErr);
-      }
-
-      return `https://drive.google.com/file/d/${fileId}/view?usp=drivesdk`;
-    } catch (err: any) {
-      alert(`Google Drive receipt upload failed: ${err.message}`);
-      throw err;
-    } finally {
-      setIsUploadingFile(false);
-    }
-  };
-
   const handleDeleteTransaction = (idxInSlice: number) => {
+    setDeleteReasonText('');
     setDeletingTxIdx(idxInSlice);
   };
 
   const triggerDeleteTransaction = async (idxInSlice: number) => {
-    if (!accessToken || !spreadsheetId || activeTabId === undefined) return;
+    const row = sheetRows[idxInSlice + 1];
+    const recordId = row[12];
+
+    if (!recordId) return;
+
+    if (!deleteReasonText.trim()) {
+      alert("Please provide a proper reason for deleted transaction.");
+      return;
+    }
 
     setIsSheetLoading(true);
     try {
-      // The row inside slice(1) map corresponds to indices idxInSlice. 
-      // Opening balance is at slice element idxInSlice === 0 (Row 2 in Sheet, index 1 in full array)
-      // Transactions start at idxInSlice >= 1.
-      // So Spreadsheet Row start Index is: idxInSlice + 1
-      const sheetRowIndex = idxInSlice + 1;
-
-      const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
-        },
-        body: JSON.stringify({
-          requests: [
-            {
-              deleteDimension: {
-                range: {
-                  sheetId: activeTabId,
-                  dimension: "ROWS",
-                  startIndex: sheetRowIndex,
-                  endIndex: sheetRowIndex + 1
-                }
-              }
-            }
-          ]
+      const { error } = await supabase
+        .from('finance_ledger')
+        .update({
+          is_deleted: true,
+          deleted_at: new Date().toISOString(),
+          delete_reason: deleteReasonText
         })
-      });
+        .eq('id', recordId);
 
-      if (!response.ok) {
-        throw new Error('Failed to delete row from Google Sheets');
-      }
+      if (error) throw error;
 
+      setDeleteReasonText('');
       await loadSheetRows();
     } catch (err: any) {
       alert(`Deletion failed: ${err.message}`);
@@ -627,99 +475,218 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
     }
   };
 
+  const handleInitiateEditTransaction = (idxInSlice: number) => {
+    const row = sheetRows[idxInSlice + 1];
+    const rec = row[13]; // raw record
+    if (!rec) return;
+
+    let type: 'credit' | 'debit' = 'credit';
+    let method: 'cash' | 'bank' = 'cash';
+    let amount = 0;
+    let details = '';
+
+    if (parseFloat(rec.credit_cash) > 0) {
+      type = 'credit';
+      method = 'cash';
+      amount = parseFloat(rec.credit_cash);
+      details = rec.credit_cash_details || '';
+    } else if (parseFloat(rec.credit_bank) > 0) {
+      type = 'credit';
+      method = 'bank';
+      amount = parseFloat(rec.credit_bank);
+      details = rec.credit_bank_details || '';
+    } else if (parseFloat(rec.debit_cash) > 0) {
+      type = 'debit';
+      method = 'cash';
+      amount = parseFloat(rec.debit_cash);
+      details = rec.debit_cash_details || '';
+    } else if (parseFloat(rec.debit_bank) > 0) {
+      type = 'debit';
+      method = 'bank';
+      amount = parseFloat(rec.debit_bank);
+      details = rec.debit_bank_details || '';
+    }
+
+    setEditingRowIdx(idxInSlice);
+    setEditTxDate(rec.date);
+    setEditTxType(type);
+    setEditTxMethod(method);
+    setEditTxAmount(amount);
+    setEditTxDetails(details);
+    const isInv = (details || '').toLowerCase().includes('[funding: investment]');
+    setEditTxFundingSource(isInv ? 'investment' : 'revenue');
+    setEditTxReason('');
+  };
+
+  const handleSaveTransactionEdit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!editTxReason.trim()) {
+      alert('Please specify a proper reason for editing this transaction.');
+      return;
+    }
+    if (editTxAmount <= 0) {
+      alert('Transaction amount must be greater than 0.');
+      return;
+    }
+    if (editingRowIdx === null) return;
+
+    const row = sheetRows[editingRowIdx + 1];
+    const rec = row[13];
+    const recordId = row[12];
+    if (!rec || !recordId) return;
+
+    setIsSavingTxEdit(true);
+    try {
+      const updatePayload: any = {
+        date: editTxDate,
+        credit_cash: 0,
+        credit_cash_details: '',
+        credit_bank: 0,
+        credit_bank_details: '',
+        debit_cash: 0,
+        debit_cash_details: '',
+        debit_bank: 0,
+        debit_bank_details: ''
+      };
+
+      const cleanedDetails = (editTxDetails || '').replace(/\s*\[funding:\s*investment\]/gi, '').trim();
+      const finalDetails = editTxFundingSource === 'investment'
+        ? `${cleanedDetails} [Funding: Investment]`
+        : cleanedDetails;
+
+      if (editTxType === 'credit') {
+        if (editTxMethod === 'cash') {
+          updatePayload.credit_cash = editTxAmount;
+          updatePayload.credit_cash_details = finalDetails;
+        } else {
+          updatePayload.credit_bank = editTxAmount;
+          updatePayload.credit_bank_details = finalDetails;
+        }
+      } else {
+        if (editTxMethod === 'cash') {
+          updatePayload.debit_cash = editTxAmount;
+          updatePayload.debit_cash_details = finalDetails;
+        } else {
+          updatePayload.debit_bank = editTxAmount;
+          updatePayload.debit_bank_details = finalDetails;
+        }
+      }
+
+      const prevHistory = rec.edit_history || [];
+      const newHistoryItem = {
+        edited_at: new Date().toISOString(),
+        edited_by: user.username,
+        reason: editTxReason,
+        previous_values: {
+          date: rec.date,
+          credit_cash: parseFloat(rec.credit_cash) || 0,
+          credit_cash_details: rec.credit_cash_details || '',
+          credit_bank: parseFloat(rec.credit_bank) || 0,
+          credit_bank_details: rec.credit_bank_details || '',
+          debit_cash: parseFloat(rec.debit_cash) || 0,
+          debit_cash_details: rec.debit_cash_details || '',
+          debit_bank: parseFloat(rec.debit_bank) || 0,
+          debit_bank_details: rec.debit_bank_details || ''
+        },
+        new_values: {
+          date: editTxDate,
+          type: editTxType,
+          method: editTxMethod,
+          amount: editTxAmount,
+          details: editTxDetails
+        }
+      };
+
+      updatePayload.edit_history = [...prevHistory, newHistoryItem];
+
+      const { error } = await supabase
+        .from('finance_ledger')
+        .update(updatePayload)
+        .eq('id', recordId);
+
+      if (error) throw error;
+
+      setEditingRowIdx(null);
+      await loadSheetRows();
+    } catch (err: any) {
+      alert(`Editing transaction failed: ${err.message}`);
+    } finally {
+      setIsSavingTxEdit(false);
+    }
+  };
+
   // Append a transaction row
   const handleAddTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!accessToken || !spreadsheetId || txAmount <= 0) return;
+    if (txAmount <= 0) return;
 
     setIsAddingTx(true);
+    setIsUploadingFile(true);
     try {
+      let billUrl = '';
       let billLink = '';
+
       if (selectedFile) {
-        const url = await uploadFileToDrive(selectedFile);
-        if (url) {
-          billLink = url;
-        }
+        // Sanitize filename to avoid weird character issues in public URLs
+        const fileExt = selectedFile.name.split('.').pop();
+        const rawBaseName = selectedFile.name.substring(0, selectedFile.name.lastIndexOf('.'));
+        const cleanBaseName = rawBaseName.replace(/[^a-zA-Z0-9]/g, '_');
+        const fileName = `${Date.now()}_${cleanBaseName}.${fileExt}`;
+        const filePath = `${activeTabName}/${fileName}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from('receipts')
+          .upload(filePath, selectedFile, {
+            cacheControl: '3600',
+            upsert: false
+          });
+
+        if (uploadError) throw new Error(`Upload error: ${uploadError.message}`);
+
+        const { data: publicUrlData } = supabase.storage
+          .from('receipts')
+          .getPublicUrl(filePath);
+
+        billUrl = publicUrlData?.publicUrl || '';
+        billLink = `Receipt: ${billUrl}`;
       }
 
-      // Determine the next row number to construct spreadsheet formulas
-      // Header is Row 1, Opening Balance is Row 2, first TX is Row 3
-      // Total rows in sheetRows gives current row size + 1 is the brand new row index
-      const newRowNumber = sheetRows.length + 1;
-
-      // Construct columns array in exact HEADERS sequence:
-      // Date, Credit cash, details, credit bank, details, debit cash, details, debit bank, details, Total rem cash, Total bank, Total All
-      const formattedDate = txDate;
       const detailsPart = txNotes ? `${txCategory}: ${txNotes}` : txCategory;
-      const combinedDetails = `${detailsPart}${billLink ? ` • Receipt: ${billLink}` : ''}`;
+      const combinedDetailsBase = `${detailsPart}${billLink ? ` • ${billLink}` : ''}`;
+      const combinedDetails = txFundingSource === 'investment'
+        ? `${combinedDetailsBase} [Funding: Investment]`
+        : combinedDetailsBase;
 
-      // Set up blank array values
-      let creditCashVal = "";
-      let creditCashDetails = "";
-      let creditBankVal = "";
-      let creditBankDetails = "";
-      let debitCashVal = "";
-      let debitCashDetails = "";
-      let debitBankVal = "";
-      let debitBankDetails = "";
+      const rec: any = {
+        tab_name: activeTabName,
+        date: txDate,
+        is_opening: false,
+        bill_url: billUrl || null
+      };
 
       if (txType === 'credit') {
         if (txMethod === 'cash') {
-          creditCashVal = txAmount.toString();
-          creditCashDetails = combinedDetails;
+          rec.credit_cash = txAmount;
+          rec.credit_cash_details = combinedDetails;
         } else {
-          creditBankVal = txAmount.toString();
-          creditBankDetails = combinedDetails;
+          rec.credit_bank = txAmount;
+          rec.credit_bank_details = combinedDetails;
         }
       } else {
         if (txMethod === 'cash') {
-          debitCashVal = txAmount.toString();
-          debitCashDetails = combinedDetails;
+          rec.debit_cash = txAmount;
+          rec.debit_cash_details = combinedDetails;
         } else {
-          debitBankVal = txAmount.toString();
-          debitBankDetails = combinedDetails;
+          rec.debit_bank = txAmount;
+          rec.debit_bank_details = combinedDetails;
         }
       }
 
-      // Formulas for totals
-      // Row N J-Col Formula: =J{N-1} + B{N} - F{N} (Cash ledger calculation)
-      // Row N K-Col Formula: =K{N-1} + D{N} - H{N} (Bank ledger calculation)
-      // Row N L-Col Formula: =J{N} + K{N}       (Total ledger calculation)
-      const prevRow = newRowNumber - 1;
-      const totalCashFormula = `=J${prevRow}+IF(ISNUMBER(B${newRowNumber}),B${newRowNumber},0)-IF(ISNUMBER(F${newRowNumber}),F${newRowNumber},0)`;
-      const totalBankFormula = `=K${prevRow}+IF(ISNUMBER(D${newRowNumber}),D${newRowNumber},0)-IF(ISNUMBER(H${newRowNumber}),H${newRowNumber},0)`;
-      const totalAllFormula = `=J${newRowNumber}+K${newRowNumber}`;
+      const { error } = await supabase
+        .from('finance_ledger')
+        .insert(rec);
 
-      const rowValues = [
-        formattedDate,
-        creditCashVal,
-        creditCashDetails,
-        creditBankVal,
-        creditBankDetails,
-        debitCashVal,
-        debitCashDetails,
-        debitBankVal,
-        debitBankDetails,
-        totalCashFormula,
-        totalBankFormula,
-        totalAllFormula
-      ];
-
-      const range = `'${activeTabName}'!A:L`;
-      const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
-        },
-        body: JSON.stringify({
-          values: [rowValues]
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to append row of transaction to sheet');
-      }
+      if (error) throw error;
 
       // Clean form state
       setTxAmount(0);
@@ -732,11 +699,11 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
       alert(`Add transaction failed: ${err.message}`);
     } finally {
       setIsAddingTx(false);
+      setIsUploadingFile(false);
     }
   };
 
   const isCurrentMonthLoaded = availableTabs.some(t => t.title === activeTabName);
-  const activeTabId = availableTabs.find(t => t.title === activeTabName)?.id;
 
   // Computed closing balances
   const closingCash = openingCash + totalCreditCash - totalDebitCash;
@@ -909,57 +876,74 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
     return dates;
   };
 
+  const getLocalDateString = (d: Date = new Date()) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const getDashboardDateRange = (): { start: string; end: string } => {
+    const now = new Date();
+    
+    switch (dashboardPeriod) {
+      case 'today': {
+        const todayStr = getLocalDateString(now);
+        return { start: todayStr, end: todayStr };
+      }
+      case 'yesterday': {
+        const yesterday = new Date(now);
+        yesterday.setDate(now.getDate() - 1);
+        const yestStr = getLocalDateString(yesterday);
+        return { start: yestStr, end: yestStr };
+      }
+      case 'this_week': {
+        const dayOfWeek = now.getDay();
+        const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+        const monday = new Date(now);
+        monday.setDate(now.getDate() + diffToMonday);
+        const sunday = new Date(monday);
+        sunday.setDate(monday.getDate() + 6);
+        return { start: getLocalDateString(monday), end: getLocalDateString(sunday) };
+      }
+      case 'last_week': {
+        const dayOfWeek = now.getDay();
+        const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+        const monday = new Date(now);
+        monday.setDate(now.getDate() + diffToMonday);
+        
+        const lastMonday = new Date(monday);
+        lastMonday.setDate(monday.getDate() - 7);
+        const lastSunday = new Date(lastMonday);
+        lastSunday.setDate(lastMonday.getDate() + 6);
+        return { start: getLocalDateString(lastMonday), end: getLocalDateString(lastSunday) };
+      }
+      case 'this_month': {
+        const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+        const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        return { start: getLocalDateString(firstDay), end: getLocalDateString(lastDay) };
+      }
+      case 'last_month': {
+        const firstDayLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const lastDayLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+        return { start: getLocalDateString(firstDayLastMonth), end: getLocalDateString(lastDayLastMonth) };
+      }
+      case 'custom':
+      default:
+        return { start: customStartDate, end: customEndDate };
+    }
+  };
+
   const getFilteredTransactions = (allTxs: any[]) => {
-    if (dashboardPeriod === 'month') {
-      return allTxs;
-    }
-    if (dashboardPeriod === 'week') {
-      return allTxs.filter(tx => {
-        const day = tx.day;
-        if (selectedWeek === 1) return day >= 1 && day <= 7;
-        if (selectedWeek === 2) return day >= 8 && day <= 14;
-        if (selectedWeek === 3) return day >= 15 && day <= 21;
-        if (selectedWeek === 4) return day >= 22 && day <= 28;
-        return day >= 29;
-      });
-    }
-    if (dashboardPeriod === 'custom') {
-      const start = customStartDate;
-      const end = customEndDate;
-      return allTxs.filter(tx => {
-        return tx.dateStr >= start && tx.dateStr <= end;
-      });
-    }
-    return allTxs;
+    const { start, end } = getDashboardDateRange();
+    return allTxs.filter(tx => {
+      return tx.dateStr >= start && tx.dateStr <= end;
+    });
   };
 
   const getDashboardTrendData = (filteredTxs: any[]) => {
-    let datesToGenerate: string[] = [];
-    const monthIndex = MONTHS.indexOf(selectedMonth);
-
-    const padZero = (n: number) => String(n).padStart(2, '0');
-
-    if (dashboardPeriod === 'month') {
-      const lastDay = new Date(selectedYear, monthIndex + 1, 0).getDate();
-      for (let d = 1; d <= lastDay; d++) {
-        datesToGenerate.push(`${selectedYear}-${padZero(monthIndex + 1)}-${padZero(d)}`);
-      }
-    } else if (dashboardPeriod === 'week') {
-      const lastDay = new Date(selectedYear, monthIndex + 1, 0).getDate();
-      let startDay = 1;
-      let endDay = 7;
-      if (selectedWeek === 1) { startDay = 1; endDay = 7; }
-      else if (selectedWeek === 2) { startDay = 8; endDay = 14; }
-      else if (selectedWeek === 3) { startDay = 15; endDay = 21; }
-      else if (selectedWeek === 4) { startDay = 22; endDay = 28; }
-      else { startDay = 29; endDay = lastDay; }
-
-      for (let d = startDay; d <= endDay; d++) {
-        datesToGenerate.push(`${selectedYear}-${padZero(monthIndex + 1)}-${padZero(d)}`);
-      }
-    } else {
-      datesToGenerate = getDatesInRange(customStartDate, customEndDate);
-    }
+    const { start, end } = getDashboardDateRange();
+    const datesToGenerate = getDatesInRange(start, end);
 
     const trendList = datesToGenerate.map(dateStr => {
       const dayTxs = filteredTxs.filter(t => t.dateStr === dateStr);
@@ -985,6 +969,284 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
 
     return trendList;
   };
+
+  const exportToCSV = () => {
+    let headers: string[] = [];
+    let csvRows: any[][] = [];
+    let fileName = `Ledger_${activeTabName}`;
+
+    if (activeLedgerView === 'sheet') {
+      headers = [
+        "Date",
+        "Credit Cash",
+        "Credit Cash Details",
+        "Credit Bank",
+        "Credit Bank Details",
+        "Debit Cash",
+        "Debit Cash Details",
+        "Debit Bank",
+        "Debit Bank Details",
+        "Total Cash Balance",
+        "Total Bank Balance",
+        "Total Combined Balance"
+      ];
+
+      const actualRows = sheetRows.slice(1);
+      csvRows = actualRows.map((row) => {
+        return [
+          row[0] || '', // Date
+          row[1] || '', // Credit Cash
+          row[2] || '', // Cash Details
+          row[3] || '', // Credit Bank
+          row[4] || '', // Bank Details
+          row[5] || '', // Debit Cash
+          row[6] || '', // Debit Details
+          row[7] || '', // Debit Bank
+          row[8] || '', // Debit Details
+          row[9] !== undefined ? row[9].toString() : '', // Total Cash
+          row[10] !== undefined ? row[10].toString() : '', // Total Bank
+          row[11] !== undefined ? row[11].toString() : ''  // Total All
+        ];
+      });
+    } else {
+      // dashboard view is active
+      const allTxs = parseAllTransactions();
+      const filteredTxs = getFilteredTransactions(allTxs);
+
+      headers = [
+        "Date",
+        "Transaction Type",
+        "Payment Method",
+        "Amount (INR)",
+        "Category",
+        "Notes",
+        "Details Summary"
+      ];
+
+      fileName = `Ledger_Dashboard_${dashboardPeriod}_${activeTabName}`;
+
+      csvRows = filteredTxs.map(tx => {
+        const detailsSummary = tx.notes ? `${tx.category}: ${tx.notes}` : tx.category;
+        return [
+          tx.dateStr || '',
+          tx.type || '',
+          tx.method || '',
+          tx.amount || 0,
+          tx.category || '',
+          tx.notes || '',
+          detailsSummary || ''
+        ];
+      });
+    }
+
+    const escapeCSV = (val: any) => {
+      if (val === null || val === undefined) return '';
+      let str = typeof val === 'string' ? val : String(val);
+      if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+        str = `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    const csvContent = [
+      headers.map(escapeCSV).join(','),
+      ...csvRows.map(row => row.map(escapeCSV).join(','))
+    ].join('\r\n');
+
+    // Create download trigger
+    const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `${fileName.replace(/\s+/g, '_')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Compute the live Accrual and Cash Flow P&L metrics from the ledger entries
+  const pnlBreakdown = React.useMemo(() => {
+    if (!sheetRows || sheetRows.length < 3) {
+      return {
+        accrual: {
+          inStoreRev: 0,
+          zomatoRev: 0,
+          totalRev: 0,
+          momoCost: 0,
+          zomatoExp: 0,
+          operatingExp: 0,
+          investmentCapExp: 0,
+          totalExp: 0,
+          grossProfit: 0,
+          operatingProfit: 0,
+          margin: 0
+        },
+        cashFlow: {
+          inStoreInflow: 0,
+          zomatoInflow: 0,
+          investmentInflow: 0,
+          totalInflows: 0,
+          momoOutflow: 0,
+          zomatoOutflow: 0,
+          operatingOutflow: 0,
+          investmentOutflow: 0,
+          totalOutflows: 0,
+          netPosition: 0,
+          openingBal: 0,
+          closingBal: 0
+        },
+        investmentSpentList: [] as any[]
+      };
+    }
+
+    const allTxs = parseAllTransactions();
+    const { start, end } = getDashboardDateRange();
+
+    // Map each transaction with its Accrual Date assignment based on Wednesday settlements
+    const accrualTxs = allTxs.map(tx => {
+      let accrualDateStr = tx.dateStr;
+      const d = new Date(tx.dateStr);
+      const isWednesday = d.getDay() === 3;
+      
+      if (isWednesday) {
+        if (tx.type === 'credit' && tx.category === 'zomato payout') {
+          // Accrue to previous Monday-to-Sunday, we tag to the Sunday (3 days prior)
+          const prevSunday = new Date(d);
+          prevSunday.setDate(d.getDate() - 3);
+          accrualDateStr = prevSunday.toISOString().split('T')[0];
+        } else if (tx.type === 'debit' && tx.category === 'momo') {
+          // Accrue momo purchases to the previous Monday-to-Sunday, tag to Sunday
+          const prevSunday = new Date(d);
+          prevSunday.setDate(d.getDate() - 3);
+          accrualDateStr = prevSunday.toISOString().split('T')[0];
+        }
+      }
+
+      const lowerNotesAndDetails = `${tx.category || ''} ${tx.notes || ''}`.toLowerCase();
+      const isInvestmentSpend = lowerNotesAndDetails.includes('[funding: investment]') || 
+                                tx.category === 'store investment';
+
+      return {
+        ...tx,
+        accrualDateStr,
+        isInvestmentSpend
+      };
+    });
+
+    // 1. Accrual Calculations (filter by accrual date)
+    const filteredAccrual = accrualTxs.filter(tx => tx.accrualDateStr >= start && tx.accrualDateStr <= end);
+
+    let accrualInStoreRev = 0;
+    let accrualZomatoRev = 0;
+    let accrualMomoCost = 0;
+    let accrualZomatoExp = 0;
+    let accrualOperatingExp = 0;
+    let accrualInvestmentCapExp = 0;
+
+    filteredAccrual.forEach(tx => {
+      if (tx.type === 'credit') {
+        if (tx.category === 'zomato payout') {
+          accrualZomatoRev += tx.amount;
+        } else if (tx.category !== 'investment' && tx.category !== 'previous balance' && tx.category !== 'debt') {
+          accrualInStoreRev += tx.amount;
+        }
+      } else {
+        if (tx.isInvestmentSpend) {
+          accrualInvestmentCapExp += tx.amount;
+        } else if (tx.category === 'momo') {
+          accrualMomoCost += tx.amount;
+        } else if (tx.category === 'zomato commission and ads') {
+          accrualZomatoExp += tx.amount;
+        } else if (tx.category === 'debt') {
+          accrualInvestmentCapExp += tx.amount;
+        } else {
+          accrualOperatingExp += tx.amount;
+        }
+      }
+    });
+
+    const accrualTotalRev = accrualInStoreRev + accrualZomatoRev;
+    const accrualTotalExp = accrualMomoCost + accrualZomatoExp + accrualOperatingExp;
+    const accrualGrossProfit = accrualTotalRev - accrualMomoCost;
+    const accrualOperatingProfit = accrualTotalRev - accrualTotalExp;
+    const accrualMargin = accrualTotalRev > 0 ? (accrualOperatingProfit / accrualTotalRev) * 100 : 0;
+
+    // 2. Cash Flow Calculations (filter by raw/standard date)
+    const filteredCashFlowStr = accrualTxs.filter(tx => tx.dateStr >= start && tx.dateStr <= end);
+
+    let cashInStoreInflow = 0;
+    let cashZomatoInflow = 0;
+    let cashInvestmentInflow = 0;
+    let cashMomoOutflow = 0;
+    let cashZomatoOutflow = 0;
+    let cashOperatingOutflow = 0;
+    let cashInvestmentOutflow = 0;
+
+    filteredCashFlowStr.forEach(tx => {
+      if (tx.type === 'credit') {
+        if (tx.category === 'zomato payout') {
+          cashZomatoInflow += tx.amount;
+        } else if (tx.category === 'investment' || tx.category === 'debt') {
+          cashInvestmentInflow += tx.amount;
+        } else if (tx.category !== 'previous balance') {
+          cashInStoreInflow += tx.amount;
+        }
+      } else {
+        if (tx.isInvestmentSpend) {
+          cashInvestmentOutflow += tx.amount;
+        } else if (tx.category === 'momo') {
+          cashMomoOutflow += tx.amount;
+        } else if (tx.category === 'zomato commission and ads') {
+          cashZomatoOutflow += tx.amount;
+        } else if (tx.category === 'debt') {
+          cashInvestmentOutflow += tx.amount;
+        } else {
+          cashOperatingOutflow += tx.amount;
+        }
+      }
+    });
+
+    const cashTotalInflows = cashInStoreInflow + cashZomatoInflow + cashInvestmentInflow;
+    const cashTotalOutflows = cashMomoOutflow + cashZomatoOutflow + cashOperatingOutflow + cashInvestmentOutflow;
+    const cashNetPosition = cashTotalInflows - cashTotalOutflows;
+    const cashOpeningBal = openingCash + openingBank;
+    const cashClosingBal = cashOpeningBal + cashNetPosition;
+
+    // 3. Investment Spends drill-down tracker (all time investment spends parsed)
+    const investmentSpentList = accrualTxs.filter(tx => tx.isInvestmentSpend && tx.type === 'debit');
+
+    return {
+      accrual: {
+        inStoreRev: accrualInStoreRev,
+        zomatoRev: accrualZomatoRev,
+        totalRev: accrualTotalRev,
+        momoCost: accrualMomoCost,
+        zomatoExp: accrualZomatoExp,
+        operatingExp: accrualOperatingExp,
+        investmentCapExp: accrualInvestmentCapExp,
+        totalExp: accrualTotalExp,
+        grossProfit: accrualGrossProfit,
+        operatingProfit: accrualOperatingProfit,
+        margin: accrualMargin
+      },
+      cashFlow: {
+        inStoreInflow: cashInStoreInflow,
+        zomatoInflow: cashZomatoInflow,
+        investmentInflow: cashInvestmentInflow,
+        totalInflows: cashTotalInflows,
+        momoOutflow: cashMomoOutflow,
+        zomatoOutflow: cashZomatoOutflow,
+        operatingOutflow: cashOperatingOutflow,
+        investmentOutflow: cashInvestmentOutflow,
+        totalOutflows: cashTotalOutflows,
+        netPosition: cashNetPosition,
+        openingBal: cashOpeningBal,
+        closingBal: cashClosingBal
+      },
+      investmentSpentList
+    };
+  }, [sheetRows, openingCash, openingBank, dashboardPeriod, customStartDate, customEndDate, activeTabName]);
 
   const getCategoryBreakdowns = (filteredTxs: any[]) => {
     const revMap: { [cat: string]: number } = {};
@@ -1034,174 +1296,27 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
       <div className="bg-white border-b border-brand-brown/10 p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 flex-shrink-0">
         <div>
           <h1 className="text-2xl font-black text-brand-brown tracking-tight uppercase flex items-center gap-3">
-            <FileSpreadsheet className="w-7 h-7 text-emerald-600" />
+            <Database className="w-7 h-7 text-emerald-600" />
             Financial Ledger Book
           </h1>
           <p className="text-xs text-brand-brown/60 font-semibold mt-1">
-            Google Sheets-backed ledger syncing in real-time • Active User: <b>{user.username} ({user.role})</b>
+            Secure Supabase-backed ledger tracking in real-time • Active User: <b>{user.username} ({user.role})</b>
           </p>
         </div>
 
-        {/* Google status element */}
+        {/* Database status element */}
         <div className="flex items-center gap-3 self-stretch md:self-auto">
-          {needsAuth ? (
-            <button 
-              onClick={handleGoogleLogin}
-              disabled={isLoggingIn}
-              className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-md transition-all duration-300 disabled:opacity-50"
-            >
-              {isLoggingIn ? (
-                <RefreshCw className="w-4 h-4 animate-spin" />
-              ) : (
-                <FileSpreadsheet className="w-4 h-4" />
-              )}
-              Connect Google Sheets
-            </button>
-          ) : (
-            <div className="flex items-center gap-4">
-              <div className="flex flex-col items-end text-right">
-                <span className="text-[10px] font-black uppercase tracking-wider text-emerald-600 flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                  Connected
-                </span>
-                <span className="text-[10px] text-zinc-400 truncate max-w-[200px] leading-tight mt-0.5">
-                  {googleUser?.email}
-                </span>
-              </div>
-              <button 
-                onClick={handleGoogleLogout}
-                className="p-2 rounded-lg border border-brand-brown/10 hover:bg-brand-red/10 hover:text-brand-red text-[10px] font-bold uppercase transition-all duration-200"
-              >
-                Sign Out
-              </button>
-            </div>
-          )}
+          <span className="text-[10px] bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-lg border border-emerald-200 font-bold uppercase tracking-wider flex items-center gap-1.5 leading-none">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+            Supabase Connected
+          </span>
         </div>
       </div>
 
       {/* Main scrolling content view */}
       <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-8 no-scrollbar">
-        {/* Connection Setup Card when not Auth'd or Spreadsheet not linked */}
-        {(needsAuth || !spreadsheetId) && (
-          <div className="max-w-4xl mx-auto bg-white rounded-3xl border border-brand-brown/10 p-8 shadow-xl text-center space-y-8 animate-in fade-in duration-300">
-            <div className="w-16 h-16 bg-emerald-100 rounded-2xl flex items-center justify-center mx-auto text-emerald-600 mb-4">
-              <FileSpreadsheet className="w-8 h-8" />
-            </div>
 
-            <div className="space-y-2 max-w-lg mx-auto">
-              <h2 className="text-xl font-black uppercase tracking-tight">Set Up Spreadsheet Ledger Book</h2>
-              <p className="text-sm text-brand-brown/75 leading-relaxed">
-                Connect your workspace to record Cash and Bank transactions. Opening/closing balances and monthly logs are automatically synchronized with Google Sheets.
-              </p>
-            </div>
-
-            {needsAuth ? (
-              <div className="pt-4 max-w-sm mx-auto">
-                <button
-                  onClick={handleGoogleLogin}
-                  disabled={isLoggingIn}
-                  className="w-full py-4 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black uppercase tracking-wider text-xs shadow-lg flex items-center justify-center gap-3 transition-transform hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50"
-                >
-                  {isLoggingIn ? (
-                    <RefreshCw className="w-5 h-5 animate-spin" />
-                  ) : (
-                    <FileSpreadsheet className="w-5 h-5" />
-                  )}
-                  Authorize Google Drive & Sheets Access
-                </button>
-                <p className="text-[10px] text-zinc-400 mt-3 italic">
-                  With permission, the application will read and write to your Google Sheets
-                </p>
-              </div>
-            ) : (
-              <div className="pt-4 max-w-2xl mx-auto border-t border-brand-brown/15 p-6 space-y-6">
-                <h3 className="text-xs font-black uppercase text-brand-brown/50 tracking-widest">Connect Spreadsheet</h3>
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Create New Column */}
-                  <div className="bg-brand-stone/30 p-6 rounded-2xl flex flex-col justify-between text-left space-y-4 border border-brand-brown/5">
-                    <div>
-                      <h4 className="font-bold text-sm uppercase">Create New Ledger Sheet</h4>
-                      <p className="text-xs text-brand-brown/70 mt-1 leading-relaxed">
-                        Create a pre-configured Google Spreadsheet in your Google Drive with matching columns for Date, Cash, Bank, Credits and Debits.
-                      </p>
-                    </div>
-                    <button
-                      onClick={handleCreateNewSpreadsheet}
-                      disabled={isConnectingSheet}
-                      className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black uppercase tracking-widest shadow-md flex items-center justify-center gap-2 transition-all"
-                    >
-                      {isConnectingSheet ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-                      Create Spreadsheet
-                    </button>
-                  </div>
-
-                  {/* Link Existing Column */}
-                  <div className="bg-brand-stone/30 p-6 rounded-2xl flex flex-col justify-between text-left space-y-4 border border-brand-brown/5">
-                    <div>
-                      <h4 className="font-bold text-sm uppercase">Link Existing Spreadsheet</h4>
-                      <p className="text-xs text-brand-brown/70 mt-1 leading-relaxed">
-                        Pasted a Google Spreadsheet details link or spreadsheet ID below to synchronize data with it.
-                      </p>
-                    </div>
-                    <form onSubmit={handleLinkSpreadsheet} className="space-y-3">
-                      <input 
-                        type="text" 
-                        value={spreadsheetUrl}
-                        onChange={e => setSpreadsheetUrl(e.target.value)}
-                        placeholder="Paste Spreadsheet ID or URL"
-                        className="w-full p-2.5 bg-white border border-brand-brown/15 rounded-xl text-xs font-mono outline-none focus:border-emerald-500"
-                        required
-                      />
-                      <button
-                        type="submit"
-                        disabled={isConnectingSheet || !spreadsheetUrl.trim()}
-                        className="w-full py-2.5 rounded-xl bg-brand-brown hover:bg-opacity-90 text-white text-[10px] font-black uppercase tracking-widest shadow-md flex items-center justify-center gap-2 transition-all"
-                      >
-                        {isConnectingSheet ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Link className="w-4 h-4" />}
-                        Link Spreadsheet
-                      </button>
-                    </form>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Primary application view when authenticated and spreadsheet linked */}
-        {!needsAuth && spreadsheetId && (
-          <div className="max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500">
-            {/* Spreadsheet Sync Banner Card */}
-            <div className="bg-emerald-50/70 border border-emerald-500/10 rounded-3xl p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-              <div className="flex items-center gap-3">
-                <div className="p-3 bg-emerald-500/10 rounded-2xl text-emerald-600">
-                  <FileSpreadsheet className="w-6 h-6" />
-                </div>
-                <div>
-                  <h3 className="text-xs font-black uppercase text-brand-brown/50 tracking-wide">Active Google Spreadsheet</h3>
-                  <p className="text-sm font-black text-brand-brown">{spreadsheetTitle || 'Financial Ledger'}</p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3 w-full md:w-auto">
-                <a 
-                  href={spreadsheetUrl} 
-                  target="_blank" 
-                  rel="noreferrer"
-                  className="flex-1 md:flex-initial px-4 py-2.5 border border-brand-brown/15 bg-white rounded-xl hover:bg-brand-stone/30 text-[10px] font-black uppercase tracking-widest text-center transition-all flex items-center justify-center gap-2"
-                >
-                  <Link className="w-4.5 h-4.5 text-zinc-400" />
-                  View Original Spreadsheet
-                </a>
-                <button 
-                  onClick={handleUnlinkSpreadsheet}
-                  className="px-4 py-2.5 border border-brand-red/15 bg-brand-red/5 hover:bg-brand-red/10 rounded-xl text-[10px] font-black uppercase tracking-widest text-brand-red transition-all flex items-center justify-center gap-2"
-                >
-                  Unlink Sheets
-                </button>
-              </div>
-            </div>
+        <div className="max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500">
 
             {/* Months Tabs row */}
             <div className="border border-brand-brown/10 bg-white rounded-3xl p-3 flex flex-wrap gap-2 shadow-sm">
@@ -1230,31 +1345,43 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
               })}
             </div>
 
-            {/* View Toggle (Sheet vs Analytics Dashboard) */}
-            <div className="flex bg-white p-1 rounded-2xl border border-brand-brown/10 shadow-sm max-w-sm">
+            {/* View Toggle (Sheet vs P&L vs Analytics Dashboard) */}
+            <div className="flex bg-white p-1 rounded-2xl border border-brand-brown/10 shadow-sm w-full sm:max-w-md">
               <button
                 type="button"
                 onClick={() => setActiveLedgerView('sheet')}
-                className={`flex-1 py-2.5 px-4 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                   activeLedgerView === 'sheet'
                     ? 'bg-emerald-600 text-white shadow-md'
                     : 'text-zinc-400 hover:text-brand-brown'
                 }`}
               >
                 <FileSpreadsheet className="w-3.5 h-3.5" />
-                Ledger Entries
+                Entries
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveLedgerView('pnl')}
+                className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  activeLedgerView === 'pnl'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'text-zinc-400 hover:text-brand-brown'
+                }`}
+              >
+                <TrendingUp className="w-3.5 h-3.5" />
+                P&L Statement
               </button>
               <button
                 type="button"
                 onClick={() => setActiveLedgerView('dashboard')}
-                className={`flex-1 py-2.5 px-4 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                   activeLedgerView === 'dashboard'
                     ? 'bg-emerald-600 text-white shadow-md'
                     : 'text-zinc-400 hover:text-zinc-700'
                 }`}
               >
                 <PieChartIcon className="w-3.5 h-3.5" />
-                Dashboard Analytics
+                Analytics
               </button>
             </div>
 
@@ -1355,6 +1482,17 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                               value={editOpeningBank}
                               onChange={e => setEditOpeningBank(parseFloat(e.target.value) || 0)}
                               className="w-full p-2 bg-white border border-brand-brown/10 rounded-lg text-xs font-bold outline-none"
+                            />
+                          </div>
+                          <div className="space-y-1 col-span-2">
+                            <label className="text-[9px] font-extrabold text-brand-brown/60 uppercase">Reason for Edit <span className="text-brand-red">*</span></label>
+                            <input 
+                              type="text" 
+                              placeholder="e.g. Correcting starting cash count"
+                              value={editOpeningReason}
+                              onChange={e => setEditOpeningReason(e.target.value)}
+                              className="w-full p-2 bg-white border border-brand-brown/10 rounded-lg text-xs outline-none focus:border-emerald-600"
+                              required
                             />
                           </div>
                         </div>
@@ -1473,6 +1611,19 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                         </select>
                       </div>
 
+                      {/* Funding Source Selector */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-black uppercase tracking-wide text-brand-brown/60">Funding/Capital Source</label>
+                        <select
+                          value={txFundingSource}
+                          onChange={e => setTxFundingSource(e.target.value as 'revenue' | 'investment')}
+                          className="w-full p-3 bg-brand-stone/20 border border-brand-brown/10 rounded-xl text-xs font-bold ring-0 outline-none"
+                        >
+                          <option value="revenue">Earned Revenue / Operational</option>
+                          <option value="investment">Capital Investment Fund</option>
+                        </select>
+                      </div>
+
                       {/* Notes of tx row */}
                       <div className="space-y-1">
                         <label className="text-[10px] font-black uppercase tracking-wide text-brand-brown/60">Details Notes (Optional)</label>
@@ -1517,7 +1668,7 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                           Upload Receipt/Bill (Optional)
                         </label>
                         <p className="text-[9px] text-zinc-400 font-semibold mb-2">
-                          File will be securely saved in Google Drive and referenced as a link in details.
+                          File will be securely saved in Supabase Storage and referenced as a clean clickable receipt link.
                         </p>
                         
                         {!selectedFile ? (
@@ -1587,17 +1738,29 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                       <p className="text-[10px] text-zinc-400 font-semibold mt-0.5">Rows 1 to {sheetRows.length} shown below</p>
                     </div>
 
-                    <button 
-                      onClick={loadSheetRows}
-                      disabled={isSheetLoading}
-                      className="p-2 border border-brand-brown/10 hover:bg-brand-stone/30 rounded-lg text-brand-brown/85 transition-colors disabled:opacity-40"
-                    >
-                      <RefreshCw className={`w-4 h-4 ${isSheetLoading ? 'animate-spin' : ''}`} />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={exportToCSV}
+                        disabled={sheetRows.length <= 1}
+                        className="flex items-center gap-1.5 px-3 py-2 border border-brand-brown/15 bg-white hover:bg-brand-stone/30 rounded-lg text-brand-brown/85 text-[10px] font-black uppercase tracking-wider transition-colors disabled:opacity-40 select-none"
+                        title="Export this month's ledger to CSV"
+                      >
+                        <Download className="w-3.5 h-3.5 text-emerald-600" />
+                        Export CSV
+                      </button>
+
+                      <button 
+                        onClick={loadSheetRows}
+                        disabled={isSheetLoading}
+                        className="p-2 border border-brand-brown/10 hover:bg-brand-stone/30 rounded-lg text-brand-brown/85 transition-colors disabled:opacity-40"
+                      >
+                        <RefreshCw className={`w-4 h-4 ${isSheetLoading ? 'animate-spin' : ''}`} />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Spreadsheet Grid container */}
-                  <div className="flex-1 overflow-auto no-scrollbar">
+                  <div className="flex-1 overflow-auto custom-scrollbar">
                     {isSheetLoading && sheetRows.length === 0 ? (
                       /* Show load skeleten skeleton */
                       <div className="p-8 space-y-4 animate-pulse">
@@ -1669,15 +1832,63 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                               >
                                 {/* Actions Column */}
                                 <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                                  {!isOpeningRow && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeleteTransaction(idx)}
-                                      className="p-1 px-1.5 rounded text-zinc-400 hover:text-brand-red hover:bg-brand-red/15 duration-150 transition-all outline-none cursor-pointer"
-                                      title="Delete Ledger Entry"
-                                    >
-                                      <Trash2 className="w-4 h-4" />
-                                    </button>
+                                  {!isOpeningRow ? (
+                                    <div className="flex items-center justify-center gap-1.5 font-sans">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleInitiateEditTransaction(idx)}
+                                        className="p-1 px-1.5 rounded text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 duration-150 transition-all outline-none cursor-pointer"
+                                        title="Edit Ledger Entry"
+                                      >
+                                        <Pencil className="w-3.5 h-3.5" />
+                                      </button>
+                                      
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeleteTransaction(idx)}
+                                        className="p-1 px-1.5 rounded text-zinc-400 hover:text-brand-red hover:bg-brand-red/15 duration-150 transition-all outline-none cursor-pointer"
+                                        title="Delete Ledger Entry"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+
+                                      {(() => {
+                                        const rec = row[13];
+                                        const hasEditHistory = rec && rec.edit_history && rec.edit_history.length > 0;
+                                        if (hasEditHistory) {
+                                          return (
+                                            <button
+                                              type="button"
+                                              onClick={() => setActiveAuditRec(rec)}
+                                              className="p-1 px-1.5 rounded text-zinc-400 hover:text-amber-600 hover:bg-amber-50 duration-150 transition-all outline-none cursor-pointer"
+                                              title="View Transaction Audit Trail"
+                                            >
+                                              <History className="w-3.5 h-3.5 text-amber-500" />
+                                            </button>
+                                          );
+                                        }
+                                        return null;
+                                      })()}
+                                    </div>
+                                  ) : (
+                                    /* Opening balance row - can show edit icon which links to opening editor or simply show History if it was edited */
+                                    (() => {
+                                      const rec = row[13];
+                                      const hasEditHistory = rec && rec.edit_history && rec.edit_history.length > 0;
+                                      if (hasEditHistory) {
+                                        return (
+                                          <button
+                                            type="button"
+                                            onClick={() => setActiveAuditRec(rec)}
+                                            className="p-1 px-1.5 rounded text-zinc-400 hover:text-amber-600 hover:bg-amber-50 duration-150 transition-all outline-none cursor-pointer mx-auto block"
+                                            title="View Opening Balance Audit Trail"
+                                          >
+                                            <History className="w-3.5 h-3.5 text-amber-500" />
+                                          </button>
+                                        );
+                                      }
+                                      return <span className="text-[10px] text-zinc-400 italic">Init</span>;
+                                    })()
                                   )}
                                 </td>
 
@@ -1746,72 +1957,427 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
 
               </div>
 
+              {/* P&L and Financial Accounting Statements */}
+              {activeLedgerView === 'pnl' && (
+                <div className="space-y-8 animate-in fade-in duration-300">
+                  {/* Period Filter Header */}
+                  <div className="bg-white border border-brand-brown/10 p-6 rounded-3xl shadow-sm flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
+                    <div className="space-y-1 text-left">
+                      <h3 className="text-sm font-black uppercase tracking-wider text-brand-brown flex items-center gap-2">
+                        <TrendingUp className="w-4 h-4 text-emerald-600" />
+                        Live Accounting Statements
+                      </h3>
+                      <p className="text-[10px] text-zinc-400 font-semibold uppercase">
+                        {dashboardPeriod === 'this_month' ? `Monthly ledger aggregate for ${activeTabName}` : `Custom date period active: ${getDashboardDateRange().start} to ${getDashboardDateRange().end}`}
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="flex flex-wrap gap-1 bg-brand-stone/40 p-1 rounded-2xl border border-brand-brown/5 text-xs font-bold leading-none">
+                        <button
+                          type="button"
+                          onClick={() => setDashboardPeriod('today')}
+                          className={`py-1.5 px-2.5 rounded-lg text-[10px] font-black uppercase tracking-wider cursor-pointer ${
+                            dashboardPeriod === 'today' ? 'bg-white text-emerald-600 shadow-xs' : 'text-zinc-500 hover:text-brand-brown'
+                          }`}
+                        >
+                          Today
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDashboardPeriod('this_week')}
+                          className={`py-1.5 px-2.5 rounded-lg text-[10px] font-black uppercase tracking-wider cursor-pointer ${
+                            dashboardPeriod === 'this_week' ? 'bg-white text-emerald-600 shadow-xs' : 'text-zinc-500 hover:text-brand-brown'
+                          }`}
+                        >
+                          This Week
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDashboardPeriod('this_month')}
+                          className={`py-1.5 px-2.5 rounded-lg text-[10px] font-black uppercase tracking-wider cursor-pointer ${
+                            dashboardPeriod === 'this_month' ? 'bg-white text-emerald-600 shadow-xs' : 'text-zinc-500 hover:text-brand-brown'
+                          }`}
+                        >
+                          This Month
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDashboardPeriod('custom')}
+                          className={`py-1.5 px-2.5 rounded-lg text-[10px] font-black uppercase tracking-wider cursor-pointer ${
+                            dashboardPeriod === 'custom' ? 'bg-white text-emerald-600 shadow-xs' : 'text-zinc-500 hover:text-brand-brown'
+                          }`}
+                        >
+                          Custom Range
+                        </button>
+                      </div>
+
+                      {dashboardPeriod === 'custom' && (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="date"
+                            value={customStartDate}
+                            onChange={e => setCustomStartDate(e.target.value)}
+                            className="bg-brand-stone/40 p-1.5 text-[10px] font-bold uppercase rounded-lg border border-brand-brown/10 outline-none text-brand-brown"
+                          />
+                          <span className="text-[10px] text-zinc-400 font-bold font-mono">TO</span>
+                          <input
+                            type="date"
+                            value={customEndDate}
+                            onChange={e => setCustomEndDate(e.target.value)}
+                            className="bg-brand-stone/40 p-1.5 text-[10px] font-bold uppercase rounded-lg border border-brand-brown/10 outline-none text-brand-brown"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Profit & Loss (Accrual) and Cash Flow Statements Comparison Grid */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    
+                    {/* ACCRUAL STATEMENT SECTION */}
+                    <div className="bg-white border border-brand-brown/10 rounded-3xl p-6 shadow-sm space-y-6 text-left">
+                      <div className="flex justify-between items-start border-b border-zinc-100 pb-4">
+                        <div>
+                          <h4 className="text-xs font-black uppercase tracking-wider text-brand-brown">Accrual Accounting P&L</h4>
+                          <p className="text-[10px] text-zinc-400 font-semibold uppercase mt-0.5">Matches revenue earned against expenses incurred (Wednesday cycles adjusted)</p>
+                        </div>
+                        <span className="py-1 px-2 bg-emerald-50 text-emerald-700 text-[8px] font-black uppercase tracking-wider rounded-md">
+                          Accrual Basis
+                        </span>
+                      </div>
+
+                      <div className="space-y-4">
+                        {/* Revenues Part */}
+                        <div>
+                          <h5 className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-2">Revenues (Earned)</h5>
+                          <div className="space-y-2 border-b border-zinc-50 pb-2">
+                            <div className="flex justify-between text-xs">
+                              <span className="text-zinc-500 font-medium">In-Store Live Sales (Turnover)</span>
+                              <span className="font-mono font-bold text-zinc-800">₹{pnlBreakdown.accrual.inStoreRev.toLocaleString('en-IN')}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span className="text-zinc-500 font-medium">Zomato Delivery Revenue (Accrued Wed cycle)</span>
+                              <span className="font-mono font-bold text-zinc-800">₹{pnlBreakdown.accrual.zomatoRev.toLocaleString('en-IN')}</span>
+                            </div>
+                            <div className="flex justify-between text-xs font-bold bg-zinc-50 p-2 rounded-lg mt-1">
+                              <span className="text-brand-brown uppercase text-[9px] font-black">Gross Income Turnover (Accrued)</span>
+                              <span className="font-mono text-emerald-600">₹{pnlBreakdown.accrual.totalRev.toLocaleString('en-IN')}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Cost of Goods Sold & Expenses Part */}
+                        <div>
+                          <h5 className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-2">COGS & Operating Overheads</h5>
+                          <div className="space-y-2 border-b border-zinc-50 pb-2">
+                            <div className="flex justify-between text-xs">
+                              <span className="text-zinc-500 font-medium">Momo Vendor Ingredient COGS (Accrued)</span>
+                              <span className="font-mono font-bold text-zinc-800">₹{pnlBreakdown.accrual.momoCost.toLocaleString('en-IN')}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span className="text-zinc-500 font-medium">Zomato Commission & Ads (Accrued)</span>
+                              <span className="font-mono font-bold text-zinc-800">₹{pnlBreakdown.accrual.zomatoExp.toLocaleString('en-IN')}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span className="text-zinc-500 font-medium">Operating Expenses (Wage, Rent, Gas, Cash spends)</span>
+                              <span className="font-mono font-bold text-zinc-800">₹{pnlBreakdown.accrual.operatingExp.toLocaleString('en-IN')}</span>
+                            </div>
+                            <div className="flex justify-between text-xs font-bold bg-zinc-50 p-2 rounded-lg mt-1">
+                              <span className="text-brand-brown uppercase text-[9px] font-black">Operating Charges Subtotal</span>
+                              <span className="font-mono text-rose-600">₹{pnlBreakdown.accrual.totalExp.toLocaleString('en-IN')}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Operational Margins / Capital Exp note */}
+                        <div className="p-4 bg-brand-stone/20 rounded-2xl space-y-3.5">
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-zinc-500 font-black uppercase text-[10px]">Accrual Net Operating Profit</span>
+                            <span className={`font-mono font-black text-sm ${pnlBreakdown.accrual.operatingProfit >= 0 ? 'text-emerald-600' : 'text-brand-red'}`}>
+                              ₹{pnlBreakdown.accrual.operatingProfit.toLocaleString('en-IN')}
+                            </span>
+                          </div>
+                          
+                          <div className="flex justify-between items-center text-[10px] border-t border-brand-brown/5 pt-2">
+                            <span className="text-zinc-400 font-bold uppercase">Operating Ratio Margin</span>
+                            <span className={`font-mono font-black ${pnlBreakdown.accrual.margin >= 0 ? 'text-emerald-600' : 'text-brand-red'}`}>
+                              {pnlBreakdown.accrual.margin.toFixed(2)}%
+                            </span>
+                          </div>
+
+                          <div className="text-[9px] text-zinc-400 leading-relaxed font-semibold">
+                            Note: Accrual P&L excludes capital expenditures funded from the investment pool to accurately measure your store's standalone operational unit economics.
+                          </div>
+                        </div>
+
+                      </div>
+                    </div>
+
+                    {/* CASH FLOW STATEMENT SECTION */}
+                    <div className="bg-white border border-brand-brown/10 rounded-3xl p-6 shadow-sm space-y-6 text-left">
+                      <div className="flex justify-between items-start border-b border-zinc-100 pb-4">
+                        <div>
+                          <h4 className="text-xs font-black uppercase tracking-wider text-brand-brown">Cash Flow Accounting</h4>
+                          <p className="text-[10px] text-zinc-400 font-semibold uppercase mt-0.5 font-sans">Tracks physical liquid movements when money enters or leaves the registry</p>
+                        </div>
+                        <span className="py-1 px-2 bg-blue-50 text-blue-700 text-[8px] font-black uppercase tracking-wider rounded-md">
+                          Cash Basis
+                        </span>
+                      </div>
+
+                      <div className="space-y-4">
+                        {/* Cash Inflows */}
+                        <div>
+                          <h5 className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-2">Cash Inflows (Collections)</h5>
+                          <div className="space-y-2 border-b border-zinc-50 pb-2">
+                            <div className="flex justify-between text-xs">
+                              <span className="text-zinc-500 font-medium">In-Store Live Sales Received</span>
+                              <span className="font-mono font-bold text-zinc-800">₹{pnlBreakdown.cashFlow.inStoreInflow.toLocaleString('en-IN')}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span className="text-zinc-500 font-medium">Zomato Payout Deposits (Cleared Wednesdays)</span>
+                              <span className="font-mono font-bold text-zinc-800">₹{pnlBreakdown.cashFlow.zomatoInflow.toLocaleString('en-IN')}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span className="text-zinc-500 font-medium">Investment & Debt Funding Infusions</span>
+                              <span className="font-mono font-bold text-zinc-800">₹{pnlBreakdown.cashFlow.investmentInflow.toLocaleString('en-IN')}</span>
+                            </div>
+                            <div className="flex justify-between text-xs font-bold bg-zinc-50 p-2 rounded-lg mt-1">
+                              <span className="text-brand-brown uppercase text-[9px] font-black">Total Receipts</span>
+                              <span className="font-mono text-emerald-600">₹{pnlBreakdown.cashFlow.totalInflows.toLocaleString('en-IN')}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Cash Outflows */}
+                        <div>
+                          <h5 className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-2">Cash Outflows (Disbursements)</h5>
+                          <div className="space-y-2 border-b border-zinc-50 pb-2">
+                            <div className="flex justify-between text-xs">
+                              <span className="text-zinc-500 font-medium">Momo Wednesday Settlements</span>
+                              <span className="font-mono font-bold text-zinc-800">₹{pnlBreakdown.cashFlow.momoOutflow.toLocaleString('en-IN')}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span className="text-zinc-500 font-medium">Zomato Commission & Ads Paid</span>
+                              <span className="font-mono font-bold text-zinc-800">₹{pnlBreakdown.cashFlow.zomatoOutflow.toLocaleString('en-IN')}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span className="text-zinc-500 font-medium">Standard Operating Expenses</span>
+                              <span className="font-mono font-bold text-zinc-800">₹{pnlBreakdown.cashFlow.operatingOutflow.toLocaleString('en-IN')}</span>
+                            </div>
+                            <div className="flex justify-between text-xs text-rose-600 font-bold">
+                              <span className="font-medium text-zinc-500">Capital Expenses & Debt Repayments</span>
+                              <span className="font-mono">₹{pnlBreakdown.cashFlow.investmentOutflow.toLocaleString('en-IN')}</span>
+                            </div>
+                            <div className="flex justify-between text-xs font-bold bg-zinc-50 p-2 rounded-lg mt-1">
+                              <span className="text-brand-brown uppercase text-[9px] font-black">Total Liquid Outflow</span>
+                              <span className="font-mono text-rose-600">₹{pnlBreakdown.cashFlow.totalOutflows.toLocaleString('en-IN')}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Liquid Liquidity Balance Status */}
+                        <div className="p-4 bg-brand-stone/20 rounded-2xl space-y-2">
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-zinc-500 font-black uppercase text-[10px]">Net Cash Change Position</span>
+                            <span className={`font-mono font-black ${pnlBreakdown.cashFlow.netPosition >= 0 ? 'text-emerald-600' : 'text-brand-red'}`}>
+                              {pnlBreakdown.cashFlow.netPosition >= 0 ? '+' : ''}₹{pnlBreakdown.cashFlow.netPosition.toLocaleString('en-IN')}
+                            </span>
+                          </div>
+
+                          <div className="flex justify-between items-center text-xs border-t border-brand-brown/5 pt-1.5">
+                            <span className="text-zinc-400 font-semibold uppercase text-[9px]">Opening Liquidity (In Hand + Bank)</span>
+                            <span className="font-mono font-bold text-zinc-700">
+                              ₹{pnlBreakdown.cashFlow.openingBal.toLocaleString('en-IN')}
+                            </span>
+                          </div>
+
+                          <div className="flex justify-between items-center text-xs font-bold border-t border-brand-brown/10 pt-1.5">
+                            <span className="text-brand-brown font-black uppercase text-[10px]">Ending Liquid Cash Balance</span>
+                            <span className="font-mono font-black text-sm text-emerald-600">
+                              ₹{pnlBreakdown.cashFlow.closingBal.toLocaleString('en-IN')}
+                            </span>
+                          </div>
+                        </div>
+
+                      </div>
+                    </div>
+
+                  </div>
+
+                  {/* Seed & Capital Investment Pool Tracker */}
+                  {(() => {
+                    // Total investment capital raised
+                    const allTxs = parseAllTransactions();
+                    const investmentInflowAllTime = allTxs
+                      .filter(tx => tx.type === 'credit' && tx.category === 'investment')
+                      .reduce((sum, tx) => sum + tx.amount, 0);
+
+                    const spentList = pnlBreakdown.investmentSpentList;
+                    const investmentOutflowAllTime = spentList.reduce((sum, tx) => sum + tx.amount, 0);
+                    const remainingInvestment = investmentInflowAllTime - investmentOutflowAllTime;
+
+                    return (
+                      <div className="bg-white border border-brand-brown/10 rounded-3xl p-6 shadow-sm text-left space-y-6">
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-zinc-100 pb-4">
+                          <div>
+                            <h4 className="text-xs font-black uppercase tracking-wider text-brand-brown flex items-center gap-2">
+                              <Briefcase className="w-4 h-4 text-emerald-600" />
+                              Capital Investment Pool Tracker
+                            </h4>
+                            <p className="text-[10px] text-zinc-400 font-semibold uppercase mt-0.5">
+                              Audit trail separating seed fund usage from daily operating revenue
+                            </p>
+                          </div>
+                          <span className="py-1 px-2.5 bg-emerald-50 text-emerald-700 text-[10px] font-black uppercase tracking-wider rounded-lg">
+                            Remaining Invested Cash: ₹{remainingInvestment.toLocaleString('en-IN')}
+                          </span>
+                        </div>
+
+                        {/* Top KPI row of investment */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                          <div className="p-4 bg-brand-stone/20 rounded-2xl">
+                            <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-widest">Total Seed Capital Raised</p>
+                            <h5 className="font-mono font-black text-zinc-800 text-lg mt-1">₹{investmentInflowAllTime.toLocaleString('en-IN')}</h5>
+                          </div>
+                          <div className="p-4 bg-zinc-50 border border-zinc-100 rounded-2xl">
+                            <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-widest">Total Capital Spent</p>
+                            <h5 className="font-mono font-black text-rose-600 text-lg mt-1">₹{investmentOutflowAllTime.toLocaleString('en-IN')}</h5>
+                          </div>
+                          <div className="p-4 bg-emerald-500/5 border border-emerald-500/10 rounded-2xl">
+                            <p className="text-[9px] font-bold text-emerald-600/70 uppercase tracking-widest">Immediate Available Reserves</p>
+                            <h5 className="font-mono font-black text-emerald-600 text-lg mt-1">₹{remainingInvestment.toLocaleString('en-IN')}</h5>
+                          </div>
+                        </div>
+
+                        {/* Spent Table */}
+                        <div className="space-y-3">
+                          <h5 className="text-[10px] font-black uppercase tracking-wider text-zinc-500">Seed Spend Ledger Drill-Down ({spentList.length} items found)</h5>
+                          {spentList.length === 0 ? (
+                            <div className="py-8 text-center text-xs text-zinc-400 font-semibold bg-zinc-50 rounded-2xl border border-dashed border-zinc-200">
+                              No capital investment expenses recorded. Mark a debit transaction with Funding/Capital Source: "Capital Investment Fund" to list here.
+                            </div>
+                          ) : (
+                            <div className="overflow-x-auto rounded-2xl border border-brand-brown/10">
+                              <table className="w-full text-left border-collapse">
+                                <thead>
+                                  <tr className="bg-brand-stone/50 border-b border-brand-brown/10 text-[9px] font-black uppercase tracking-wider text-brand-brown">
+                                    <th className="py-2.5 px-4 animate-none select-none">Date</th>
+                                    <th className="py-2.5 px-4 animate-none select-none">Category</th>
+                                    <th className="py-2.5 px-4 animate-none select-none">Details notes</th>
+                                    <th className="py-2.5 px-4 text-right animate-none select-none">Amount Out (₹)</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-zinc-100 text-xs text-zinc-700">
+                                  {spentList.map((tx, idx) => (
+                                    <tr key={`${tx.dateStr}-${idx}`} className="hover:bg-zinc-50">
+                                      <td className="py-3 px-4 font-mono font-bold text-zinc-500">{tx.dateStr}</td>
+                                      <td className="py-3 px-4 uppercase font-black text-[10px] text-zinc-400 tracking-wider font-sans">{tx.category}</td>
+                                      <td className="py-3 px-4 font-semibold text-zinc-600">{tx.notes || tx.category}</td>
+                                      <td className="py-3 px-4 text-right font-mono font-black text-rose-600">₹{tx.amount.toLocaleString('en-IN')}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                </div>
+              )}
+
               {/* Analytics Dashboard Section */}
               {activeLedgerView === 'dashboard' && (
                 <div className="space-y-8 animate-in fade-in duration-300">
                   {/* Dashboard filters and settings row */}
-                  <div className="bg-white border border-brand-brown/10 p-6 rounded-3xl shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                  <div className="bg-white border border-brand-brown/10 p-6 rounded-3xl shadow-sm flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
                     <div className="space-y-1 text-left">
                       <h3 className="text-sm font-black uppercase tracking-wider text-brand-brown flex items-center gap-2">
                         <Filter className="w-4 h-4 text-emerald-600" />
                         Analysis Granularity Toggle
                       </h3>
                       <p className="text-[10px] text-zinc-400 font-semibold uppercase">
-                        {dashboardPeriod === 'month' && `Showing complete aggregate logs for ${activeTabName}`}
-                        {dashboardPeriod === 'week' && `Showing logs for Week ${selectedWeek} of ${activeTabName}`}
+                        {dashboardPeriod === 'today' && `Showing single-day logs for today: ${getDashboardDateRange().start}`}
+                        {dashboardPeriod === 'yesterday' && `Showing yesterday's log records: ${getDashboardDateRange().start}`}
+                        {dashboardPeriod === 'this_week' && `Showing current weekly logs: ${getDashboardDateRange().start} to ${getDashboardDateRange().end}`}
+                        {dashboardPeriod === 'last_week' && `Showing previous weekly logs: ${getDashboardDateRange().start} to ${getDashboardDateRange().end}`}
+                        {dashboardPeriod === 'this_month' && `Showing current month aggregate logs for ${activeTabName}`}
+                        {dashboardPeriod === 'last_month' && `Showing previous month aggregate logs: ${getDashboardDateRange().start} to ${getDashboardDateRange().end}`}
                         {dashboardPeriod === 'custom' && `Showing customized date range results`}
                       </p>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-3">
                       {/* Period type buttons */}
-                      <div className="grid grid-cols-3 bg-brand-stone/40 p-1 rounded-xl border border-brand-brown/5 text-xs font-bold">
+                      <div className="flex flex-wrap gap-1 bg-brand-stone/40 p-1 rounded-2xl border border-brand-brown/5 text-xs font-bold leading-none">
                         <button
                           type="button"
-                          onClick={() => setDashboardPeriod('month')}
-                          className={`py-1.5 px-3 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
-                            dashboardPeriod === 'month' ? 'bg-white text-emerald-600 shadow-sm' : 'text-zinc-400 hover:text-brand-brown'
+                          onClick={() => setDashboardPeriod('today')}
+                          className={`py-1.5 px-2.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                            dashboardPeriod === 'today' ? 'bg-white text-emerald-600 shadow-xs' : 'text-zinc-500 hover:text-brand-brown'
                           }`}
                         >
-                          Monthly
+                          Today
                         </button>
                         <button
                           type="button"
-                          onClick={() => setDashboardPeriod('week')}
-                          className={`py-1.5 px-3 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
-                            dashboardPeriod === 'week' ? 'bg-white text-emerald-600 shadow-sm' : 'text-zinc-400 hover:text-brand-brown'
+                          onClick={() => setDashboardPeriod('yesterday')}
+                          className={`py-1.5 px-2.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                            dashboardPeriod === 'yesterday' ? 'bg-white text-emerald-600 shadow-xs' : 'text-zinc-500 hover:text-brand-brown'
                           }`}
                         >
-                          Weekly
+                          Yesterday
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDashboardPeriod('this_week')}
+                          className={`py-1.5 px-2.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                            dashboardPeriod === 'this_week' ? 'bg-white text-emerald-600 shadow-xs' : 'text-zinc-500 hover:text-brand-brown'
+                          }`}
+                        >
+                          This Week
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDashboardPeriod('last_week')}
+                          className={`py-1.5 px-2.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                            dashboardPeriod === 'last_week' ? 'bg-white text-emerald-600 shadow-xs' : 'text-zinc-500 hover:text-brand-brown'
+                          }`}
+                        >
+                          Last Week
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDashboardPeriod('this_month')}
+                          className={`py-1.5 px-2.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                            dashboardPeriod === 'this_month' ? 'bg-white text-emerald-600 shadow-xs' : 'text-zinc-500 hover:text-brand-brown'
+                          }`}
+                        >
+                          This Month
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDashboardPeriod('last_month')}
+                          className={`py-1.5 px-2.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                            dashboardPeriod === 'last_month' ? 'bg-white text-emerald-600 shadow-xs' : 'text-zinc-500 hover:text-brand-brown'
+                          }`}
+                        >
+                          Last Month
                         </button>
                         <button
                           type="button"
                           onClick={() => setDashboardPeriod('custom')}
-                          className={`py-1.5 px-3 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
-                            dashboardPeriod === 'custom' ? 'bg-white text-emerald-600 shadow-sm' : 'text-zinc-400 hover:text-brand-brown'
+                          className={`py-1.5 px-2.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                            dashboardPeriod === 'custom' ? 'bg-white text-emerald-600 shadow-xs' : 'text-zinc-500 hover:text-brand-brown'
                           }`}
                         >
-                          Custom dates
+                          Custom
                         </button>
                       </div>
-
-                      {/* Week selector dropdown (only if week period) */}
-                      {dashboardPeriod === 'week' && (
-                        <div className="flex items-center gap-1.5 animate-in slide-in-from-right-3 duration-200">
-                          <label className="text-[10px] font-black uppercase tracking-wider text-zinc-400">Week</label>
-                          <select
-                            value={selectedWeek}
-                            onChange={e => setSelectedWeek(parseInt(e.target.value))}
-                            className="bg-brand-stone/30 border border-brand-brown/10 rounded-xl p-2 text-xs font-bold outline-none ring-0 cursor-pointer"
-                          >
-                            <option value={1}>Week 1 (Days 1 - 7)</option>
-                            <option value={2}>Week 2 (Days 8 - 14)</option>
-                            <option value={3}>Week 3 (Days 15 - 21)</option>
-                            <option value={4}>Week 4 (Days 22 - 28)</option>
-                            <option value={5}>Week 5 (Days 29 - End)</option>
-                          </select>
-                        </div>
-                      )}
 
                       {/* Custom range date fields */}
                       {dashboardPeriod === 'custom' && (
@@ -1831,6 +2397,15 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                           />
                         </div>
                       )}
+
+                      <button 
+                        onClick={exportToCSV}
+                        className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-colors shadow-sm select-none cursor-pointer"
+                        title="Export filtered dashboard entries to CSV"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        Export CSV
+                      </button>
                     </div>
                   </div>
 
@@ -2077,11 +2652,100 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                   })()}
                 </div>
               )}
+
+              {/* Collapsible Deleted Transactions and Void logs archive */}
+              <div className="mt-8">
+                <div className="bg-stone-50 border border-brand-brown/10 rounded-3xl p-6 space-y-4">
+                  <button 
+                    type="button" 
+                    onClick={() => {
+                      setShowDeletedLog(!showDeletedLog);
+                      loadDeletedRecords();
+                    }}
+                    className="w-full flex justify-between items-center text-left"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 bg-brand-red/10 rounded-xl text-brand-red">
+                        <History className="w-5 h-5 animate-pulse" />
+                      </div>
+                      <div>
+                        <h4 className="font-black text-xs uppercase tracking-tight text-brand-brown">Deleted Entries & Archive logs</h4>
+                        <p className="text-[10px] text-zinc-400 font-semibold leading-tight mt-0.5">
+                          Archived void transactions with proper deletion reasons ({deletedRecords.length} items logged)
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] uppercase font-black tracking-wider bg-zinc-200 hover:bg-zinc-300 px-3 py-1.5 rounded-lg transition-all text-zinc-600">
+                      {showDeletedLog ? 'Hide Archive' : 'Show Archive'}
+                    </span>
+                  </button>
+
+                  {showDeletedLog && (
+                    <div className="space-y-4 pt-4 border-t border-brand-brown/10">
+                      {deletedRecords.length === 0 ? (
+                        <div className="p-10 bg-white rounded-2xl border border-dashed border-zinc-200 text-center text-xs text-zinc-400 italic">
+                          No deleted records logged in this month tab.
+                        </div>
+                      ) : (
+                        <div className="overflow-x-auto w-full border border-zinc-200/60 rounded-2xl bg-white">
+                          <table className="w-full text-xs text-left">
+                            <thead>
+                              <tr className="bg-stone-50 text-[10px] uppercase font-bold text-zinc-400 border-b border-zinc-200">
+                                <th className="py-3 px-4">Date Void</th>
+                                <th className="py-3 px-4">Deleted At</th>
+                                <th className="py-3 px-4">Original Entry Detail (Category: notes)</th>
+                                <th className="py-3 px-4 text-right">Value Voided</th>
+                                <th className="py-3 px-4">Proper Reason of Void</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-zinc-100">
+                              {deletedRecords.map((r, idx) => {
+                                const date = r.date;
+                                const crCash = parseFloat(r.credit_cash) || 0;
+                                const crBank = parseFloat(r.credit_bank) || 0;
+                                const dbCash = parseFloat(r.debit_cash) || 0;
+                                const dbBank = parseFloat(r.debit_bank) || 0;
+                                const val = crCash || crBank || dbCash || dbBank;
+                                const details = 
+                                  r.credit_cash_details || 
+                                  r.credit_bank_details || 
+                                  r.debit_cash_details || 
+                                  r.debit_bank_details || 
+                                  '-';
+                                const reason = r.delete_reason || 'No reason specified';
+                                const deletedAt = r.deleted_at ? new Date(r.deleted_at).toLocaleString('en-IN') : '-';
+
+                                return (
+                                  <tr key={idx} className="hover:bg-zinc-50/50">
+                                    <td className="py-3 px-4 font-mono font-bold text-zinc-500 whitespace-nowrap">{date}</td>
+                                    <td className="py-3 px-4 text-zinc-400 text-[10px] whitespace-nowrap">{deletedAt}</td>
+                                    <td className="py-3 px-4 font-semibold max-w-[200px] truncate" title={details}>{details}</td>
+                                    <td className="py-3 px-4 text-right whitespace-nowrap">
+                                      <span className={`font-black ${crCash > 0 || crBank > 0 ? 'text-emerald-600' : 'text-brand-red'}`}>
+                                        ₹{val.toLocaleString('en-IN')}
+                                      </span>
+                                      <span className="text-[9px] text-zinc-400 font-bold uppercase ml-1 block text-right">
+                                        {crCash > 0 ? 'Cr Cash' : crBank > 0 ? 'Cr Bank' : dbCash > 0 ? 'Db Cash' : 'Db Bank'}
+                                      </span>
+                                    </td>
+                                    <td className="py-3 px-4 font-medium text-amber-700 bg-amber-500/5 max-w-[220px]" title={reason}>
+                                      {reason}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
             </>
           )}
 
           </div>
-        )}
       </div>
 
       {/* Custom Confirmation Modals */}
@@ -2089,27 +2753,319 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
         isOpen={deletingTxIdx !== null}
         onClose={() => setDeletingTxIdx(null)}
         onConfirm={() => {
+          if (!deleteReasonText.trim()) {
+            alert("Please specify a proper reason for deletion.");
+            return;
+          }
           if (deletingTxIdx !== null) {
             triggerDeleteTransaction(deletingTxIdx);
           }
         }}
         title="Delete Ledger Entry"
       >
-        <p className="text-sm text-brand-brown">
-          Are you sure you want to permanently delete this transaction from Google Sheets? This action cannot be undone.
-        </p>
+        <div className="space-y-4 text-brand-brown">
+          <p className="text-sm">
+            Are you sure you want to delete this transaction from the active ledger sheets? This action is archived for security audits.
+          </p>
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase tracking-wider text-brand-brown/60">Reason for Deleting <span className="text-brand-red">*</span></label>
+            <textarea
+              rows={3}
+              placeholder="e.g. Typed incorrect amount, duplicate entry, cashier balance correction..."
+              value={deleteReasonText}
+              onChange={e => setDeleteReasonText(e.target.value)}
+              className="w-full p-2.5 bg-white border border-brand-brown/15 rounded-xl text-xs outline-none focus:border-red-500"
+              required
+            />
+          </div>
+        </div>
       </ConfirmationModal>
 
-      <ConfirmationModal
-        isOpen={showUnlinkConfirm}
-        onClose={() => setShowUnlinkConfirm(false)}
-        onConfirm={triggerUnlinkSpreadsheet}
-        title="Disconnect Google Sheet"
-      >
-        <p className="text-sm text-brand-brown">
-          Are you sure you want to disconnect this ledger spreadsheet from the app?
-        </p>
-      </ConfirmationModal>
+      {/* Transaction Edit Modal */}
+      {editingRowIdx !== null && (
+        <div className="fixed inset-0 bg-black bg-opacity-65 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-brand-cream border border-brand-brown/10 rounded-3xl shadow-2xl w-full max-w-lg text-brand-brown max-h-[90vh] flex flex-col">
+            <div className="p-6 border-b border-brand-brown/10 flex-shrink-0">
+              <h3 className="text-lg font-black uppercase tracking-tight flex items-center gap-2">
+                <Pencil className="w-5 h-5 text-emerald-600" />
+                Edit Ledger Transaction
+              </h3>
+              <p className="text-[11px] text-brand-brown/65 font-medium mt-1">
+                Updating ledger sequence fields. Reason is recorded for audit trails.
+              </p>
+            </div>
+
+            <form onSubmit={handleSaveTransactionEdit} className="flex-1 overflow-y-auto p-6 space-y-4 no-scrollbar">
+              <div className="grid grid-cols-2 gap-4">
+                {/* Date */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-brand-brown/60 tracking-wider">Transaction Date</label>
+                  <input
+                    type="date"
+                    value={editTxDate}
+                    onChange={e => setEditTxDate(e.target.value)}
+                    className="w-full p-2.5 bg-white border border-brand-brown/15 rounded-xl text-xs font-mono font-bold outline-none"
+                    required
+                  />
+                </div>
+
+                {/* Amount */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-brand-brown/60 tracking-wider">Amount (₹)</label>
+                  <input
+                    type="number"
+                    value={editTxAmount}
+                    onChange={e => setEditTxAmount(parseFloat(e.target.value) || 0)}
+                    className="w-full p-2.5 bg-white border border-brand-brown/15 rounded-xl text-xs font-bold outline-none"
+                    required
+                    min="0.1"
+                    step="any"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                {/* Type */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-brand-brown/60 tracking-wider">Transaction Type</label>
+                  <select
+                    value={editTxType}
+                    onChange={e => setEditTxType(e.target.value as 'credit' | 'debit')}
+                    className="w-full p-2.5 bg-white border border-brand-brown/15 rounded-xl text-xs font-semibold outline-none"
+                    required
+                  >
+                    <option value="credit">Credit (Inward Cash/Bank)</option>
+                    <option value="debit">Debit (Outward Expense)</option>
+                  </select>
+                </div>
+
+                {/* Method */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-brand-brown/60 tracking-wider">Payment Method</label>
+                  <select
+                    value={editTxMethod}
+                    onChange={e => setEditTxMethod(e.target.value as 'cash' | 'bank')}
+                    className="w-full p-2.5 bg-white border border-brand-brown/15 rounded-xl text-xs font-semibold outline-none"
+                    required
+                  >
+                    <option value="cash">Cash Ledger</option>
+                    <option value="bank">Bank Ledger</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Details */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase text-brand-brown/60 tracking-wider block">Transaction Details</label>
+                <input
+                  type="text"
+                  value={editTxDetails}
+                  onChange={e => setEditTxDetails(e.target.value)}
+                  className="w-full p-2.5 bg-white border border-brand-brown/15 rounded-xl text-xs outline-none"
+                  required
+                />
+              </div>
+
+              {/* Funding Source Selector */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase text-brand-brown/60 tracking-wider Block">Capital/Funding Source</label>
+                <select
+                  value={editTxFundingSource}
+                  onChange={e => setEditTxFundingSource(e.target.value as 'revenue' | 'investment')}
+                  className="w-full p-2.5 bg-white border border-brand-brown/15 rounded-xl text-xs font-semibold outline-none"
+                >
+                  <option value="revenue">Earned Revenue / Operational</option>
+                  <option value="investment">Capital Investment Fund Spend</option>
+                </select>
+              </div>
+
+              {/* Edit Reason */}
+              <div className="space-y-1 pt-2 border-t border-brand-brown/5">
+                <label className="text-[10px] font-black uppercase text-brand-brown/70 tracking-wider block">Proper Reason for Editing <span className="text-brand-red">*</span></label>
+                <textarea
+                  rows={3}
+                  placeholder="Specify exactly why this change is necessary (e.g. Correcting typos, updating real bank record, etc.)"
+                  value={editTxReason}
+                  onChange={e => setEditTxReason(e.target.value)}
+                  className="w-full p-2.5 bg-white border border-brand-brown/15 rounded-xl text-xs outline-none focus:border-emerald-600 font-medium"
+                  required
+                />
+              </div>
+
+              <div className="pt-4 flex justify-end gap-3 border-t border-brand-brown/10 bg-brand-brown/5 -mx-6 -mb-6 p-4 rounded-b-3xl">
+                <button
+                  type="button"
+                  onClick={() => setEditingRowIdx(null)}
+                  className="bg-brand-brown/10 hover:bg-brand-brown/20 font-bold text-xs py-2.5 px-5 rounded-xl transition-colors text-brand-brown"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingTxEdit}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs py-2.5 px-5 rounded-xl transition-colors shadow-md flex items-center gap-1.5"
+                >
+                  {isSavingTxEdit ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Transaction Audit Trail Modal */}
+      {activeAuditRec && (
+        <div className="fixed inset-0 bg-black bg-opacity-65 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-brand-cream border border-brand-brown/10 rounded-3xl shadow-2xl w-full max-w-2xl text-brand-brown max-h-[85vh] flex flex-col">
+            <div className="p-6 border-b border-brand-brown/10 flex-shrink-0 flex justify-between items-start">
+              <div>
+                <h3 className="text-lg font-black uppercase tracking-tight flex items-center gap-2">
+                  <History className="w-5 h-5 text-amber-500" />
+                  Transaction Audit Trail
+                </h3>
+                <p className="text-[11px] text-brand-brown/65 font-medium mt-1">
+                  History of modifications made to this ledger entry. ID: <code className="bg-brand-stone py-0.5 px-1 rounded text-[10px] font-mono">{activeAuditRec.id}</code>
+                </p>
+              </div>
+              <button
+                onClick={() => setActiveAuditRec(null)}
+                className="text-xs font-bold text-zinc-400 hover:text-brand-brown border border-brand-brown/10 rounded-lg p-1.5 px-2.5 hover:bg-zinc-50 transition-all font-sans uppercase tracking-wider"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-6 no-scrollbar">
+              {/* Record Summary */}
+              <div className="bg-white rounded-2xl p-4 border border-brand-brown/5 space-y-2">
+                <h4 className="text-[10px] font-black uppercase tracking-wider text-brand-brown/45">Current Live Record</h4>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs font-medium">
+                  <div>
+                    <span className="text-zinc-400 font-semibold block uppercase text-[9px] tracking-wide">Date</span> <b className="font-bold">{activeAuditRec.date}</b>
+                  </div>
+                  <div>
+                    <span className="text-zinc-400 font-semibold block uppercase text-[9px] tracking-wide">Type</span>{' '}
+                    <span className="font-black">
+                      {parseFloat(activeAuditRec.credit_cash) > 0 || parseFloat(activeAuditRec.credit_bank) > 0 ? (
+                        <span className="text-emerald-600">Credit</span>
+                      ) : (
+                        <span className="text-brand-red">Debit</span>
+                      )}{' '}
+                      ({parseFloat(activeAuditRec.credit_cash) > 0 || parseFloat(activeAuditRec.debit_cash) > 0 ? 'Cash' : 'Bank'})
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-400 font-semibold block uppercase text-[9px] tracking-wide">Amount</span>{' '}
+                    <b className="font-black text-brand-brown text-sm">
+                      ₹{parseFloat(
+                        activeAuditRec.credit_cash ||
+                        activeAuditRec.credit_bank ||
+                        activeAuditRec.debit_cash ||
+                        activeAuditRec.debit_bank ||
+                        '0'
+                      ).toLocaleString('en-IN')}
+                    </b>
+                  </div>
+                  <div>
+                    <span className="text-zinc-400 font-semibold block uppercase text-[9px] tracking-wide">Created At</span>{' '}
+                    <span className="font-mono text-[10px] block mt-0.5">
+                      {new Date(activeAuditRec.created_at).toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* History Timeline */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-black uppercase tracking-wider text-brand-brown/50">Modification Logs</h4>
+                
+                {!activeAuditRec.edit_history || activeAuditRec.edit_history.length === 0 ? (
+                  <div className="p-8 text-center bg-stone-50 rounded-2xl text-zinc-400 text-xs italic font-medium">
+                    No edit history recorded for this entry.
+                  </div>
+                ) : (
+                  <div className="space-y-4 border-l-2 border-brand-brown/10 pl-6 ml-3">
+                    {activeAuditRec.edit_history.map((log: any, logIdx: number) => (
+                      <div key={logIdx} className="relative space-y-2 bg-white rounded-2xl p-4 border border-brand-brown/5 shadow-sm">
+                        {/* Timeline visual node */}
+                        <div className="absolute -left-[31px] top-4 w-3 h-3 rounded-full bg-amber-500 border-2 border-brand-cream shadow"></div>
+                        
+                        <div className="flex justify-between items-start flex-wrap gap-2">
+                          <span className="text-xs font-black uppercase text-amber-600 flex items-center gap-1">
+                            Revision #{logIdx + 1}
+                          </span>
+                          <span className="text-[10px] text-zinc-400 font-mono">
+                            {new Date(log.edited_at).toLocaleString('en-IN')}
+                          </span>
+                        </div>
+
+                        {/* Proper Reason */}
+                        <div className="p-2.5 bg-amber-500/5 rounded-xl border border-amber-500/10 text-xs">
+                          <span className="text-[10px] font-black uppercase text-amber-800 tracking-wider block mb-0.5">Reason for Edit</span>
+                          <p className="font-semibold text-brand-brown/95">{log.reason || 'No reason specified'}</p>
+                        </div>
+
+                        {/* Who changed it */}
+                        <div className="text-[10px] text-brand-brown/60 font-semibold">
+                          Edited by: <span className="font-bold text-brand-brown">{log.edited_by || 'Unknown'}</span>
+                        </div>
+
+                        {/* Comparison Table */}
+                        {log.previous_values && log.new_values && (
+                          <div className="grid grid-cols-2 gap-4 pt-2 mt-2 border-t border-zinc-100 text-[11px]">
+                            {/* Before */}
+                            <div className="space-y-1">
+                              <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Before Change</span>
+                              <div className="bg-stone-50 rounded-lg p-2 font-mono text-[10px] text-zinc-500 leading-relaxed whitespace-pre-line">
+                                {(() => {
+                                  const parts = [];
+                                  if (log.previous_values.date) parts.push(`Date: ${log.previous_values.date}`);
+                                  if (log.previous_values.credit_cash > 0) parts.push(`Cr Cash: ₹${log.previous_values.credit_cash}`);
+                                  if (log.previous_values.credit_bank > 0) parts.push(`Cr Bank: ₹${log.previous_values.credit_bank}`);
+                                  if (log.previous_values.debit_cash > 0) parts.push(`Db Cash: ₹${log.previous_values.debit_cash}`);
+                                  if (log.previous_values.debit_bank > 0) parts.push(`Db Bank: ₹${log.previous_values.debit_bank}`);
+                                  const details = 
+                                    log.previous_values.credit_cash_details || 
+                                    log.previous_values.credit_bank_details || 
+                                    log.previous_values.debit_cash_details || 
+                                    log.previous_values.debit_bank_details || 
+                                    '';
+                                  if (details) parts.push(`Details: ${details}`);
+                                  return parts.join('\n') || 'Starting values';
+                                })()}
+                              </div>
+                            </div>
+                            {/* After */}
+                            <div className="space-y-1">
+                              <span className="text-[9px] font-bold text-emerald-600 uppercase tracking-wider">After Change</span>
+                              <div className="bg-emerald-500/5 rounded-lg p-2 font-mono text-[10px] text-emerald-700 leading-relaxed whitespace-pre-line">
+                                {(() => {
+                                  const parts = [];
+                                  if (log.new_values.date) parts.push(`Date: ${log.new_values.date}`);
+                                  if (log.new_values.amount) {
+                                    const m = (log.new_values.method || 'cash').toUpperCase();
+                                    const t = (log.new_values.type || 'credit').toUpperCase();
+                                    parts.push(`${t} ${m}: ₹${log.new_values.amount}`);
+                                  } else {
+                                    if (log.new_values.credit_cash > 0) parts.push(`Cr Cash: ₹${log.new_values.credit_cash}`);
+                                    if (log.new_values.credit_bank > 0) parts.push(`Cr Bank: ₹${log.new_values.credit_bank}`);
+                                  }
+                                  if (log.new_values.details) parts.push(`Details: ${log.new_values.details}`);
+                                  return parts.join('\n');
+                                })()}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

@@ -22,6 +22,29 @@
   display: none;
 }
 
+/* Custom scrollbar styling for high-contrast visibility */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  display: block;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #FDFBF5; 
+  border-radius: 6px;
+  border: 1px solid #E7E5E4;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #4A2C2A;
+  border-radius: 6px;
+  border: 2px solid #FDFBF5;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #D95323;
+}
+
 #print-root {
   display: none;
 }

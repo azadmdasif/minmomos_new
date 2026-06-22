@@ -376,9 +376,9 @@ export async function saveOrder(
       };
       
       if (item.menuItemId && 
-          item.menuItemId !== 'discount' && 
-          item.menuItemId !== 'registration' && 
-          item.menuItemId.length > 24) { // Only assign if it looks like a real UUID to avoid FK errors with mock IDs
+          !item.menuItemId.includes('discount') && 
+          !item.menuItemId.includes('promo') &&
+          item.menuItemId !== 'registration') {
         row.menu_item_id = item.menuItemId;
       }
       
@@ -410,7 +410,6 @@ export async function saveOrder(
     }
 
     const { data: menuItems } = await fetchMenuItems();
-    const SIZE_PIECES: Record<string, number> = { small: 4, medium: 6, large: 8 };
 
     for (const item of orderItems) {
       if (!item.menuItemId || item.menuItemId === 'discount') continue;
@@ -482,26 +481,22 @@ export async function saveOrder(
         continue;
       }
 
-      // Determine size from name suffix
+       // Determine size from name suffix
       let size: Size = 'medium';
       if (item.name.includes('(Small)')) size = 'small';
       else if (item.name.includes('(Large)')) size = 'large';
 
-      // 1. Get the right recipe: Size-specific takes priority, otherwise use global
-      const hasSizeRecipe = !!(menuDetail.sizeRecipes?.[size] && menuDetail.sizeRecipes[size]!.length > 0);
-      let activeRecipe = hasSizeRecipe ? menuDetail.sizeRecipes![size] : menuDetail.recipe;
+      // 1. Get the right recipe: Fallback to global if size recipe is empty or not configured.
+      let activeRecipe = menuDetail.recipe || [];
+      const sizeRecipe = menuDetail.sizeRecipes?.[size];
+
+      if (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) {
+        activeRecipe = sizeRecipe;
+      }
       
       if (activeRecipe && Array.isArray(activeRecipe) && activeRecipe.length > 0) {
-        // 2. Determine Multiplier
-        // If we have an explicit size-recipe, we use quantities as-is (multiplier=1).
-        // If we fall back to global recipe for 'momo' category, we apply the plate-size multiplier.
-        let sizeMultiplier = 1;
-        if (!hasSizeRecipe && menuDetail.category === 'momo') {
-          sizeMultiplier = SIZE_PIECES[size] || 6;
-        }
-
         for (const requirement of activeRecipe) {
-          const totalConsumption = requirement.quantity * sizeMultiplier * item.quantity;
+          const totalConsumption = requirement.quantity * item.quantity;
           
           if (totalConsumption <= 0) continue;
 
@@ -873,18 +868,38 @@ export async function resetAllStockToZero(
 }
 
 export async function getOrdersForDateRange(startDate: string, endDate: string): Promise<CompletedOrder[]> {
-  const { data } = await supabase
-    .from('orders')
-    .select(`*, items:order_items (*)`)
-    .gte('date', `${startDate}T00:00:00+05:30`)
-    .lte('date', `${endDate}T23:59:59+05:30`)
-    .is('deletion_info', null)
-    .order('bill_number', { ascending: false });
-  
-  if (!data) return [];
+  let allData: any[] = [];
+  let page = 0;
+  const pageSize = 1000;
+  let hasMore = true;
+
+  while (hasMore) {
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
+    
+    const { data, error } = await supabase
+      .from('orders')
+      .select(`*, items:order_items (*)`)
+      .gte('date', `${startDate}T00:00:00+05:30`)
+      .lte('date', `${endDate}T23:59:59+05:30`)
+      .is('deletion_info', null)
+      .order('bill_number', { ascending: false })
+      .range(from, to);
+
+    if (error || !data || data.length === 0) {
+      hasMore = false;
+    } else {
+      allData = allData.concat(data);
+      if (data.length < pageSize) {
+        hasMore = false;
+      } else {
+        page++;
+      }
+    }
+  }
 
   // For orders missing items, try a fallback fetch (though this is more common for single orders due to RLS/join limits)
-  const results = await Promise.all(data.map(async (o) => {
+  const results = await Promise.all(allData.map(async (o) => {
     // If Supabase didn't join items (aliased as 'items' now)
     if (!o.items || o.items.length === 0) {
        const { data: fallbackItems } = await supabase.from('order_items').select('*').eq('order_id', o.id);
@@ -995,17 +1010,37 @@ export async function getMatchingMenuItems(term: string): Promise<string[]> {
 }
 
 export async function getDeletedOrdersForDateRange(startDate: string, endDate: string): Promise<CompletedOrder[]> {
-  const { data } = await supabase
-    .from('orders')
-    .select(`*, items:order_items (*)`)
-    .gte('date', `${startDate}T00:00:00+05:30`)
-    .lte('date', `${endDate}T23:59:59+05:30`)
-    .not('deletion_info', 'is', null)
-    .order('bill_number', { ascending: false });
-  
-  if (!data) return [];
+  let allData: any[] = [];
+  let page = 0;
+  const pageSize = 1000;
+  let hasMore = true;
 
-  const results = await Promise.all(data.map(async (o) => {
+  while (hasMore) {
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
+    
+    const { data, error } = await supabase
+      .from('orders')
+      .select(`*, items:order_items (*)`)
+      .gte('date', `${startDate}T00:00:00+05:30`)
+      .lte('date', `${endDate}T23:59:59+05:30`)
+      .not('deletion_info', 'is', null)
+      .order('bill_number', { ascending: false })
+      .range(from, to);
+
+    if (error || !data || data.length === 0) {
+      hasMore = false;
+    } else {
+      allData = allData.concat(data);
+      if (data.length < pageSize) {
+        hasMore = false;
+      } else {
+        page++;
+      }
+    }
+  }
+
+  const results = await Promise.all(allData.map(async (o) => {
     if (!o.items || o.items.length === 0) {
        const { data: fallbackItems } = await supabase.from('order_items').select('*').eq('order_id', o.id);
        if (fallbackItems && fallbackItems.length > 0) o.items = fallbackItems;
@@ -1052,7 +1087,6 @@ export async function deleteOrderByBillNumber(billNumber: number, reason: string
     // REVERSE STOCK DEDUCTION
     try {
       const { data: menuItems } = await fetchMenuItems();
-      const SIZE_PIECES: Record<string, number> = { small: 4, medium: 6, large: 8 };
       const branchName = order.branch_name;
 
       for (const item of (order.order_items as any[] || [])) {
@@ -1095,17 +1129,17 @@ export async function deleteOrderByBillNumber(billNumber: number, reason: string
         if (item.name.includes('(Small)')) size = 'small';
         else if (item.name.includes('(Large)')) size = 'large';
 
-        const hasSizeRecipe = !!(menuDetail.sizeRecipes?.[size] && menuDetail.sizeRecipes[size]!.length > 0);
-        let activeRecipe = hasSizeRecipe ? menuDetail.sizeRecipes![size] : menuDetail.recipe;
+        // 1. Get the right recipe: Fallback to global if size recipe is empty or not configured.
+        let activeRecipe = menuDetail.recipe || [];
+        const sizeRecipe = menuDetail.sizeRecipes?.[size];
+
+        if (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) {
+          activeRecipe = sizeRecipe;
+        }
         
         if (activeRecipe && Array.isArray(activeRecipe) && activeRecipe.length > 0) {
-          let sizeMultiplier = 1;
-          if (!hasSizeRecipe && menuDetail.category === 'momo') {
-            sizeMultiplier = SIZE_PIECES[size] || 6;
-          }
-
           for (const requirement of activeRecipe) {
-            const totalToReturn = requirement.quantity * sizeMultiplier * item.quantity;
+            const totalToReturn = requirement.quantity * item.quantity;
             if (totalToReturn <= 0) continue;
 
             const { data: existingInv } = await supabase.from('inventory').select('current_stock').eq('id', requirement.materialId).eq('branch_name', branchName).maybeSingle();
@@ -1364,11 +1398,31 @@ export interface CohortOrder {
 }
 
 export async function fetchCohortRawData(): Promise<CohortOrder[]> {
-  // 1. Fetch ALL customers (up to 50k) to get their true join dates
-  const { data: customersData } = await supabase
-    .from('customers')
-    .select('phone, created_at')
-    .limit(50000);
+  // 1. Fetch ALL customers (up to 50k) to get their true join dates in paginated pages
+  let customersData: any[] = [];
+  let customerPage = 0;
+  const customerPageSize = 1000;
+  let hasMoreCustomers = true;
+
+  while (hasMoreCustomers && customersData.length < 50000) {
+    const from = customerPage * customerPageSize;
+    const to = from + customerPageSize - 1;
+    const { data, error } = await supabase
+      .from('customers')
+      .select('phone, created_at')
+      .range(from, to);
+
+    if (error || !data || data.length === 0) {
+      hasMoreCustomers = false;
+    } else {
+      customersData = customersData.concat(data);
+      if (data.length < customerPageSize) {
+        hasMoreCustomers = false;
+      } else {
+        customerPage++;
+      }
+    }
+  }
 
   const joinDateMap: Record<string, string> = {};
   customersData?.forEach(c => {
@@ -1378,15 +1432,35 @@ export async function fetchCohortRawData(): Promise<CohortOrder[]> {
   });
 
   // 2. Fetch RECENT orders to see return rate
-  // We fetch last 70,000 orders which should cover several months
-  const { data: ordersData } = await supabase
-    .from('orders')
-    .select('customer_phone, date, bill_number')
-    .is('deletion_info', null)
-    .order('date', { ascending: false })
-    .limit(70000);
+  // We fetch last 70,000 orders which should cover several months using paginated fetch
+  let ordersData: any[] = [];
+  let orderPage = 0;
+  const orderPageSize = 1000;
+  let hasMoreOrders = true;
+
+  while (hasMoreOrders && ordersData.length < 70000) {
+    const from = orderPage * orderPageSize;
+    const to = from + orderPageSize - 1;
+    const { data, error } = await supabase
+      .from('orders')
+      .select('customer_phone, date, bill_number')
+      .is('deletion_info', null)
+      .order('date', { ascending: false })
+      .range(from, to);
+
+    if (error || !data || data.length === 0) {
+      hasMoreOrders = false;
+    } else {
+      ordersData = ordersData.concat(data);
+      if (data.length < orderPageSize) {
+        hasMoreOrders = false;
+      } else {
+        orderPage++;
+      }
+    }
+  }
   
-  if (!ordersData) return [];
+  if (ordersData.length === 0) return [];
   
   const results: CohortOrder[] = [];
   const processedOrders = ordersData.filter(o => o.customer_phone);
@@ -1416,16 +1490,36 @@ export async function fetchCohortRawData(): Promise<CohortOrder[]> {
 }
 
 export async function fetchCustomerClassificationStats(): Promise<Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }>> {
-  const { data } = await supabase
-    .from('orders')
-    .select('customer_phone, type')
-    .is('deletion_info', null)
-    .order('date', { ascending: false })
-    .limit(10000); 
+  let allOrders: any[] = [];
+  let page = 0;
+  const pageSize = 1000;
+  let hasMore = true;
+
+  while (hasMore && allOrders.length < 10000) {
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
+    const { data, error } = await supabase
+      .from('orders')
+      .select('customer_phone, type')
+      .is('deletion_info', null)
+      .order('date', { ascending: false })
+      .range(from, to);
+
+    if (error || !data || data.length === 0) {
+      hasMore = false;
+    } else {
+      allOrders = allOrders.concat(data);
+      if (data.length < pageSize) {
+        hasMore = false;
+      } else {
+        page++;
+      }
+    }
+  }
   
   const stats: Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }> = {};
   
-  data?.forEach(o => {
+  allOrders.forEach(o => {
     const rawPhone = o.customer_phone?.toString();
     if (!rawPhone) return;
     

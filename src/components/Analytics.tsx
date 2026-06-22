@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchProcurements, getCentralInventory, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats } from '../utils/storage';
-import { CompletedOrder, PaymentMethod, Station, User, CentralMaterial, Customer } from '../types';
+import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats } from '../utils/storage';
+import { CompletedOrder, PaymentMethod, Station, User, Customer } from '../types';
 import PrintReceipt from './PrintReceipt';
 import DeleteBillModal from './DeleteBillModal';
 import ItemSalesReport from './ItemSalesReport';
@@ -98,8 +98,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [allOrdersRaw, setAllOrdersRaw] = useState<CompletedOrder[]>([]);
   const [deletedOrders, setDeletedOrders] = useState<CompletedOrder[]>([]);
   const [adjustments, setAdjustments] = useState<any[]>([]);
-  const [procurements, setProcurements] = useState<any[]>([]);
-  const [centralInv, setCentralInv] = useState<CentralMaterial[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [selectedCustomerHistory, setSelectedCustomerHistory] = useState<CompletedOrder[]>([]);
   const [customMessage, setCustomMessage] = useState('');
@@ -138,6 +136,153 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [customerActivityEnd, setCustomerActivityEnd] = useState<string>('');
   const [selectedDayInsights, setSelectedDayInsights] = useState<number | null>(null);
   const [selectedSequenceDetail, setSelectedSequenceDetail] = useState<{ seq: number | string, orders: CompletedOrder[], label: string } | null>(null);
+
+  // Sorting & Filtering states for Revenue table
+  const [revSortField, setRevSortField] = useState<'date' | 'total' | 'billNumber'>('date');
+  const [revSortOrder, setRevSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [revTypeFilter, setRevTypeFilter] = useState<string>('all');
+  const [revBranchFilter, setRevBranchFilter] = useState<string>('all');
+  const [revMinAmount, setRevMinAmount] = useState<string>('');
+  const [revMaxAmount, setRevMaxAmount] = useState<string>('');
+  const [revSearchQuery, setRevSearchQuery] = useState<string>('');
+
+  const handleToggleRevSort = (field: 'date' | 'total' | 'billNumber') => {
+    if (revSortField === field) {
+      setRevSortOrder(prev => prev === 'desc' ? 'asc' : 'desc');
+    } else {
+      setRevSortField(field);
+      setRevSortOrder('desc');
+    }
+  };
+
+  // Sorting & Filtering for Stock Adjustments tab
+  const [adjSortField, setAdjSortField] = useState<'date' | 'quantity_change'>('date');
+  const [adjSortOrder, setAdjSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [adjBranchFilter, setAdjBranchFilter] = useState<string>('all');
+  const [adjSearchQuery, setAdjSearchQuery] = useState<string>('');
+
+  const handleToggleAdjSort = (field: 'date' | 'quantity_change') => {
+    if (adjSortField === field) {
+      setAdjSortOrder(prev => prev === 'desc' ? 'asc' : 'desc');
+    } else {
+      setAdjSortField(field);
+      setAdjSortOrder('desc');
+    }
+  };
+
+  // Helper to extract unique branches from dataset dynamically
+  const uniqueBranches = useMemo(() => {
+    const branches = new Set<string>();
+    orders.forEach(o => { if (o.branchName) branches.add(o.branchName); });
+    deletedOrders.forEach(o => { if (o.branchName) branches.add(o.branchName); });
+    adjustments.forEach(a => { if (a.branch_name) branches.add(a.branch_name); });
+    return Array.from(branches);
+  }, [orders, deletedOrders, adjustments]);
+
+  // Computed Active or Voided orders filtered and sorted
+  const filteredAndSortedOrders = useMemo(() => {
+    const rawList = activeTab === 'active' ? orders : deletedOrders;
+    
+    // 1. Filter
+    let result = rawList.filter(o => {
+      // Search Query
+      if (revSearchQuery.trim()) {
+        const query = revSearchQuery.toLowerCase().trim();
+        const matchesBillNum = o.billNumber.toString().includes(query);
+        const matchesItem = o.items && o.items.some(item => item.name.toLowerCase().includes(query));
+        const matchesCashier = o.cashierName && o.cashierName.toLowerCase().includes(query);
+        const matchesPayment = o.paymentMethod && o.paymentMethod.toLowerCase().includes(query);
+        
+        if (!matchesBillNum && !matchesItem && !matchesCashier && !matchesPayment) {
+          return false;
+        }
+      }
+
+      // Order Mode / Type
+      if (revTypeFilter !== 'all') {
+        if (o.type.toLowerCase() !== revTypeFilter.toLowerCase()) {
+          return false;
+        }
+      }
+
+      // Branch / Store
+      if (revBranchFilter !== 'all') {
+        if (o.branchName.toLowerCase() !== revBranchFilter.toLowerCase()) {
+          return false;
+        }
+      }
+
+      // Amount Range
+      const val = o.type === 'DELIVERY' && o.manualTotal != null ? o.manualTotal : o.total;
+      if (revMinAmount.trim() !== '') {
+        const minVal = parseFloat(revMinAmount);
+        if (!isNaN(minVal) && val < minVal) return false;
+      }
+      if (revMaxAmount.trim() !== '') {
+        const maxVal = parseFloat(revMaxAmount);
+        if (!isNaN(maxVal) && val > maxVal) return false;
+      }
+
+      return true;
+    });
+
+    // 2. Sort
+    result = [...result].sort((a, b) => {
+      let comparison = 0;
+      if (revSortField === 'date') {
+        comparison = new Date(a.date).getTime() - new Date(b.date).getTime();
+      } else if (revSortField === 'total') {
+        const totalA = a.type === 'DELIVERY' && a.manualTotal != null ? a.manualTotal : a.total;
+        const totalB = b.type === 'DELIVERY' && b.manualTotal != null ? b.manualTotal : b.total;
+        comparison = totalA - totalB;
+      } else if (revSortField === 'billNumber') {
+        comparison = a.billNumber - b.billNumber;
+      }
+
+      return revSortOrder === 'asc' ? comparison : -comparison;
+    });
+
+    return result;
+  }, [activeTab, orders, deletedOrders, revSearchQuery, revTypeFilter, revBranchFilter, revMinAmount, revMaxAmount, revSortField, revSortOrder]);
+
+  // Computed Stock Adjustments filtered and sorted
+  const filteredAndSortedAdjustments = useMemo(() => {
+    // 1. Filter
+    let result = adjustments.filter(adj => {
+      if (adjSearchQuery.trim()) {
+        const query = adjSearchQuery.toLowerCase().trim();
+        const matchesItem = adj.inventory_id && adj.inventory_id.toLowerCase().includes(query);
+        const matchesUser = adj.performed_by && adj.performed_by.toLowerCase().includes(query);
+        const matchesReason = adj.reason && adj.reason.toLowerCase().includes(query);
+
+        if (!matchesItem && !matchesUser && !matchesReason) {
+          return false;
+        }
+      }
+
+      if (adjBranchFilter !== 'all') {
+        if (adj.branch_name.toLowerCase() !== adjBranchFilter.toLowerCase()) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    // 2. Sort
+    result = [...result].sort((a, b) => {
+      let comparison = 0;
+      if (adjSortField === 'date') {
+        comparison = new Date(a.date).getTime() - new Date(b.date).getTime();
+      } else if (adjSortField === 'quantity_change') {
+        comparison = Math.abs(a.quantity_change) - Math.abs(b.quantity_change);
+      }
+
+      return adjSortOrder === 'asc' ? comparison : -comparison;
+    });
+
+    return result;
+  }, [adjustments, adjSearchQuery, adjBranchFilter, adjSortField, adjSortOrder]);
 
   const behaviorData = useMemo(() => {
     if (!orders.length || !cohortRawData.length) return null;
@@ -294,15 +439,11 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     };
   }, [orders, cohortRawData]);
 
-  // Fixed Costs (Persisted in localStorage for convenience)
-  const [salaryRate, setSalaryRate] = useState<number>(Number(localStorage.getItem('momo_salary_rate') || 1200));
-  const [rentRate, setRentRate] = useState<number>(Number(localStorage.getItem('momo_rent_rate') || 800));
-
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [orderToDelete, setOrderToDelete] = useState<CompletedOrder | null>(null);
 
   const fetchStaticData = useCallback(async () => {
-    const [s, c] = isAdmin ? await Promise.all([getStations(), getCentralInventory()]) : [[], []];
+    const s = isAdmin ? await getStations() : [];
     
     // Fetch customers for both Admin and Manager
     // Managers only see their own branch customers
@@ -315,7 +456,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     
     if (isAdmin) {
       setAvailableStations(s);
-      setCentralInv(c);
     }
     setCustomers(cust);
     setCustomerOrderStats(stats);
@@ -352,10 +492,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   }, [startDate, endDate, selectedStore, isAdmin, user.stationName]);
 
   const fetchFinanceData = useCallback(async () => {
-    if (!isAdmin) return;
-    const pRes = await fetchProcurements(startDate, endDate);
-    setProcurements(pRes.data || []);
-  }, [isAdmin, startDate, endDate]);
+    // Relocated to ledger statements
+  }, []);
 
   const fetchDeletedOrders = useCallback(async () => {
     const expandedStart = getHistoricalStartDate(startDate, 32);
@@ -700,6 +838,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     let revenue = 0;
     let deliveryRevenue = 0;
     let deliveryDiscount = 0;
+    let deliveryMenuTotal = 0;
     let cogs = 0;
     const breakdown: Record<PaymentMethod, number> = { 'Cash': 0, 'UPI': 0, 'Card': 0 };
 
@@ -711,6 +850,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         const dRev = order.manualTotal != null ? Math.round(order.manualTotal) : Math.round(order.total);
         deliveryRevenue += dRev;
         deliveryDiscount += (order.manualDiscount || 0);
+        deliveryMenuTotal += Math.round(order.total || 0);
         
         // Use manual total for breakdown for consistency if it's a delivery order
         if (order.paymentMethod && order.paymentMethod in breakdown) {
@@ -730,6 +870,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       totalRevenue: revenue, 
       deliveryRevenue: deliveryRevenue,
       deliveryDiscount: deliveryDiscount,
+      deliveryMenuTotal: deliveryMenuTotal,
       totalCogs: cogs,
       grossProfit,
       profitMargin: (revenue + deliveryRevenue) > 0 ? (grossProfit / (revenue + deliveryRevenue)) * 100 : 0,
@@ -738,37 +879,6 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       totalOrders: orders.length,
     };
   }, [orders]);
-
-  const pnlData = useMemo(() => {
-    if (!isAdmin) return null;
-
-    const indirectCogs = procurements.reduce((acc, p) => {
-      const item = centralInv.find(ci => ci.id === p.item_id);
-      if (item && (item.category === 'PACKET' || item.category === 'INGREDIENT')) {
-        return acc + (p.total_cost || 0);
-      }
-      return acc;
-    }, 0);
-
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    const daysCount = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
-
-    const totalSalary = daysCount * salaryRate;
-    const totalRent = daysCount * rentRate;
-    const fixedCosts = totalSalary + totalRent;
-    
-    const netProfit = financialData.grossProfit - indirectCogs - fixedCosts;
-
-    return {
-      indirectCogs,
-      fixedCosts,
-      salary: totalSalary,
-      rent: totalRent,
-      netProfit,
-      days: daysCount
-    };
-  }, [isAdmin, procurements, centralInv, financialData, startDate, endDate, salaryRate, rentRate]);
 
   const comparisonData = useMemo(() => {
     if (!isAdmin) return [];
@@ -1574,7 +1684,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
           <div className="space-y-6 lg:space-y-8 animate-in fade-in duration-500">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 lg:gap-6">
               <SummaryCard title="In-Store Sales" value={financialData.totalRevenue} sub="Dine-in / Takeaway" color="bg-brand-yellow" />
-              <SummaryCard title="Delivery Sales" value={financialData.deliveryRevenue} sub={`Disc: ₹${financialData.deliveryDiscount}`} color="bg-brand-red" textWhite />
+              <SummaryCard title="Delivery Sales" value={financialData.deliveryRevenue} sub={`Menu Price Total: ₹${financialData.deliveryMenuTotal.toLocaleString()}`} color="bg-brand-red" textWhite />
               <SummaryCard title="Combined Revenue" value={financialData.totalRevenue + financialData.deliveryRevenue} sub="Total Collected" color="bg-brand-brown" textWhite />
               <SummaryCard title="Gross Profit" value={financialData.grossProfit} sub="Direct Margin" color="bg-emerald-500" textWhite />
               <SummaryCard title="Order COGS" value={financialData.totalCogs} sub="Materials Used" color="bg-brand-stone" />
@@ -1583,19 +1693,245 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
             <TimeWiseRevenueChart orders={orders} />
             
             <div className="bg-white rounded-2xl lg:rounded-[3rem] p-4 lg:p-10 shadow-xl border border-brand-stone overflow-x-auto">
-              <div className="flex justify-between items-center mb-6">
-                <div className="flex bg-brand-brown/5 p-1 rounded-2xl">
-                  <button onClick={() => setActiveTab('active')} className={`px-4 lg:px-8 py-2 lg:py-3 rounded-xl text-[9px] lg:text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'active' ? 'bg-brand-brown text-brand-yellow' : 'text-brand-brown/40'}`}>Active</button>
-                  <button onClick={() => setActiveTab('deleted')} className={`px-4 lg:px-8 py-2 lg:py-3 rounded-xl text-[9px] lg:text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'deleted' ? 'bg-brand-brown text-brand-yellow' : 'text-brand-brown/40'}`}>Voided</button>
-                  <button onClick={() => setActiveTab('adjustments')} className={`px-4 lg:px-8 py-2 lg:py-3 rounded-xl text-[9px] lg:text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'adjustments' ? 'bg-brand-brown text-brand-yellow' : 'text-brand-brown/40'}`}>Stock Adjustments</button>
+              <div className="flex flex-col gap-6 mb-6">
+                <div className="flex justify-between items-center">
+                  <div className="flex bg-brand-brown/5 p-1 rounded-2xl">
+                    <button onClick={() => setActiveTab('active')} className={`px-4 lg:px-8 py-2 lg:py-3 rounded-xl text-[9px] lg:text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'active' ? 'bg-brand-brown text-brand-yellow' : 'text-brand-brown/40'}`}>Active</button>
+                    <button onClick={() => setActiveTab('deleted')} className={`px-4 lg:px-8 py-2 lg:py-3 rounded-xl text-[9px] lg:text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'deleted' ? 'bg-brand-brown text-brand-yellow' : 'text-brand-brown/40'}`}>Voided</button>
+                    <button onClick={() => setActiveTab('adjustments')} className={`px-4 lg:px-8 py-2 lg:py-3 rounded-xl text-[9px] lg:text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'adjustments' ? 'bg-brand-brown text-brand-yellow' : 'text-brand-brown/40'}`}>Stock Adjustments</button>
+                  </div>
                 </div>
+
+                {activeTab !== 'adjustments' ? (
+                  /* Active & Voided Orders Filter Bar */
+                  <div className="bg-brand-brown/5 border border-brand-stone p-5 rounded-2xl space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                      {/* Search Query */}
+                      <div className="md:col-span-2">
+                        <label className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider block mb-1">Search Orders</label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={revSearchQuery}
+                            onChange={e => setRevSearchQuery(e.target.value)}
+                            placeholder="Search Bill #, Item name, etc..."
+                            className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010] outline-none focus:border-brand-brown transition-all"
+                          />
+                          <Search className="w-3.5 h-3.5 text-brand-brown/40 absolute left-3 top-1/2 -translate-y-1/2" />
+                        </div>
+                      </div>
+
+                      {/* Sort Field */}
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider block mb-1">Sort By</label>
+                        <select
+                          value={revSortField}
+                          onChange={e => setRevSortField(e.target.value as any)}
+                          className="w-full p-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010] outline-none focus:border-brand-brown transition-all"
+                        >
+                          <option value="date">Date & Time</option>
+                          <option value="total">Order Total</option>
+                          <option value="billNumber">Bill Number</option>
+                        </select>
+                      </div>
+
+                      {/* Sort Order */}
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider block mb-1">Direction</label>
+                        <select
+                          value={revSortOrder}
+                          onChange={e => setRevSortOrder(e.target.value as any)}
+                          className="w-full p-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010] outline-none focus:border-brand-brown transition-all"
+                        >
+                          <option value="desc">Descending (New/High)</option>
+                          <option value="asc">Ascending (Old/Low)</option>
+                        </select>
+                      </div>
+
+                      {/* Type Filter */}
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider block mb-1">Order Mode</label>
+                        <select
+                          value={revTypeFilter}
+                          onChange={e => setRevTypeFilter(e.target.value)}
+                          className="w-full p-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010] outline-none focus:border-brand-brown transition-all"
+                        >
+                          <option value="all">All Modes</option>
+                          <option value="dine_in">Dine-In</option>
+                          <option value="takeaway">Takeaway</option>
+                          <option value="delivery">Delivery</option>
+                        </select>
+                      </div>
+
+                      {/* Branch Filter */}
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider block mb-1">Branch</label>
+                        <select
+                          disabled={!isAdmin}
+                          value={revBranchFilter}
+                          onChange={e => setRevBranchFilter(e.target.value)}
+                          className="w-full p-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010] outline-none focus:border-brand-brown transition-all disabled:opacity-50"
+                        >
+                          <option value="all">All Branches</option>
+                          {uniqueBranches.map(branchName => (
+                            <option key={branchName} value={branchName}>{branchName}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-4 pt-4 border-t border-brand-brown/10">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider">Amount Range:</span>
+                        <input
+                          type="number"
+                          placeholder="Min ₹"
+                          value={revMinAmount}
+                          onChange={e => setRevMinAmount(e.target.value)}
+                          className="w-24 p-2 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010]"
+                        />
+                        <span className="text-xs text-brand-brown/40">to</span>
+                        <input
+                          type="number"
+                          placeholder="Max ₹"
+                          value={revMaxAmount}
+                          onChange={e => setRevMaxAmount(e.target.value)}
+                          className="w-24 p-2 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010]"
+                        />
+                      </div>
+
+                      {(revSearchQuery || revTypeFilter !== 'all' || revBranchFilter !== 'all' || revMinAmount || revMaxAmount) && (
+                        <button
+                          onClick={() => {
+                            setRevSearchQuery('');
+                            setRevTypeFilter('all');
+                            setRevBranchFilter('all');
+                            setRevMinAmount('');
+                            setRevMaxAmount('');
+                          }}
+                          className="text-[10px] font-black uppercase text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 px-3 py-1.5 rounded-lg transition-all"
+                        >
+                          Clear Filters
+                        </button>
+                      )}
+
+                      <div className="ml-auto text-[10px] font-bold text-brand-brown/60 bg-white/50 border border-brand-stone px-3 py-1.5 rounded-lg">
+                        Showing <span className="font-extrabold text-brand-brown">{filteredAndSortedOrders.length}</span> of {activeTab === 'active' ? orders.length : deletedOrders.length} orders
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  /* Stock Adjustments Filter Bar */
+                  <div className="bg-brand-brown/5 border border-brand-stone p-5 rounded-2xl space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                      {/* Search Query */}
+                      <div className="md:col-span-2">
+                        <label className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider block mb-1">Search Adjustments</label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={adjSearchQuery}
+                            onChange={e => setAdjSearchQuery(e.target.value)}
+                            placeholder="Search Item ID, reason, or name..."
+                            className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010] outline-none focus:border-brand-brown transition-all"
+                          />
+                          <Search className="w-3.5 h-3.5 text-brand-brown/40 absolute left-3 top-1/2 -translate-y-1/2" />
+                        </div>
+                      </div>
+
+                      {/* Sort Field */}
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider block mb-1">Sort By</label>
+                        <select
+                          value={adjSortField}
+                          onChange={e => setAdjSortField(e.target.value as any)}
+                          className="w-full p-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010] outline-none focus:border-brand-brown transition-all"
+                        >
+                          <option value="date">Date & Time</option>
+                          <option value="quantity_change">Absolute Change</option>
+                        </select>
+                      </div>
+
+                      {/* Sort Direction */}
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider block mb-1">Direction</label>
+                        <select
+                          value={adjSortOrder}
+                          onChange={e => setAdjSortOrder(e.target.value as any)}
+                          className="w-full p-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010] outline-none focus:border-brand-brown transition-all"
+                        >
+                          <option value="desc">Descending (Newest/Highest)</option>
+                          <option value="asc">Ascending (Oldest/Lowest)</option>
+                        </select>
+                      </div>
+
+                      {/* Branch Filter */}
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider block mb-1">Branch</label>
+                        <select
+                          disabled={!isAdmin}
+                          value={adjBranchFilter}
+                          onChange={e => setAdjBranchFilter(e.target.value)}
+                          className="w-full p-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010] outline-none focus:border-brand-brown transition-all disabled:opacity-50"
+                        >
+                          <option value="all">All Branches</option>
+                          {uniqueBranches.map(branchName => (
+                            <option key={branchName} value={branchName}>{branchName}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-4 pt-4 border-t border-brand-brown/10">
+                      {(adjSearchQuery || adjBranchFilter !== 'all') && (
+                        <button
+                          onClick={() => {
+                            setAdjSearchQuery('');
+                            setAdjBranchFilter('all');
+                          }}
+                          className="text-[10px] font-black uppercase text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 px-3 py-1.5 rounded-lg transition-all"
+                        >
+                          Clear Filters
+                        </button>
+                      )}
+
+                      <div className="ml-auto text-[10px] font-bold text-brand-brown/60 bg-white/50 border border-brand-stone px-3 py-1.5 rounded-lg">
+                        Showing <span className="font-extrabold text-brand-brown">{filteredAndSortedAdjustments.length}</span> of {adjustments.length} records
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="min-w-[600px]">
                 {activeTab !== 'adjustments' ? (
                   <table className="w-full text-left">
-                    <thead><tr className="bg-brand-brown/5 text-brand-brown/40 text-[9px] lg:text-[10px] font-black uppercase"><th className="px-4 lg:px-8 py-4">Bill #</th><th className="px-4 lg:px-8 py-4">Date</th><th className="px-4 lg:px-8 py-4">Branch</th><th className="px-4 lg:px-8 py-4">Type</th><th className="px-4 lg:px-8 py-4 text-right">Total</th><th className="px-4 lg:px-8 py-4 text-right">Action</th></tr></thead>
+                    <thead>
+                      <tr className="bg-brand-brown/5 text-brand-brown/40 text-[9px] lg:text-[10px] font-black uppercase">
+                        <th 
+                          onClick={() => handleToggleRevSort('billNumber')} 
+                          className="px-4 lg:px-8 py-4 cursor-pointer hover:bg-brand-brown/10 select-none transition-colors"
+                        >
+                          Bill # {revSortField === 'billNumber' ? (revSortOrder === 'desc' ? '▼' : '▲') : '↕'}
+                        </th>
+                        <th 
+                          onClick={() => handleToggleRevSort('date')} 
+                          className="px-4 lg:px-8 py-4 cursor-pointer hover:bg-brand-brown/10 select-none transition-colors"
+                        >
+                          Date {revSortField === 'date' ? (revSortOrder === 'desc' ? '▼' : '▲') : '↕'}
+                        </th>
+                        <th className="px-4 lg:px-8 py-4">Branch</th>
+                        <th className="px-4 lg:px-8 py-4">Type</th>
+                        <th 
+                          onClick={() => handleToggleRevSort('total')} 
+                          className="px-4 lg:px-8 py-4 cursor-pointer hover:bg-brand-brown/10 select-none transition-colors text-right"
+                        >
+                          Total {revSortField === 'total' ? (revSortOrder === 'desc' ? '▼' : '▲') : '↕'}
+                        </th>
+                        <th className="px-4 lg:px-8 py-4 text-right">Action</th>
+                      </tr>
+                    </thead>
                     <tbody className="divide-y divide-brand-stone">
-                      {(activeTab === 'active' ? orders : deletedOrders).map(o => (
+                      {filteredAndSortedOrders.map(o => (
                         <tr key={o.id} className="hover:bg-brand-cream/50 transition-colors group">
                           <td className="px-4 lg:px-8 py-4 font-black text-xs lg:text-sm">#{o.billNumber}</td>
                           <td className="px-4 lg:px-8 py-4 text-[10px] lg:text-xs">{getISTFullDateTime(o.date)}</td>
@@ -1631,16 +1967,26 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                   <table className="w-full text-left">
                     <thead>
                       <tr className="bg-brand-brown/5 text-brand-brown/40 text-[9px] lg:text-[10px] font-black uppercase">
-                        <th className="px-4 lg:px-8 py-4">Date</th>
+                        <th 
+                          onClick={() => handleToggleAdjSort('date')} 
+                          className="px-4 lg:px-8 py-4 cursor-pointer hover:bg-brand-brown/10 select-none transition-colors"
+                        >
+                          Date {adjSortField === 'date' ? (adjSortOrder === 'desc' ? '▼' : '▲') : '↕'}
+                        </th>
                         <th className="px-4 lg:px-8 py-4">Item ID</th>
                         <th className="px-4 lg:px-8 py-4">Branch</th>
-                        <th className="px-4 lg:px-8 py-4 text-center">Change</th>
+                        <th 
+                          onClick={() => handleToggleAdjSort('quantity_change')} 
+                          className="px-4 lg:px-8 py-4 cursor-pointer hover:bg-brand-brown/10 select-none transition-colors text-center"
+                        >
+                          Change {adjSortField === 'quantity_change' ? (adjSortOrder === 'desc' ? '▼' : '▲') : '↕'}
+                        </th>
                         <th className="px-4 lg:px-8 py-4">Performed By</th>
                         <th className="px-4 lg:px-8 py-4 text-right">Reason</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-brand-stone">
-                      {adjustments.map((adj, idx) => (
+                      {filteredAndSortedAdjustments.map((adj, idx) => (
                         <tr key={idx} className="hover:bg-brand-cream/50 transition-colors">
                           <td className="px-4 lg:px-8 py-4 text-[10px] lg:text-xs">{getISTFullDateTime(adj.date)}</td>
                           <td className="px-4 lg:px-8 py-4 font-black text-xs lg:text-sm uppercase">{adj.inventory_id}</td>
@@ -2316,60 +2662,19 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
           </div>
         )}
 
-        {reportView === 'profitability' && isAdmin && pnlData && (
-          <div className="animate-in fade-in zoom-in-95 duration-700 space-y-6 lg:space-y-10">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8">
-              <div className="bg-white p-6 lg:p-10 rounded-[2.5rem] lg:rounded-[4rem] border-2 lg:border-4 border-brand-stone shadow-xl">
-                <h3 className="text-lg lg:text-xl font-black italic text-brand-brown uppercase mb-6 lg:mb-8 underline decoration-brand-yellow decoration-4 lg:decoration-8 underline-offset-4 lg:underline-offset-8">Fixed Cost <span className="text-brand-yellow">Params</span></h3>
-                <div className="space-y-4 lg:space-y-6">
-                  <div>
-                    <label className="text-[8px] lg:text-[10px] font-black uppercase text-brand-brown/40 tracking-widest ml-4 mb-2 block">Daily Salary (₹)</label>
-                    <input type="number" value={salaryRate} onChange={e => { const val = Number(e.target.value); setSalaryRate(val); localStorage.setItem('momo_salary_rate', val.toString()); }} className="w-full p-4 lg:p-6 rounded-2xl lg:rounded-3xl border-2 border-brand-stone bg-brand-cream/30 font-black text-lg lg:text-xl text-brand-brown outline-none focus:border-brand-yellow transition-all" />
-                  </div>
-                  <div>
-                    <label className="text-[8px] lg:text-[10px] font-black uppercase text-brand-brown/40 tracking-widest ml-4 mb-2 block">Daily Rent (₹)</label>
-                    <input type="number" value={rentRate} onChange={e => { const val = Number(e.target.value); setRentRate(val); localStorage.setItem('momo_rent_rate', val.toString()); }} className="w-full p-4 lg:p-6 rounded-2xl lg:rounded-3xl border-2 border-brand-stone bg-brand-cream/30 font-black text-lg lg:text-xl text-brand-brown outline-none focus:border-brand-yellow transition-all" />
-                  </div>
-                  <p className="text-[8px] lg:text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest text-center mt-4 italic">Period: {pnlData.days} days</p>
-                </div>
-              </div>
-
-              <div className="bg-brand-brown rounded-[2.5rem] lg:rounded-[4rem] p-8 lg:p-12 text-brand-cream shadow-2xl relative overflow-hidden">
-                <h3 className="text-2xl lg:text-3xl font-black italic text-brand-yellow uppercase mb-8 lg:mb-10 tracking-tighter">Net <span className="text-white">Profit</span></h3>
-                <div className="space-y-6 lg:space-y-8">
-                  <div className="flex justify-between items-end border-b border-white/10 pb-2 lg:pb-4">
-                    <span className="text-[10px] lg:text-xs font-black uppercase tracking-widest text-white/40">Gross Profit</span>
-                    <span className="text-xl lg:text-2xl font-black text-brand-yellow">₹{(financialData.grossProfit ?? 0).toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between items-end border-b border-white/10 pb-2 lg:pb-4">
-                    <span className="text-[10px] lg:text-xs font-black uppercase tracking-widest text-white/40">Indirect COGS</span>
-                    <span className="text-xl lg:text-2xl font-black text-brand-red">- ₹{(pnlData.indirectCogs ?? 0).toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between items-end border-b border-white/10 pb-2 lg:pb-4">
-                    <span className="text-[10px] lg:text-xs font-black uppercase tracking-widest text-white/40">Fixed Costs</span>
-                    <span className="text-xl lg:text-2xl font-black text-brand-red">- ₹{(pnlData.fixedCosts ?? 0).toLocaleString()}</span>
-                  </div>
-                  <div className="pt-4 flex justify-between items-center">
-                    <span className="text-base lg:text-xl font-black uppercase tracking-tighter italic">Net Profit</span>
-                    <span className={`text-4xl lg:text-5xl font-black tracking-tighter ${pnlData.netProfit >= 0 ? 'text-emerald-400' : 'text-brand-red'}`}>₹{(pnlData.netProfit ?? 0).toLocaleString()}</span>
-                  </div>
-                </div>
-              </div>
+        {reportView === 'profitability' && isAdmin && (
+          <div className="animate-in fade-in zoom-in-95 duration-700 bg-white border border-brand-brown/10 p-12 rounded-[2.5rem] lg:rounded-[4rem] shadow-sm max-w-2xl mx-auto text-center space-y-6">
+            <div className="w-20 h-20 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto shadow-inner">
+              <TrendingUpIcon className="w-10 h-10" />
             </div>
-
-            <div className="bg-white p-6 lg:p-12 rounded-[2.5rem] lg:rounded-[4rem] border border-brand-stone shadow-sm overflow-x-auto">
-              <h4 className="text-[10px] lg:text-sm font-black uppercase text-brand-brown/30 tracking-[0.5em] text-center mb-10">Flow Cascade</h4>
-              <div className="flex flex-col md:flex-row items-center justify-between gap-6 min-w-[800px] max-w-5xl mx-auto">
-                <div className="text-center"><p className="text-[10px] font-black uppercase text-brand-brown/40 mb-2">Revenue</p><p className="text-2xl lg:text-3xl font-black">₹{(financialData.totalRevenue ?? 0).toLocaleString()}</p></div>
-                <div className="w-8 h-8 lg:w-10 lg:h-10 bg-brand-brown/5 rounded-full flex items-center justify-center font-black opacity-20">-</div>
-                <div className="text-center"><p className="text-[10px] font-black uppercase text-brand-brown/40 mb-2">Order COGS</p><p className="text-xl lg:text-2xl font-black">₹{(financialData.totalCogs ?? 0).toLocaleString()}</p></div>
-                <div className="w-8 h-8 lg:w-10 lg:h-10 bg-brand-brown/5 rounded-full flex items-center justify-center font-black opacity-20">=</div>
-                <div className="text-center"><p className="text-[10px] font-black uppercase text-brand-brown/40 mb-2">Gross Profit</p><p className="text-xl lg:text-2xl font-black text-emerald-600">₹{(financialData.grossProfit ?? 0).toLocaleString()}</p></div>
-                <div className="w-8 h-8 lg:w-10 lg:h-10 bg-brand-brown/5 rounded-full flex items-center justify-center font-black opacity-20">-</div>
-                <div className="text-center"><p className="text-[10px] font-black uppercase text-brand-brown/40 mb-2">Ind/Fixed</p><p className="text-xl lg:text-2xl font-black text-brand-red">₹{((pnlData.indirectCogs ?? 0) + (pnlData.fixedCosts ?? 0)).toLocaleString()}</p></div>
-                <div className="w-8 h-8 lg:w-10 lg:h-10 bg-brand-brown/5 rounded-full flex items-center justify-center font-black opacity-20">=</div>
-                <div className="text-center"><p className="text-[10px] font-black uppercase text-emerald-600 mb-2">Final Result</p><p className="text-3xl lg:text-4xl font-black text-brand-brown">₹{(pnlData.netProfit ?? 0).toLocaleString()}</p></div>
-              </div>
+            <div className="space-y-2">
+              <h3 className="text-xl lg:text-2xl font-black uppercase text-brand-brown tracking-tight">Financial Statements Relocated</h3>
+              <p className="text-xs text-zinc-400 leading-relaxed font-semibold max-w-md mx-auto">
+                Detailed Profit & Loss analytics have been shifted to the <span className="font-bold text-brand-brown">Finance Ledger</span> to enable precise real-time transaction tracking, Accrual vs Cash-flow adjustments, and Investment fund auditing.
+              </p>
+            </div>
+            <div className="pt-4 border-t border-brand-brown/5 text-zinc-500 text-[10px] leading-relaxed max-w-sm mx-auto font-medium">
+              Please click on the main <span className="font-bold uppercase">Finance Ledger</span> tab in the top navigation panel, then toggle the view to <span className="font-bold uppercase text-emerald-600">P&L Statement</span> to access live charts.
             </div>
           </div>
         )}
