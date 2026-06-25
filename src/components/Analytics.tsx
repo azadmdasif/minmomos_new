@@ -1805,6 +1805,19 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                   <p className="text-[9px] lg:text-[10px] font-black uppercase tracking-[0.2em] mb-2 text-white/60">DELIVERY SALES</p>
                   <h3 className="text-3xl lg:text-4xl font-black tracking-tighter text-white">₹{(financialData.deliveryRevenue ?? 0).toLocaleString()}</h3>
                   <p className="text-[8px] lg:text-[9px] font-bold uppercase tracking-widest mt-1 text-white/40">HOME &amp; APP DELIVERY</p>
+                  
+                  {/* In-store equivalent and % relative comparison */}
+                  <div className="mt-4 bg-white/10 rounded-2xl p-3 border border-white/15 flex flex-col gap-0.5">
+                    <p className="text-[8px] font-black uppercase text-white/70 tracking-wider">In-Store Value Equivalent</p>
+                    <div className="flex flex-wrap items-baseline gap-1.5">
+                      <span className="text-base font-black text-[#ffeaa7]">
+                        ₹{(financialData.deliveryMenuTotal ?? 0).toLocaleString()}
+                      </span>
+                      <span className="text-[9px] font-black text-white/80">
+                        ({(financialData.deliveryRevenue > 0 ? ((financialData.deliveryMenuTotal ?? 0) / financialData.deliveryRevenue) * 100 : 0).toFixed(1)}% of Delivery)
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 
                 <div className="mt-6 pt-4 border-t border-white/10 grid grid-cols-3 gap-2">
