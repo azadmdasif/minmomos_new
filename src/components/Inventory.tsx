@@ -24,7 +24,8 @@ import {
   manuallyAdjustStock,
   manuallyAdjustCentralStock,
   fetchManualAdjustments,
-  resetAllStockToZero
+  resetAllStockToZero,
+  toggleProcurementPaidStatus
 } from '../utils/storage';
 import { 
   PieChart, 
@@ -86,8 +87,12 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [voidReason, setVoidReason] = useState('');
   const [adjustReason, setAdjustReason] = useState('');
   const [adjustValue, setAdjustValue] = useState('');
+  const [adjustCategoryReason, setAdjustCategoryReason] = useState<'rotten stock' | 'quantity mismatch' | 'others'>('others');
   const [itemToVoid, setItemToVoid] = useState<{ id: string, type: LedgerType } | null>(null);
   const [selectedItem, setSelectedItem] = useState<any>(null);
+  const [isPaidEntry, setIsPaidEntry] = useState(true);
+  const [financialPaidFilter, setFinancialPaidFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
+  const [ledgerPaidFilter, setLedgerPaidFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
   
   const [qty, setQty] = useState('');
   const [cost, setCost] = useState('');
@@ -222,14 +227,19 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   };
 
   const sortedProcurements = useMemo(() => {
-    const list = [...procurements];
+    let list = [...procurements];
+    if (ledgerPaidFilter === 'paid') {
+      list = list.filter(p => p.is_paid !== false);
+    } else if (ledgerPaidFilter === 'unpaid') {
+      list = list.filter(p => p.is_paid === false);
+    }
     return list.sort((a, b) => {
       let valA: any = a[sortBy === 'cost' ? 'total_cost' : sortBy];
       let valB: any = b[sortBy === 'cost' ? 'total_cost' : sortBy];
       if (sortBy === 'date') { valA = new Date(a.date).getTime(); valB = new Date(b.date).getTime(); }
       return sortOrder === 'desc' ? valB - valA : valA - valB;
     });
-  }, [procurements, sortBy, sortOrder]);
+  }, [procurements, sortBy, sortOrder, ledgerPaidFilter]);
 
   const sortedAllocations = useMemo(() => {
     const list = [...allocations];
@@ -282,7 +292,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
               unit: newItemUnit,
               total_cost: c,
               vendor: 'Initial Stock / Registration',
-              date: getISTISOString()
+              date: getISTISOString(),
+              is_paid: isPaidEntry
             });
           } catch (logErr: any) {
             console.error("Failed to log initial procurement:", logErr);
@@ -321,7 +332,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
             unit: selectedItem.unit,
             total_cost: cNum,
             vendor: vendor || 'Local Market',
-            date: getISTISOString()
+            date: getISTISOString(),
+            is_paid: isPaidEntry
           });
         } catch (logErr: any) {
           console.error("LogProcurement failed:", logErr);
@@ -415,7 +427,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           selectedItem.branch_name || user.stationName || 'Main Station', 
           newVal, 
           adjustReason,
-          user.username
+          user.username,
+          adjustCategoryReason
         );
       } else {
         // Central Hub Adjustment
@@ -423,12 +436,14 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           selectedItem.id,
           newVal,
           adjustReason,
-          user.username
+          user.username,
+          adjustCategoryReason
         );
       }
       setIsAdjustModalOpen(false);
       setAdjustValue('');
       setAdjustReason('');
+      setAdjustCategoryReason('others');
       setSelectedItem(null);
       await fetchData();
       alert("Stock adjusted successfully.");
@@ -473,16 +488,23 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     setNewItemName('');
     setNewItemUnit(materialCategory === 'MOMO' ? 'pcs' : materialCategory === 'PACKET' ? 'pkt' : 'kg');
     setSelectedItem(null);
+    setIsPaidEntry(true);
   };
 
   const financialData = useMemo(() => {
     if (activeTab !== 'FINANCE') return null;
 
-    const totalSpend = procurements.reduce((sum, p) => sum + (p.total_cost || 0), 0);
+    const filteredProcurements = procurements.filter(p => {
+      if (financialPaidFilter === 'paid') return p.is_paid !== false;
+      if (financialPaidFilter === 'unpaid') return p.is_paid === false;
+      return true;
+    });
+
+    const totalSpend = filteredProcurements.reduce((sum, p) => sum + (p.total_cost || 0), 0);
     
     // Category Breakdown
     const categoryMap: { [key: string]: number } = {};
-    procurements.forEach(p => {
+    filteredProcurements.forEach(p => {
       const centralItem = centralStock.find(c => c.id === p.item_id);
       const cat = centralItem?.category || 'Uncategorized';
       categoryMap[cat] = (categoryMap[cat] || 0) + (p.total_cost || 0);
@@ -494,7 +516,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
 
     // Item Breakdown
     const itemMap: { [key: string]: { name: string, category: string, total: number, qty: number, unit: string } } = {};
-    procurements.forEach(p => {
+    filteredProcurements.forEach(p => {
       if (!itemMap[p.item_name]) {
         const centralItem = centralStock.find(c => c.id === p.item_id);
         itemMap[p.item_name] = { 
@@ -511,15 +533,68 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
 
     const itemData = Object.values(itemMap).sort((a, b) => b.total - a.total);
 
-    return { totalSpend, categoryData, itemData };
-  }, [procurements, activeTab, centralStock]);
+    // Rotten Stock analysis: filter where log is rotten stock or reason indicates it
+    const rottenAdjustments = adjustments.filter(adj => {
+      const reasonLower = (adj.reason || '').toLowerCase();
+      const catLower = (adj.adjustment_category || '').toLowerCase();
+      return catLower === 'rotten stock' || reasonLower.includes('rotten stock') || reasonLower.includes('[rotten stock]');
+    });
+
+    let totalRottenQty = 0;
+    let totalRottenValueLoss = 0;
+    const rottenItemsMap: { [key: string]: { name: string, qty: number, estimatedLoss: number, unit: string } } = {};
+
+    rottenAdjustments.forEach(adj => {
+      const spoiledQty = Math.abs(adj.quantity_change || 0);
+      
+      // Let's estimate unit cost from procurements
+      const matchProc = procurements.find(p => p.item_id === adj.inventory_id || p.item_name === adj.item_name);
+      let unitCost = 0;
+      if (matchProc && matchProc.quantity > 0) {
+        unitCost = (matchProc.total_cost || 0) / matchProc.quantity;
+      } else {
+        // Fallback: check matching central material
+        const centralItem = centralStock.find(c => c.id === adj.inventory_id);
+        if (centralItem && centralItem.last_purchase_cost) {
+          unitCost = centralItem.last_purchase_cost;
+        }
+      }
+
+      const estimatedLoss = spoiledQty * unitCost;
+      totalRottenQty += spoiledQty;
+      totalRottenValueLoss += estimatedLoss;
+
+      const keyName = adj.item_name || adj.inventory_id;
+      if (!rottenItemsMap[keyName]) {
+        rottenItemsMap[keyName] = {
+          name: keyName,
+          qty: 0,
+          estimatedLoss: 0,
+          unit: adj.unit || matchProc?.unit || 'pcs'
+        };
+      }
+      rottenItemsMap[keyName].qty += spoiledQty;
+      rottenItemsMap[keyName].estimatedLoss += estimatedLoss;
+    });
+
+    const rottenData = Object.values(rottenItemsMap).sort((a, b) => b.estimatedLoss - a.estimatedLoss);
+
+    return { totalSpend, categoryData, itemData, totalRottenQty, totalRottenValueLoss, rottenData };
+  }, [procurements, activeTab, centralStock, adjustments, financialPaidFilter]);
 
   const handleExportFinance = () => {
     if (!financialData) return;
     
-    let csv = 'Date,Item Name,Category,Quantity,Unit,Total Spend (INR),Vendor\n';
-    procurements.forEach(p => {
-      csv += `${p.date},${p.item_name},${p.item_info?.category || 'Uncategorized'},${p.quantity},${p.unit},${p.total_cost},${p.vendor || 'Local Market'}\n`;
+    const filteredProcurementsForExport = procurements.filter(p => {
+      if (financialPaidFilter === 'paid') return p.is_paid !== false;
+      if (financialPaidFilter === 'unpaid') return p.is_paid === false;
+      return true;
+    });
+
+    let csv = 'Date,Item Name,Category,Quantity,Unit,Total Spend (INR),Vendor,Payment Status\n';
+    filteredProcurementsForExport.forEach(p => {
+      const payStatus = p.is_paid === false ? 'Unpaid' : 'Paid';
+      csv += `${p.date},${p.item_name},${p.item_info?.category || 'Uncategorized'},${p.quantity},${p.unit},${p.total_cost},${p.vendor || 'Local Market'},${payStatus}\n`;
     });
 
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -579,6 +654,7 @@ CREATE TABLE IF NOT EXISTS inventory_logs (
   quantity_change NUMERIC NOT NULL,
   cost NUMERIC,
   performed_by TEXT,
+  adjustment_category TEXT,
   date TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
@@ -592,7 +668,8 @@ CREATE TABLE IF NOT EXISTS procurements (
   vendor TEXT,
   date TIMESTAMPTZ DEFAULT NOW(),
   is_voided BOOLEAN DEFAULT false,
-  void_reason TEXT
+  void_reason TEXT,
+  is_paid BOOLEAN DEFAULT true
 );
 
 CREATE TABLE IF NOT EXISTS stock_allocations (
@@ -615,6 +692,12 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='inventory_logs' AND column_name='item_name') THEN
         ALTER TABLE inventory_logs ADD COLUMN item_name TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='inventory_logs' AND column_name='adjustment_category') THEN
+        ALTER TABLE inventory_logs ADD COLUMN adjustment_category TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='procurements' AND column_name='is_paid') THEN
+        ALTER TABLE procurements ADD COLUMN is_paid BOOLEAN DEFAULT true;
     END IF;
 END $$;
 
@@ -879,6 +962,44 @@ NOTIFY pgrst, 'reload schema';`}
             </div>
           </div>
 
+          {ledgerType === 'BUYING' && (
+            <div className="flex justify-start items-center gap-3 mb-8 bg-white p-6 rounded-[2rem] border border-brand-stone shadow-sm w-fit animate-in fade-in slide-in-from-top-4 duration-300">
+              <span className="text-[10px] font-black uppercase text-brand-brown/50 tracking-widest mr-2">Payment Status:</span>
+              <div className="flex bg-brand-brown/5 p-1 rounded-2xl">
+                <button
+                  onClick={() => setLedgerPaidFilter('all')}
+                  className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                    ledgerPaidFilter === 'all'
+                      ? 'bg-brand-brown text-brand-yellow shadow-md'
+                      : 'text-brand-brown/40 hover:text-brand-brown'
+                  }`}
+                >
+                  All Purchases
+                </button>
+                <button
+                  onClick={() => setLedgerPaidFilter('paid')}
+                  className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                    ledgerPaidFilter === 'paid'
+                      ? 'bg-emerald-600 text-white shadow-md'
+                      : 'text-brand-brown/40 hover:text-brand-brown'
+                  }`}
+                >
+                  Paid Only
+                </button>
+                <button
+                  onClick={() => setLedgerPaidFilter('unpaid')}
+                  className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                    ledgerPaidFilter === 'unpaid'
+                      ? 'bg-amber-600 text-white shadow-md'
+                      : 'text-brand-brown/40 hover:text-brand-brown'
+                  }`}
+                >
+                  Unpaid Only
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="bg-white rounded-[3rem] shadow-2xl border-4 border-brand-brown overflow-hidden">
             <table className="w-full text-left">
               <thead className="bg-brand-brown text-brand-yellow">
@@ -886,8 +1007,8 @@ NOTIFY pgrst, 'reload schema';`}
                   <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest cursor-pointer hover:underline" onClick={() => { setSortBy('date'); setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc'); }}>Date & Time {sortBy === 'date' && (sortOrder === 'desc' ? '▼' : '▲')}</th>
                   <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest">Item Name</th>
                   <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-center" onClick={() => { setSortBy('quantity'); setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc'); }}>Quantity {sortBy === 'quantity' && (sortOrder === 'desc' ? '▼' : '▲')}</th>
-                  <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest">{ledgerType === 'BUYING' ? 'Vendor' : ledgerType === 'ALLOCATION' ? 'Store Station' : 'Branch'}</th>
-                  <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-right cursor-pointer hover:underline" onClick={() => { setSortBy('cost'); setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc'); }}>{ledgerType === 'BUYING' ? 'Total Cost' : ledgerType === 'ALLOCATION' ? 'Action' : 'Reason'} {sortBy === 'cost' && (sortOrder === 'desc' ? '▼' : '▲')}</th>
+                  <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest">{ledgerType === 'BUYING' ? 'Vendor & Payment' : ledgerType === 'ALLOCATION' ? 'Store Station' : 'Branch'}</th>
+                  <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-right cursor-pointer hover:underline" onClick={() => { setSortBy('date'); setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc'); }}>{ledgerType === 'BUYING' ? 'Total Cost' : ledgerType === 'ALLOCATION' ? 'Action' : 'Reason'} {sortBy === 'date' && (sortOrder === 'desc' ? '▼' : '▲')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-brand-stone">
@@ -903,7 +1024,36 @@ NOTIFY pgrst, 'reload schema';`}
                         {p.is_voided && p.void_reason && <p className="text-[9px] font-bold text-brand-red mt-1 italic">Reason: {p.void_reason}</p>}
                       </td>
                       <td className={`px-8 py-6 text-center font-black ${p.is_voided ? 'text-brand-brown/40' : 'text-brand-brown'}`}>{p.quantity} {p.unit}</td>
-                      <td className={`px-8 py-6 text-[10px] font-black uppercase ${p.is_voided ? 'text-brand-red/40' : 'text-brand-red'}`}>{p.vendor || 'Local Market'}</td>
+                      <td className="px-8 py-6">
+                        <div className="flex flex-col items-start">
+                          <span className={`text-[10px] font-black uppercase ${p.is_voided ? 'text-brand-brown/40' : 'text-brand-red'}`}>{p.vendor || 'Local Market'}</span>
+                          {!p.is_voided && (
+                            <button 
+                              onClick={async () => {
+                                try {
+                                  const nextStatus = p.is_paid === false ? true : false;
+                                  await toggleProcurementPaidStatus(p.id, nextStatus);
+                                  await fetchData();
+                                } catch (err: any) {
+                                  alert("Failed to change payment status: " + err.message);
+                                }
+                              }}
+                              className={`mt-1.5 px-3 py-1 text-[9px] font-black uppercase tracking-widest rounded-full transition-all border ${
+                                p.is_paid === false
+                                  ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200'
+                                  : 'bg-emerald-100 text-emerald-800 border-emerald-300 hover:bg-emerald-200'
+                              }`}
+                            >
+                              {p.is_paid === false ? '🔴 Unpaid' : '🟢 Paid'}
+                            </button>
+                          )}
+                          {p.is_voided && (
+                            <span className="text-[9px] font-bold text-brand-brown/30 uppercase mt-1 block">
+                              {p.is_paid === false ? 'Unpaid' : 'Paid'}
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-8 py-6 text-right">
                         <div className="flex flex-col items-end">
                           <span className={`font-black text-lg ${p.is_voided ? 'text-brand-brown/20 line-through' : 'text-brand-brown'}`}>₹{(p.total_cost ?? 0).toLocaleString()}</span>
@@ -978,17 +1128,53 @@ NOTIFY pgrst, 'reload schema';`}
       ) : activeTab === 'FINANCE' ? (
         <section className="animate-in slide-in-from-bottom-6 duration-700">
           <div className="flex flex-col lg:flex-row justify-between items-center gap-6 mb-10 p-8 bg-white rounded-[3rem] border border-brand-stone shadow-sm">
-            <div className="flex flex-wrap items-center gap-3">
-              {(['today', 'yesterday', 'week', 'last-week', 'month', 'last-month', 'custom'] as DatePreset[]).map(p => (
-                <button key={p} onClick={() => handlePresetChange(p)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border-2 transition-all ${datePreset === p ? 'bg-brand-brown border-brand-brown text-brand-yellow' : 'bg-white border-brand-stone text-brand-brown/40 hover:border-brand-brown/20'}`}>{p === 'week' ? 'this week' : p.replace('-', ' ')}</button>
-              ))}
-              {datePreset === 'custom' && (
-                <div className="flex items-center gap-2 pl-4 border-l-2 border-brand-stone">
-                  <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="bg-transparent text-[10px] font-black p-1" />
-                  <span className="text-brand-brown/20">-</span>
-                  <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="bg-transparent text-[10px] font-black p-1" />
-                </div>
-              )}
+            <div className="flex flex-wrap items-center gap-6">
+              <div className="flex flex-wrap items-center gap-3">
+                {(['today', 'yesterday', 'week', 'last-week', 'month', 'last-month', 'custom'] as DatePreset[]).map(p => (
+                  <button key={p} onClick={() => handlePresetChange(p)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border-2 transition-all ${datePreset === p ? 'bg-brand-brown border-brand-brown text-brand-yellow' : 'bg-white border-brand-stone text-brand-brown/40 hover:border-brand-brown/20'}`}>{p === 'week' ? 'this week' : p.replace('-', ' ')}</button>
+                ))}
+                {datePreset === 'custom' && (
+                  <div className="flex items-center gap-2 pl-4 border-l-2 border-brand-stone">
+                    <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="bg-transparent text-[10px] font-black p-1" />
+                    <span className="text-brand-brown/20">-</span>
+                    <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="bg-transparent text-[10px] font-black p-1" />
+                  </div>
+                )}
+              </div>
+
+              {/* Paid / Unpaid Status Filter */}
+              <div className="flex items-center gap-1.5 bg-brand-stone/20 p-1.5 rounded-2xl border border-brand-stone">
+                <button
+                  onClick={() => setFinancialPaidFilter('all')}
+                  className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                    financialPaidFilter === 'all'
+                      ? 'bg-brand-brown border border-brand-brown text-brand-yellow shadow-sm'
+                      : 'text-brand-brown/40 hover:text-brand-brown border border-transparent'
+                  }`}
+                >
+                  Total Stock
+                </button>
+                <button
+                  onClick={() => setFinancialPaidFilter('paid')}
+                  className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                    financialPaidFilter === 'paid'
+                      ? 'bg-emerald-700 border border-emerald-700 text-white shadow-sm'
+                      : 'text-brand-brown/40 hover:text-brand-brown border border-transparent'
+                  }`}
+                >
+                  Paid Stock
+                </button>
+                <button
+                  onClick={() => setFinancialPaidFilter('unpaid')}
+                  className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                    financialPaidFilter === 'unpaid'
+                      ? 'bg-amber-600 border border-amber-600 text-white shadow-sm'
+                      : 'text-brand-brown/40 hover:text-brand-brown border border-transparent'
+                  }`}
+                >
+                  Unpaid Stock
+                </button>
+              </div>
             </div>
             <button onClick={handleExportFinance} className="bg-emerald-600 text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg hover:scale-105 transition-transform flex items-center gap-2">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
@@ -997,10 +1183,26 @@ NOTIFY pgrst, 'reload schema';`}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-12">
-            <div className="lg:col-span-1 bg-white p-8 rounded-[2.5rem] shadow-xl border border-brand-stone text-center md:text-left">
-              <p className="text-[10px] font-black text-brand-brown/40 uppercase tracking-widest mb-2">Total Spend</p>
-              <h4 className="text-4xl font-black text-brand-brown">₹{financialData?.totalSpend.toLocaleString()}</h4>
-              <p className="text-[10px] font-bold text-mountain-green uppercase mt-4">Selected Period</p>
+            <div className="lg:col-span-1 flex flex-col gap-6">
+              <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border border-brand-stone text-center md:text-left flex-1 flex flex-col justify-between">
+                <div>
+                  <p className="text-[10px] font-black text-brand-brown/40 uppercase tracking-widest mb-2">
+                    {financialPaidFilter === 'all' ? 'Total Spend' : financialPaidFilter === 'paid' ? 'Paid Stock Spend' : 'Unpaid Stock Spend'}
+                  </p>
+                  <h4 className="text-4xl font-black text-brand-brown">₹{financialData?.totalSpend.toLocaleString()}</h4>
+                </div>
+                <p className="text-[10px] font-bold text-mountain-green uppercase mt-4">Selected Period</p>
+              </div>
+
+              <div className="bg-amber-50 p-8 rounded-[2.5rem] shadow-xl border-2 border-amber-500/20 text-center md:text-left flex-1 flex flex-col justify-between">
+                <div>
+                  <p className="text-[10px] font-black text-amber-800/80 uppercase tracking-widest mb-2">Rotten Stock Loss</p>
+                  <h4 className="text-4xl font-black text-amber-900">₹{(financialData?.totalRottenValueLoss || 0).toLocaleString(undefined, {maximumFractionDigits: 2})}</h4>
+                </div>
+                <p className="text-[10px] font-bold text-amber-700 uppercase mt-4">
+                  {(financialData?.totalRottenQty || 0).toFixed(2)} units rotten
+                </p>
+              </div>
             </div>
             
             <div className="lg:col-span-3 bg-white p-8 rounded-[2.5rem] shadow-xl border border-brand-stone flex flex-col md:flex-row gap-8">
@@ -1090,6 +1292,36 @@ NOTIFY pgrst, 'reload schema';`}
               </tbody>
             </table>
           </div>
+
+          {/* Rotten Stock Waste Breakdown Table */}
+          {financialData?.rottenData && financialData.rottenData.length > 0 && (
+            <div className="bg-amber-50/40 rounded-[3rem] shadow-2xl border-4 border-amber-800 overflow-hidden mt-12 animate-in slide-in-from-bottom duration-500">
+              <div className="px-10 py-8 bg-amber-800 flex justify-between items-center">
+                <h4 className="text-xl font-black text-amber-50 italic uppercase">Rotten Stock Waste Breakdown</h4>
+                <span className="bg-amber-200 text-amber-950 text-[10px] font-black uppercase tracking-widest px-4 py-1.5 rounded-full">
+                  Loss: ₹{financialData.totalRottenValueLoss.toLocaleString(undefined, {maximumFractionDigits: 2})}
+                </span>
+              </div>
+              <table className="w-full">
+                <thead className="bg-amber-900/95 text-amber-100 border-t border-amber-800">
+                  <tr>
+                    <th className="px-10 py-6 text-[10px] font-black uppercase text-left tracking-widest">Material Name</th>
+                    <th className="px-10 py-6 text-[10px] font-black uppercase text-center tracking-widest">Rotten Quantity</th>
+                    <th className="px-10 py-6 text-[10px] font-black uppercase text-right tracking-widest">Estimated Loss Value</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-amber-200/50">
+                  {financialData.rottenData.map((item, idx) => (
+                    <tr key={idx} className="hover:bg-amber-100/40 transition-colors">
+                      <td className="px-10 py-6 font-black text-amber-950">{item.name}</td>
+                      <td className="px-10 py-6 text-center font-black text-amber-800 text-xs">{item.qty.toFixed(2)} {item.unit}</td>
+                      <td className="px-10 py-6 text-right font-black text-amber-900">₹{item.estimatedLoss.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
       ) : null}
 
@@ -1105,6 +1337,33 @@ NOTIFY pgrst, 'reload schema';`}
                 <input type="number" placeholder="Initial Qty" value={qty} onChange={e => setQty(e.target.value)} className={inputClasses} />
               </div>
               <input type="number" placeholder="Purchase Cost (₹)" value={cost} onChange={e => setCost(e.target.value)} className={inputClasses} />
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Payment Status</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsPaidEntry(true)}
+                    className={`py-3 px-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${
+                      isPaidEntry
+                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-md'
+                        : 'bg-white text-zinc-500 border-zinc-200 hover:bg-zinc-50'
+                    }`}
+                  >
+                    Paid
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsPaidEntry(false)}
+                    className={`py-3 px-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${
+                      !isPaidEntry
+                        ? 'bg-amber-600 text-white border-amber-600 shadow-md'
+                        : 'bg-white text-zinc-500 border-zinc-200 hover:bg-zinc-50'
+                    }`}
+                  >
+                    Not Paid
+                  </button>
+                </div>
+              </div>
               <button onClick={handleAddNewItem} className="w-full py-5 bg-brand-brown text-brand-yellow rounded-3xl font-black uppercase tracking-widest shadow-2xl hover:scale-105 transition-transform">Add to Hub Database</button>
               <button onClick={() => setIsAddItemModalOpen(false)} className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest">Dismiss</button>
             </div>
@@ -1121,6 +1380,33 @@ NOTIFY pgrst, 'reload schema';`}
               <input type="number" placeholder={`Quantity (${selectedItem?.unit})`} value={qty} onChange={e => setQty(e.target.value)} className={inputClasses} />
               <input type="number" placeholder="Total Bill (₹)" value={cost} onChange={e => setCost(e.target.value)} className={inputClasses} />
               <input type="text" placeholder="Vendor" value={vendor} onChange={e => setVendor(e.target.value)} className={inputClasses} />
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Payment Status</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsPaidEntry(true)}
+                    className={`py-3 px-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${
+                      isPaidEntry
+                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-md'
+                        : 'bg-white text-zinc-500 border-zinc-200 hover:bg-zinc-50'
+                    }`}
+                  >
+                    Paid
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsPaidEntry(false)}
+                    className={`py-3 px-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${
+                      !isPaidEntry
+                        ? 'bg-amber-600 text-white border-amber-600 shadow-md'
+                        : 'bg-white text-zinc-500 border-zinc-200 hover:bg-zinc-50'
+                    }`}
+                  >
+                    Not Paid
+                  </button>
+                </div>
+              </div>
               <button onClick={handleCentralPurchase} className="w-full py-5 bg-brand-brown text-brand-yellow rounded-3xl font-black uppercase tracking-widest shadow-2xl">Log Transaction</button>
               <button onClick={() => setIsRestockModalOpen(false)} className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest">Cancel</button>
             </div>
@@ -1187,7 +1473,19 @@ NOTIFY pgrst, 'reload schema';`}
                 />
               </div>
               <div>
-                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Reason for adjustment</label>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Reason Category</label>
+                <select
+                  value={adjustCategoryReason}
+                  onChange={e => setAdjustCategoryReason(e.target.value as any)}
+                  className={inputClasses}
+                >
+                  <option value="rotten stock">Rotten Stock</option>
+                  <option value="quantity mismatch">Quantity Mismatch</option>
+                  <option value="others">Others</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Adjustment Details</label>
                 <textarea 
                   placeholder="Explain why this change is needed..." 
                   value={adjustReason} 
@@ -1201,7 +1499,7 @@ NOTIFY pgrst, 'reload schema';`}
               >
                 Apply New Stock Level
               </button>
-              <button onClick={() => { setIsAdjustModalOpen(false); setSelectedItem(null); setAdjustReason(''); setAdjustValue(''); }} className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest text-center">Cancel</button>
+              <button onClick={() => { setIsAdjustModalOpen(false); setSelectedItem(null); setAdjustReason(''); setAdjustValue(''); setAdjustCategoryReason('others'); }} className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest text-center">Cancel</button>
             </div>
           </div>
         </div>

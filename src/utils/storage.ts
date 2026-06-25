@@ -185,6 +185,14 @@ export async function voidProcurement(id: string, reason: string, performedBy: s
   await supabase.from('procurements').update({ is_voided: true, void_reason: reason }).eq('id', id);
 }
 
+export async function toggleProcurementPaidStatus(id: string, isPaid: boolean): Promise<void> {
+  const { error } = await supabase
+    .from('procurements')
+    .update({ is_paid: isPaid })
+    .eq('id', id);
+  if (error) throw error;
+}
+
 // --- ALLOCATIONS ---
 
 export async function fetchAllocations(startDate: string, endDate: string): Promise<{ data: StockAllocation[], error: any }> {
@@ -755,7 +763,8 @@ export async function manuallyAdjustStock(
   branchName: string, 
   newQuantity: number, 
   reason: string,
-  performedBy: string
+  performedBy: string,
+  adjustmentCategory?: string
 ): Promise<void> {
   const { data: existing } = await supabase
     .from('inventory')
@@ -783,17 +792,39 @@ export async function manuallyAdjustStock(
   if (updateError) throw updateError;
 
   // 2. Log Change
+  const formattedReason = adjustmentCategory 
+    ? `[${adjustmentCategory}] ${reason}`
+    : reason;
+
+  const insertData: any = {
+    inventory_id: itemId,
+    item_name: itemName,
+    branch_name: branchName,
+    quantity_change: change,
+    reason: `MANUAL_ADJUSTMENT: ${formattedReason}`,
+    performed_by: performedBy,
+    date: getISTISOString()
+  };
+
+  if (adjustmentCategory) {
+    try {
+      const { error: logErrorWithCat } = await supabase
+        .from('inventory_logs')
+        .insert({
+          ...insertData,
+          adjustment_category: adjustmentCategory
+        });
+      
+      if (!logErrorWithCat) return;
+      console.warn("Could not insert with adjustment_category column, falling back...", logErrorWithCat);
+    } catch (err) {
+      console.warn("Could not insert with adjustment_category column due to exception, falling back...", err);
+    }
+  }
+
   const { error: logError } = await supabase
     .from('inventory_logs')
-    .insert({
-      inventory_id: itemId,
-      item_name: itemName,
-      branch_name: branchName,
-      quantity_change: change,
-      reason: `MANUAL_ADJUSTMENT: ${reason}`,
-      performed_by: performedBy,
-      date: getISTISOString()
-    });
+    .insert(insertData);
 
   if (logError) throw logError;
 }
@@ -802,7 +833,8 @@ export async function manuallyAdjustCentralStock(
   itemId: string, 
   newQuantity: number, 
   reason: string,
-  performedBy: string
+  performedBy: string,
+  adjustmentCategory?: string
 ): Promise<void> {
   const { data: existing } = await supabase
     .from('central_inventory')
@@ -826,18 +858,40 @@ export async function manuallyAdjustCentralStock(
 
   if (updateError) throw updateError;
 
+  const formattedReason = adjustmentCategory 
+    ? `[${adjustmentCategory}] ${reason}`
+    : reason;
+
+  const insertData: any = {
+    inventory_id: itemId,
+    item_name: itemName,
+    branch_name: 'CENTRAL_HUB',
+    quantity_change: change,
+    reason: `CENTRAL_MANUAL_ADJUSTMENT: ${formattedReason}`,
+    performed_by: performedBy,
+    date: getISTISOString()
+  };
+
+  if (adjustmentCategory) {
+    try {
+      const { error: logErrorWithCat } = await supabase
+        .from('inventory_logs')
+        .insert({
+          ...insertData,
+          adjustment_category: adjustmentCategory
+        });
+      
+      if (!logErrorWithCat) return;
+      console.warn("Could not insert with adjustment_category column, falling back...", logErrorWithCat);
+    } catch (err) {
+      console.warn("Could not insert with adjustment_category column due to exception, falling back...", err);
+    }
+  }
+
   // 2. Log Change (targeting central logs if exists, otherwise general logs with 'CENTRAL' branch)
   const { error: logError } = await supabase
     .from('inventory_logs')
-    .insert({
-      inventory_id: itemId,
-      item_name: itemName,
-      branch_name: 'CENTRAL_HUB',
-      quantity_change: change,
-      reason: `CENTRAL_MANUAL_ADJUSTMENT: ${reason}`,
-      performed_by: performedBy,
-      date: getISTISOString()
-    });
+    .insert(insertData);
 
   if (logError) throw logError;
 }

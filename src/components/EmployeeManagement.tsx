@@ -43,6 +43,8 @@ interface AttendanceRecord {
   status: 'PRESENT' | 'ABSENT';
   marked_comment?: string;
   marked_by?: string;
+  check_in_time?: string;
+  check_out_time?: string;
 }
 
 interface LeaveRequest {
@@ -63,6 +65,55 @@ interface WeeklyOff {
   day_of_week: string; // 'Monday', 'Tuesday', ..., 'Sunday', or 'None'
 }
 
+interface TimeParts {
+  hour: string;
+  minute: string;
+  period: 'AM' | 'PM';
+}
+
+function parse24ToParts(timeStr?: string): TimeParts {
+  if (!timeStr) return { hour: '09', minute: '00', period: 'AM' };
+  const parts = timeStr.split(':');
+  let h = parseInt(parts[0], 10);
+  const m = parts[1] || '00';
+  if (isNaN(h)) h = 9;
+  
+  const period = h >= 12 ? 'PM' : 'AM';
+  let h12 = h % 12;
+  if (h12 === 0) h12 = 12;
+  
+  return {
+    hour: String(h12).padStart(2, '0'),
+    minute: m.substring(0, 2).padStart(2, '0'),
+    period
+  };
+}
+
+function formatPartsTo24(hour: string, minute: string, period: 'AM' | 'PM'): string {
+  let h = parseInt(hour, 10);
+  if (isNaN(h)) h = 9;
+  
+  if (period === 'PM' && h < 12) {
+    h += 12;
+  } else if (period === 'AM' && h === 12) {
+    h = 0;
+  }
+  
+  return `${String(h).padStart(2, '0')}:${minute.padStart(2, '0')}`;
+}
+
+function formatTo12Hour(timeStr?: string): string {
+  if (!timeStr) return '--:--';
+  const parts = timeStr.split(':');
+  let h = parseInt(parts[0], 10);
+  const m = parts[1] || '00';
+  if (isNaN(h)) return '--:--';
+  const period = h >= 12 ? 'PM' : 'AM';
+  let h12 = h % 12;
+  if (h12 === 0) h12 = 12;
+  return `${String(h12).padStart(2, '0')}:${m.substring(0, 2).padStart(2, '0')} ${period}`;
+}
+
 interface EmployeeManagementProps {
   user: AppUser;
 }
@@ -70,6 +121,18 @@ interface EmployeeManagementProps {
 export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ user }) => {
   // Navigation states
   const [activeTab, setActiveTab] = useState<'directory' | 'attendance' | 'leaves' | 'calendar' | 'dashboard' | 'weekly-off'>('directory');
+  
+  // Custom Time Picker State
+  const [timePickerTarget, setTimePickerTarget] = useState<{
+    employeeId: string;
+    employeeName: string;
+    type: 'check_in_time' | 'check_out_time';
+    val: string;
+  } | null>(null);
+
+  const [pickerHour, setPickerHour] = useState('09');
+  const [pickerMinute, setPickerMinute] = useState('00');
+  const [pickerPeriod, setPickerPeriod] = useState<'AM' | 'PM'>('AM');
   
   // Data list states
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -546,6 +609,96 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ user }) 
       alert(`Could not mark attendance: ${err.message}`);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleUpdateCheckTimes = async (employeeId: string, type: 'check_in_time' | 'check_out_time', val: string) => {
+    // 1. Instantly update local React state for a pristine instantaneous response with no focus steal
+    setAttendance(prev => {
+      const idx = prev.findIndex(a => a.employee_id === employeeId && a.date === attendanceDate);
+      if (idx !== -1) {
+        return prev.map((a, i) => i === idx ? { ...a, [type]: val } : a);
+      } else {
+        return [
+          ...prev,
+          {
+            id: `att-temp-${Date.now()}`,
+            employee_id: employeeId,
+            date: attendanceDate,
+            status: 'PRESENT',
+            marked_by: managerName,
+            [type]: val
+          } as AttendanceRecord
+        ];
+      }
+    });
+
+    // 2. Persist silently in the background to avoid blocking the user input or native time picker
+    try {
+      const existing = attendance.find(a => a.employee_id === employeeId && a.date === attendanceDate);
+      if (!existing) {
+        const initRecord: Partial<AttendanceRecord> = {
+          employee_id: employeeId,
+          date: attendanceDate,
+          status: 'PRESENT',
+          marked_by: managerName,
+          [type]: val
+        };
+
+        if (dbStatus.isSupabase) {
+          await supabase
+            .from('employee_attendance')
+            .insert([initRecord]);
+        } else {
+          const localAtt = getLocalStorageData('employee_attendance') as AttendanceRecord[];
+          localAtt.push({
+            id: `att-${Date.now()}`,
+            employee_id: employeeId,
+            date: attendanceDate,
+            status: 'PRESENT',
+            marked_by: managerName,
+            [type]: val
+          });
+          saveLocalStorageData('employee_attendance', localAtt);
+        }
+      } else {
+        if (dbStatus.isSupabase) {
+          await supabase
+            .from('employee_attendance')
+            .update({ [type]: val })
+            .eq('id', existing.id);
+        } else {
+          const localAtt = getLocalStorageData('employee_attendance') as AttendanceRecord[];
+          const idx = localAtt.findIndex(x => x.id === existing.id);
+          if (idx !== -1) {
+            localAtt[idx][type] = val;
+          }
+          saveLocalStorageData('employee_attendance', localAtt);
+        }
+      }
+
+      // Sync silently with the backend without any UI disruptions
+      if (dbStatus.isSupabase) {
+        const { data: attData } = await supabase
+          .from('employee_attendance')
+          .select('*')
+          .eq('date', attendanceDate);
+        if (attData) {
+          setAttendance(prev => {
+            // Merge matching dates or all records depending on scope. Let's merge existing records safely.
+            const updatedMap = new Map(attData.map(a => [a.employee_id, a]));
+            return prev.map(p => {
+              if (p.date === attendanceDate) {
+                const latest = updatedMap.get(p.employee_id);
+                return latest ? latest : p;
+              }
+              return p;
+            });
+          });
+        }
+      }
+    } catch (err: any) {
+      console.error("Background time write failed:", err);
     }
   };
 
@@ -1180,6 +1333,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ user }) 
                     <th className="py-4 px-4 text-[10px] font-black uppercase text-brand-brown/50 tracking-wider">Branch</th>
                     <th className="py-4 px-4 text-[10px] font-black uppercase text-brand-brown/50 tracking-wider">Approved Leave Status</th>
                     <th className="py-4 px-4 text-[10px] font-black uppercase text-brand-brown/50 tracking-wider">Current Attendance status</th>
+                    <th className="py-4 px-4 text-[10px] font-black uppercase text-brand-brown/50 tracking-wider">Check In / Out</th>
                     <th className="py-4 px-4 text-[10px] font-black uppercase text-brand-brown/50 tracking-wider text-right">Actions / Mark Presence</th>
                   </tr>
                 </thead>
@@ -1229,6 +1383,62 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ user }) 
                             </span>
                           ) : (
                             <span className="text-[10px] text-zinc-400 font-bold italic">Not Marked yet</span>
+                          )}
+                        </td>
+                        <td className="py-4 px-4">
+                          {record?.status === 'PRESENT' ? (
+                            <div className="flex items-center gap-3">
+                              <div className="flex flex-col gap-0.5">
+                                <span className="text-[8px] font-black uppercase text-zinc-400 tracking-wider">In</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const parts = parse24ToParts(record.check_in_time);
+                                    setPickerHour(parts.hour);
+                                    setPickerMinute(parts.minute);
+                                    setPickerPeriod(parts.period);
+                                    setTimePickerTarget({
+                                      employeeId: emp.id,
+                                      employeeName: emp.name,
+                                      type: 'check_in_time',
+                                      val: record.check_in_time || '09:00'
+                                    });
+                                  }}
+                                  className="bg-brand-cream hover:bg-brand-cream/70 border border-brand-stone/80 rounded-lg p-1.5 text-xs font-bold text-[#3a2010] outline-none min-w-[85px] text-center shadow-sm hover:border-[#3a2010] hover:shadow-md transition-all active:scale-95"
+                                >
+                                  {record.check_in_time ? formatTo12Hour(record.check_in_time) : 'Set In Time'}
+                                </button>
+                              </div>
+                              <div className="flex flex-col gap-0.5">
+                                <span className="text-[8px] font-black uppercase text-zinc-400 tracking-wider">Out</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const parts = parse24ToParts(record.check_out_time);
+                                    setPickerHour(parts.hour);
+                                    setPickerMinute(parts.minute);
+                                    setPickerPeriod(parts.period);
+                                    setTimePickerTarget({
+                                      employeeId: emp.id,
+                                      employeeName: emp.name,
+                                      type: 'check_out_time',
+                                      val: record.check_out_time || '18:00'
+                                    });
+                                  }}
+                                  className="bg-brand-cream hover:bg-brand-cream/70 border border-brand-stone/80 rounded-lg p-1.5 text-xs font-bold text-[#3a2010] outline-none min-w-[85px] text-center shadow-sm hover:border-[#3a2010] hover:shadow-md transition-all active:scale-95"
+                                >
+                                  {record.check_out_time ? formatTo12Hour(record.check_out_time) : 'Set Out Time'}
+                                </button>
+                              </div>
+                            </div>
+                          ) : record?.status === 'ABSENT' ? (
+                            <span className="text-[9px] text-zinc-400 font-black uppercase italic tracking-wider">Absent</span>
+                          ) : isWo ? (
+                            <span className="text-[9px] text-zinc-400 font-black uppercase italic tracking-wider">Weekly Off</span>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] text-zinc-400 font-black uppercase italic tracking-wider">Mark presence to set shift</span>
+                            </div>
                           )}
                         </td>
                         <td className="py-4 px-4 text-right">
@@ -2164,6 +2374,138 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ user }) 
                 Submit Application
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: CUSTOM TIME PICKER WITH DETAILED PRESENTS & CONFIRM PICK TIME TRIGGER */}
+      {timePickerTarget && (
+        <div className="fixed inset-0 bg-brand-brown/85 backdrop-blur-md flex items-center justify-center z-[110] p-4">
+          <div className="bg-brand-cream rounded-[2.5rem] p-8 w-full max-w-sm border border-brand-stone shadow-2xl relative">
+            
+            <button 
+              onClick={() => setTimePickerTarget(null)} 
+              className="absolute top-6 right-6 p-2 text-brand-brown opacity-60 hover:opacity-100 rounded-full transition"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="text-center mb-6">
+              <span className="inline-block px-3 py-1 rounded-full bg-[#3a2010]/10 text-[9px] font-black uppercase tracking-wider text-brand-brown mb-2">
+                Shift Duty Logger
+              </span>
+              <h3 className="text-lg font-black text-brand-brown uppercase tracking-tight leading-tight">
+                {timePickerTarget.type === 'check_in_time' ? 'Check In' : 'Check Out'} Time
+              </h3>
+              <p className="text-xs font-bold text-zinc-500 mt-1">
+                for {timePickerTarget.employeeName}
+              </p>
+            </div>
+
+            {/* Live digital style preview */}
+            <div className="bg-[#fad390]/25 rounded-2xl p-4 text-center border border-brand-stone/40 mb-6">
+              <div className="font-mono text-3xl font-black text-brand-brown tracking-widest">
+                {pickerHour}:{pickerMinute} <span className="text-sm font-sans font-extrabold uppercase text-[#fad390] bg-brand-brown px-2 py-0.5 rounded-md align-middle">{pickerPeriod}</span>
+              </div>
+            </div>
+
+            {/* Select Sliders */}
+            <div className="space-y-4 mb-6">
+              <div className="grid grid-cols-3 gap-3">
+                {/* Hours select */}
+                <div>
+                  <label className="text-[8px] font-black uppercase text-brand-brown/65 tracking-wider block mb-1 text-center">Hour</label>
+                  <select
+                    value={pickerHour}
+                    onChange={e => setPickerHour(e.target.value)}
+                    className="w-full text-center p-3 rounded-xl border border-brand-stone bg-white text-xs font-black text-[#3a2010] outline-none cursor-pointer"
+                  >
+                    {Array.from({ length: 12 }, (_, i) => String(i === 0 ? 12 : i).padStart(2, '0')).map(h => (
+                      <option key={h} value={h}>{h}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Minutes select */}
+                <div>
+                  <label className="text-[8px] font-black uppercase text-brand-brown/65 tracking-wider block mb-1 text-center">Minute</label>
+                  <select
+                    value={pickerMinute}
+                    onChange={e => setPickerMinute(e.target.value)}
+                    className="w-full text-center p-3 rounded-xl border border-brand-stone bg-white text-xs font-black text-[#3a2010] outline-none cursor-pointer"
+                  >
+                    {Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0')).map(m => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Period select */}
+                <div>
+                  <label className="text-[8px] font-black uppercase text-brand-brown/65 tracking-wider block mb-1 text-center">Period</label>
+                  <select
+                    value={pickerPeriod}
+                    onChange={e => setPickerPeriod(e.target.value as 'AM' | 'PM')}
+                    className="w-full text-center p-3 rounded-xl border border-brand-stone bg-white text-xs font-black text-[#3a2010] outline-none cursor-pointer"
+                  >
+                    <option value="AM">AM</option>
+                    <option value="PM">PM</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Presets Grid */}
+            <div className="mb-6">
+              <span className="text-[8px] font-black uppercase text-brand-brown/50 tracking-wider block mb-2">Quick Shift Presets</span>
+              <div className="grid grid-cols-3 gap-1.5">
+                {[
+                  { label: '08:00 AM', h: '08', m: '00', p: 'AM' as const },
+                  { label: '09:00 AM', h: '09', m: '00', p: 'AM' as const },
+                  { label: '10:00 AM', h: '10', m: '00', p: 'AM' as const },
+                  { label: '01:00 PM', h: '01', m: '00', p: 'PM' as const },
+                  { label: '06:00 PM', h: '06', m: '00', p: 'PM' as const },
+                  { label: '07:00 PM', h: '07', m: '00', p: 'PM' as const },
+                ].map(preset => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => {
+                      setPickerHour(preset.h);
+                      setPickerMinute(preset.m);
+                      setPickerPeriod(preset.p);
+                    }}
+                    className="px-2 py-1.5 rounded-lg border border-brand-stone bg-white text-[9px] font-bold text-brand-brown/80 hover:bg-white/80 active:scale-95 transition-all text-center"
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Confirm button */}
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  const final24 = formatPartsTo24(pickerHour, pickerMinute, pickerPeriod);
+                  await handleUpdateCheckTimes(timePickerTarget.employeeId, timePickerTarget.type, final24);
+                  setTimePickerTarget(null);
+                }}
+                className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black uppercase text-[11px] tracking-widest rounded-xl shadow-lg hover:scale-[1.01] transition-all cursor-pointer text-center"
+              >
+                ✓ Pick Time
+              </button>
+              
+              <button
+                type="button"
+                onClick={() => setTimePickerTarget(null)}
+                className="w-full py-2 text-[9px] font-black uppercase tracking-wider text-zinc-400 hover:text-zinc-600 transition text-center"
+              >
+                Cancel
+              </button>
+            </div>
+
           </div>
         </div>
       )}

@@ -1221,6 +1221,11 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
           const prevSunday = new Date(d);
           prevSunday.setDate(d.getDate() - 3);
           accrualDateStr = prevSunday.toISOString().split('T')[0];
+        } else if (tx.type === 'debit' && tx.category === 'zomato commission and ads') {
+          // Accrue to previous Monday-to-Sunday, we tag to the Sunday (3 days prior)
+          const prevSunday = new Date(d);
+          prevSunday.setDate(d.getDate() - 3);
+          accrualDateStr = prevSunday.toISOString().split('T')[0];
         } else if (tx.type === 'debit' && tx.category === 'momo') {
           // Accrue momo purchases to the previous Monday-to-Sunday, tag to Sunday
           const prevSunday = new Date(d);
