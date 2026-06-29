@@ -758,6 +758,11 @@ export async function getInventory(branchName: string): Promise<RawMaterial[]> {
   return data || [];
 }
 
+export async function getAllInventories(): Promise<RawMaterial[]> {
+  const { data } = await supabase.from('inventory').select('*');
+  return data || [];
+}
+
 export async function manuallyAdjustStock(
   itemId: string, 
   branchName: string, 

@@ -50,16 +50,20 @@
 }
 
 @media print {
-  @page {
-    size: 58mm auto;
-    margin: 0;
+  /* Default Receipt Print Mode (when body is NOT in report-print-mode) */
+  body:not(.print-report-mode) {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
 
-  body > *:not(#print-root) {
+  body:not(.print-report-mode) > *:not(#print-root) {
     display: none !important;
   }
 
-  #print-root {
+  body:not(.print-report-mode) #print-root {
     display: block !important;
     width: 58mm !important;
     margin: 0 !important;
@@ -71,7 +75,14 @@
     position: static !important;
   }
 
-  body {
+  @page {
+    /* Base default, but will be dynamically controlled or ignored in print-report-mode */
+    size: 58mm auto;
+    margin: 0;
+  }
+
+  /* Report Print Mode (e.g. Daily Operations Report) */
+  body.print-report-mode {
     background-color: #ffffff !important;
     background: #ffffff !important;
     color: #000000 !important;
@@ -79,9 +90,38 @@
     padding: 0 !important;
   }
 
+  /* Hide everything except the modal backdrop and container */
+  body.print-report-mode #root > *:not(.fixed) {
+    display: none !important;
+  }
+
+  /* Ensure the modal behaves like a regular page flow rather than a floating window */
+  body.print-report-mode .fixed.inset-0 {
+    position: relative !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    z-index: auto !important;
+    overflow: visible !important;
+  }
+
+  body.print-report-mode .bg-white.rounded-\[3rem\] {
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  body.print-report-mode .print\:hidden {
+    display: none !important;
+  }
+
   * {
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
-    color: black !important;
+    color: inherit;
   }
 }

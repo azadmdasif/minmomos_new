@@ -18,11 +18,43 @@ export const RAW_MATERIALS_LIST = [
   { id: 'momo-kurkure', name: 'Kurkure Momo (Bulk)', unit: 'pcs', category: 'MOMO' },
   { id: 'momo-tandoori', name: 'Tandoori Momo (Bulk)', unit: 'pcs', category: 'MOMO' },
   
-  // Consumables
+  // Category A Auto Deduct items requested by user (MOMO category)
+  { id: 'burger-buns', name: 'Burger Buns', unit: 'pcs', category: 'MOMO' },
+  { id: 'campa-cola-small', name: 'Campa Cola Small', unit: 'pcs', category: 'MOMO' },
+  { id: 'mineral-water', name: 'Mineral Water', unit: 'pcs', category: 'MOMO' },
+  { id: 'soda-water', name: 'Soda Water', unit: 'pcs', category: 'MOMO' },
+
+  // Consumables (Category B PACKET category)
   { id: 'pkt-oil', name: 'Refined Cooking Oil', unit: 'ltr', category: 'PACKET' },
   { id: 'pkt-mayo', name: 'Mayonnaise', unit: 'pkt', category: 'PACKET' },
   { id: 'pkt-fries', name: 'French Fries (Bulk)', unit: 'pkt', category: 'PACKET' },
-  { id: 'campa-cola-small', name: 'Campa Cola Small', unit: 'pcs', category: 'PACKET' },
+  
+  // Category B - Syrups
+  { id: 'syrup-blue-lagoon', name: 'Blue Lagoon Syrup', unit: 'btl', category: 'PACKET' },
+  { id: 'syrup-lemon', name: 'Lemon Syrup', unit: 'btl', category: 'PACKET' },
+  { id: 'syrup-mint-mojito', name: 'Mint Mojito Syrup', unit: 'btl', category: 'PACKET' },
+  { id: 'syrup-strawberry', name: 'Strawberry Syrup', unit: 'btl', category: 'PACKET' },
+
+  // Category B - Sauces
+  { id: 'sauce-red-chutney', name: 'Momo Red Chutney', unit: 'kg', category: 'PACKET' },
+  { id: 'sauce-green-chutney', name: 'Green Chutney', unit: 'kg', category: 'PACKET' },
+  { id: 'sauce-tandoori', name: 'Tandoori Spread', unit: 'kg', category: 'PACKET' },
+
+  // Category B - Packaging
+  { id: 'pkg-momo-box', name: 'Momo Packing Boxes', unit: 'pcs', category: 'PACKET' },
+  { id: 'pkg-burger-box', name: 'Burger Packing Boxes', unit: 'pcs', category: 'PACKET' },
+  { id: 'pkg-paper-bag', name: 'Paper Carry Bags', unit: 'pcs', category: 'PACKET' },
+  { id: 'pkg-plastic-cup', name: 'Disposable Cups', unit: 'pcs', category: 'PACKET' },
+
+  // Category B - Oil and Butter
+  { id: 'pkt-butter', name: 'Amul Butter Block', unit: 'pcs', category: 'PACKET' },
+  { id: 'pkt-cheese', name: 'Cheese Slices Block', unit: 'pkt', category: 'PACKET' },
+
+  // Category B - Spices
+  { id: 'spice-momo-masala', name: 'Momo Masala', unit: 'pkt', category: 'PACKET' },
+  { id: 'spice-oregano', name: 'Oregano Seasoning', unit: 'pkt', category: 'PACKET' },
+  { id: 'spice-chilli-flakes', name: 'Chilli Flakes', unit: 'pkt', category: 'PACKET' },
+  { id: 'spice-peri-peri', name: 'Peri Peri Spice Mix', unit: 'pkt', category: 'PACKET' },
 ];
 
 export const MENU_ITEMS: MenuItem[] = [
@@ -207,7 +239,33 @@ export const MENU_ITEMS: MenuItem[] = [
     costs: {
       normal: { small: 8, medium: 12, large: 18 },
     },
-    recipe: []
+    recipe: [{ materialId: 'campa-cola-small', quantity: 1 }]
+  },
+  {
+    id: 'mineral-water',
+    name: 'Mineral Water',
+    image: 'https://m.media-amazon.com/images/I/61r-YvOnYpL._SL1100_.jpg',
+    category: 'drink',
+    preparations: {
+      normal: { small: 20, medium: 20, large: 20 },
+    },
+    costs: {
+      normal: { small: 8, medium: 8, large: 8 },
+    },
+    recipe: [{ materialId: 'mineral-water', quantity: 1 }]
+  },
+  {
+    id: 'soda-water',
+    name: 'Soda Water',
+    image: 'https://images.unsplash.com/photo-1622483767028-3f66f32aef97?w=800',
+    category: 'drink',
+    preparations: {
+      normal: { small: 25, medium: 25, large: 25 },
+    },
+    costs: {
+      normal: { small: 10, medium: 10, large: 10 },
+    },
+    recipe: [{ materialId: 'soda-water', quantity: 1 }]
   },
   {
     id: 'classic-moburg',
@@ -222,7 +280,8 @@ export const MENU_ITEMS: MenuItem[] = [
     },
     recipe: [
       { materialId: 'momo-veg', quantity: 1 },
-      { materialId: 'pkt-oil', quantity: 0.05 } 
+      { materialId: 'pkt-oil', quantity: 0.05 },
+      { materialId: 'burger-buns', quantity: 1 }
     ]
   }
 ];

@@ -208,4 +208,72 @@ export interface DiscountClaim {
   isClaimed: boolean;
 }
 
+// Daily Operations interfaces
+export type DailyOpStatus = 'Arrived' | 'AttendanceDone' | 'OpeningCashAndInventoryDone' | 'OpeningSOPDone' | 'Operations' | 'ClosingStarted' | 'ClosingDone' | 'Closed';
+
+export interface DailyOpAttendance {
+  employeeId: string;
+  name: string;
+  status: 'PRESENT' | 'LATE' | 'ABSENT' | 'NOT_ARRIVED_YET';
+  arrivalTime?: string;
+  remarks?: string;
+}
+
+export interface DailyOpInventoryItem {
+  id: string;
+  name: string;
+  expectedQty: number;
+  actualQty?: number;
+  reason?: string;
+  unit: string;
+}
+
+export interface DailyOpEvent {
+  id: string;
+  type: 'COMPLAINT' | 'STAFF' | 'EQUIPMENT' | 'WASTAGE';
+  timestamp: string;
+  details: {
+    customerName?: string;
+    complaint?: string;
+    resolution?: string;
+    staffIssueType?: string; // Late, Absent, Behaviour, Training, Other
+    equipmentIssueType?: string; // POS, Internet, Freezer, Gas, Lights, Other
+    item?: string;
+    quantity?: number;
+    reason?: string;
+    remarks?: string;
+    photo?: string;
+  };
+}
+
+export interface DailyOperationRecord {
+  id?: string;
+  date: string; // YYYY-MM-DD
+  branchName: string;
+  managerName: string;
+  status: DailyOpStatus;
+  openingTime?: string; // ISO String
+  openingGps?: string;
+  openingPhoto?: string;
+  attendance: DailyOpAttendance[];
+  openingCash?: number;
+  openingCashDiscrepancyReason?: string;
+  openingInventory: DailyOpInventoryItem[];
+  openingSopChecklist: { task: string; completed: boolean }[];
+  openingSopTime?: string; // ISO String
+  openingSopPhotos: string[]; // URLs or base64
+  events: DailyOpEvent[];
+  googleReviewsCount: number;
+  managerNotes?: string;
+  closingSopChecklist: { task: string; completed: boolean }[];
+  closingSopTime?: string; // ISO String
+  closingCash?: number;
+  closingUpi?: number;
+  closingDiscrepancyReason?: string;
+  closingTime?: string; // ISO String
+  closingPhoto?: string;
+  createdAt?: string;
+}
+
+
 

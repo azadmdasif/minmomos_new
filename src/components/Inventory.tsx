@@ -51,10 +51,68 @@ type LedgerType = 'BUYING' | 'ALLOCATION' | 'ADJUSTMENT';
 type DatePreset = 'today' | 'yesterday' | 'week' | 'last-week' | 'month' | 'last-month' | 'custom';
 type SortBy = 'date' | 'quantity' | 'cost';
 
+export const getItemSubcategory = (name: string, id: string): string => {
+  try {
+    const saved = localStorage.getItem('custom_subcategories');
+    if (saved) {
+      const map = JSON.parse(saved);
+      if (map[id]) return map[id];
+    }
+  } catch (e) {
+    console.error(e);
+  }
+
+  const nid = id.toLowerCase();
+  const nname = name.toLowerCase();
+  
+  // Category A / MOMO subcategories
+  if (nid.includes('momo') || nname.includes('momo')) return 'momo';
+  if (nid.includes('bun') || nname.includes('bun') || nid.includes('moburg') || nname.includes('moburg')) return 'buns';
+  if (nid.includes('cola') || nname.includes('cola')) return 'cola';
+  if (nid.includes('water') || nname.includes('water') || nid.includes('soda') || nname.includes('soda') || nid.includes('drink') || nname.includes('drink')) return 'drinks';
+  
+  // Category B / PACKET subcategories
+  if (nid.includes('fries') || nname.includes('fries')) return 'fries';
+  if (nid.includes('syrup') || nname.includes('syrup') || nid.includes('lagoon') || nname.includes('lagoon') || nid.includes('mojito') || nname.includes('mojito')) return 'syrups';
+  if (nid.includes('sauce') || nname.includes('sauce') || nid.includes('mayo') || nname.includes('mayo') || nid.includes('chutney') || nname.includes('chutney') || nid.includes('spread') || nname.includes('spread')) return 'sauces';
+  
+  if (
+    nid.includes('pkg') || nname.includes('pkg') || 
+    nid.includes('box') || nname.includes('box') || 
+    nid.includes('bag') || nname.includes('bag') || 
+    nid.includes('cup') || nname.includes('cup') || 
+    nid.includes('paper') || nname.includes('paper') ||
+    nid.includes('glass') || nname.includes('glass') ||
+    nid.includes('spoon') || nname.includes('spoon') ||
+    nid.includes('fork') || nname.includes('fork') ||
+    nid.includes('straw') || nname.includes('straw') ||
+    nid.includes('container') || nname.includes('container') ||
+    nid.includes('foil') || nname.includes('foil') ||
+    nid.includes('plastic') || nname.includes('plastic')
+  ) return 'packaging';
+  
+  if (nid.includes('oil') || nname.includes('oil') || nid.includes('butter') || nname.includes('butter') || nid.includes('cheese') || nname.includes('cheese') || nid.includes('ghee') || nname.includes('ghee')) return 'oil-butter';
+  
+  if (
+    nid.includes('spice') || nname.includes('spice') || 
+    nid.includes('masala') || nname.includes('masala') || 
+    nid.includes('oregano') || nname.includes('oregano') || 
+    nid.includes('flake') || nname.includes('flake') || 
+    nid.includes('peri') || nname.includes('peri') ||
+    nid.includes('kashmiri') || nname.includes('kashmiri') ||
+    nid.includes('powder') || nname.includes('powder') ||
+    nid.includes('poweder') || nname.includes('poweder') ||
+    nid.includes('methi') || nname.includes('methi')
+  ) return 'spices';
+  
+  return 'others'; // Default fallback
+};
+
 const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const isAdmin = user.role === 'ADMIN';
   const [activeTab, setActiveTab] = useState<InventoryTab>('HUB');
   const [materialCategory, setMaterialCategory] = useState<MaterialCategory>('MOMO');
+  const [activeSubcategory, setActiveSubcategory] = useState<string>('all');
   
   // Ledger States
   const [ledgerType, setLedgerType] = useState<LedgerType>('BUYING');
@@ -93,34 +151,37 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [isPaidEntry, setIsPaidEntry] = useState(true);
   const [financialPaidFilter, setFinancialPaidFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
   const [ledgerPaidFilter, setLedgerPaidFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
+  const [ledgerItemFilter, setLedgerItemFilter] = useState<string>('all');
   
   const [qty, setQty] = useState('');
   const [cost, setCost] = useState('');
   const [vendor, setVendor] = useState('');
   const [newItemName, setNewItemName] = useState('');
   const [newItemUnit, setNewItemUnit] = useState('pcs');
+  const [newItemSubcategory, setNewItemSubcategory] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSeeding, setIsSeeding] = useState(false);
 
   const fetchData = useCallback(async (isSilent = false) => {
     if (!isSilent) setIsLoading(true);
     try {
+      // Fetch central inventory and menu items for ALL users
+      try {
+        const [c, m] = await Promise.all([
+          getCentralInventory(),
+          fetchMenuItems()
+        ]);
+        setCentralStock(c);
+        if (m.data) setMenuItems(m.data);
+      } catch (e: any) {
+        if (e.code === '42P01') setIsTableMissing(true);
+        else console.error("Error fetching central inventory/menu items:", e);
+      }
+
       if (isAdmin) {
         // Fetch Stations
         const s = await getStations();
         setStations(s);
-
-        // Fetch Central Inventory
-        try {
-          const [c, m] = await Promise.all([
-            getCentralInventory(),
-            fetchMenuItems()
-          ]);
-          setCentralStock(c);
-          if (m.data) setMenuItems(m.data);
-        } catch (e: any) {
-          if (e.code === '42P01') setIsTableMissing(true);
-        }
 
         // Fetch Procurements
         try {
@@ -178,6 +239,10 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     };
   }, [fetchData]);
 
+  useEffect(() => {
+    setActiveSubcategory('all');
+  }, [materialCategory]);
+
   const handleInitializeStock = async () => {
     setIsSeeding(true);
     try {
@@ -233,36 +298,50 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     } else if (ledgerPaidFilter === 'unpaid') {
       list = list.filter(p => p.is_paid === false);
     }
+    if (ledgerItemFilter !== 'all') {
+      list = list.filter(p => p.item_id === ledgerItemFilter || p.item_name === ledgerItemFilter);
+    }
     return list.sort((a, b) => {
       let valA: any = a[sortBy === 'cost' ? 'total_cost' : sortBy];
       let valB: any = b[sortBy === 'cost' ? 'total_cost' : sortBy];
       if (sortBy === 'date') { valA = new Date(a.date).getTime(); valB = new Date(b.date).getTime(); }
       return sortOrder === 'desc' ? valB - valA : valA - valB;
     });
-  }, [procurements, sortBy, sortOrder, ledgerPaidFilter]);
+  }, [procurements, sortBy, sortOrder, ledgerPaidFilter, ledgerItemFilter]);
 
   const sortedAllocations = useMemo(() => {
-    const list = [...allocations];
+    let list = [...allocations];
+    if (ledgerItemFilter !== 'all') {
+      list = list.filter(a => a.material_id === ledgerItemFilter || a.material_name === ledgerItemFilter);
+    }
     return list.sort((a, b) => {
       let valA: any = a[sortBy === 'cost' || sortBy === 'quantity' ? 'quantity' : sortBy]; 
       let valB: any = b[sortBy === 'cost' || sortBy === 'quantity' ? 'quantity' : sortBy];
       if (sortBy === 'date') { valA = new Date(a.date).getTime(); valB = new Date(b.date).getTime(); }
       return sortOrder === 'desc' ? valB - valA : valA - valB;
     });
-  }, [allocations, sortBy, sortOrder]);
+  }, [allocations, sortBy, sortOrder, ledgerItemFilter]);
 
   const sortedAdjustments = useMemo(() => {
-    const list = [...adjustments];
+    let list = [...adjustments];
+    if (ledgerItemFilter !== 'all') {
+      list = list.filter(adj => adj.inventory_id === ledgerItemFilter || adj.item_name === ledgerItemFilter);
+    }
     return list.sort((a, b) => {
       let valA: any = a[sortBy === 'cost' || sortBy === 'quantity' ? 'quantity_change' : sortBy]; 
       let valB: any = b[sortBy === 'cost' || sortBy === 'quantity' ? 'quantity_change' : sortBy];
       if (sortBy === 'date') { valA = new Date(a.date).getTime(); valB = new Date(b.date).getTime(); }
       return sortOrder === 'desc' ? valB - valA : valA - valB;
     });
-  }, [adjustments, sortBy, sortOrder]);
+  }, [adjustments, sortBy, sortOrder, ledgerItemFilter]);
 
   const handleAddNewItem = async () => {
     if (newItemName && newItemUnit) {
+      if (!newItemSubcategory) {
+        alert("Please select a subcategory for the new item.");
+        return;
+      }
+
       const q = parseFloat(qty) || 0;
       const c = parseFloat(cost) || 0;
       
@@ -277,6 +356,16 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
         // 1. Create the central item first so it exists in central_inventory
         try {
           await createCentralItem(newItemName, newItemUnit, q, c, materialCategory, id);
+          
+          // Save custom subcategory mapping in localStorage
+          try {
+            const saved = localStorage.getItem('custom_subcategories') || '{}';
+            const map = JSON.parse(saved);
+            map[id] = newItemSubcategory;
+            localStorage.setItem('custom_subcategories', JSON.stringify(map));
+          } catch (storageErr) {
+            console.error("Failed to save custom subcategory:", storageErr);
+          }
         } catch (createErr: any) {
           console.error("Failed to create central item:", createErr);
           throw new Error(`Database Entry Failed: ${createErr.message}`);
@@ -487,6 +576,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     setVendor('');
     setNewItemName('');
     setNewItemUnit(materialCategory === 'MOMO' ? 'pcs' : materialCategory === 'PACKET' ? 'pkt' : 'kg');
+    setNewItemSubcategory('');
     setSelectedItem(null);
     setIsPaidEntry(true);
   };
@@ -502,12 +592,32 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
 
     const totalSpend = filteredProcurements.reduce((sum, p) => sum + (p.total_cost || 0), 0);
     
-    // Category Breakdown
+    // Category Breakdown (using Subcategories)
     const categoryMap: { [key: string]: number } = {};
     filteredProcurements.forEach(p => {
       const centralItem = centralStock.find(c => c.id === p.item_id);
       const cat = centralItem?.category || 'Uncategorized';
-      categoryMap[cat] = (categoryMap[cat] || 0) + (p.total_cost || 0);
+      let subcat = cat;
+      if (cat === 'MOMO') {
+        const subId = getItemSubcategory(p.item_name, p.item_id);
+        if (subId === 'momo') subcat = 'Momo';
+        else if (subId === 'buns') subcat = 'Burger Buns';
+        else if (subId === 'cola') subcat = 'Cola';
+        else if (subId === 'drinks') subcat = 'Drinks';
+        else subcat = 'Momo';
+      } else if (cat === 'PACKET') {
+        const subId = getItemSubcategory(p.item_name, p.item_id);
+        if (subId === 'syrups') subcat = 'Syrups';
+        else if (subId === 'sauces') subcat = 'Sauces';
+        else if (subId === 'packaging') subcat = 'Packaging';
+        else if (subId === 'oil-butter') subcat = 'Oil & Butter';
+        else if (subId === 'spices') subcat = 'Spices';
+        else if (subId === 'fries') subcat = 'French Fries';
+        else subcat = 'Other Packets';
+      } else if (cat === 'INGREDIENT') {
+        subcat = 'Veggies';
+      }
+      categoryMap[subcat] = (categoryMap[subcat] || 0) + (p.total_cost || 0);
     });
     
     const categoryData = Object.entries(categoryMap)
@@ -519,9 +629,30 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     filteredProcurements.forEach(p => {
       if (!itemMap[p.item_name]) {
         const centralItem = centralStock.find(c => c.id === p.item_id);
+        const cat = centralItem?.category || 'Uncategorized';
+        let subcat = cat;
+        if (cat === 'MOMO') {
+          const subId = getItemSubcategory(p.item_name, p.item_id);
+          if (subId === 'momo') subcat = 'Momo';
+          else if (subId === 'buns') subcat = 'Burger Buns';
+          else if (subId === 'cola') subcat = 'Cola';
+          else if (subId === 'drinks') subcat = 'Drinks';
+          else subcat = 'Momo';
+        } else if (cat === 'PACKET') {
+          const subId = getItemSubcategory(p.item_name, p.item_id);
+          if (subId === 'syrups') subcat = 'Syrups';
+          else if (subId === 'sauces') subcat = 'Sauces';
+          else if (subId === 'packaging') subcat = 'Packaging';
+          else if (subId === 'oil-butter') subcat = 'Oil & Butter';
+          else if (subId === 'spices') subcat = 'Spices';
+          else if (subId === 'fries') subcat = 'French Fries';
+          else subcat = 'Other Packets';
+        } else if (cat === 'INGREDIENT') {
+          subcat = 'Veggies';
+        }
         itemMap[p.item_name] = { 
           name: p.item_name, 
-          category: centralItem?.category || 'Uncategorized', 
+          category: subcat, 
           total: 0, 
           qty: 0, 
           unit: p.unit 
@@ -766,7 +897,7 @@ NOTIFY pgrst, 'reload schema';`}
         <>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
             {[
-              { id: 'MOMO' as MaterialCategory, title: 'Category A: Momos', desc: 'Auto-deducts per bill.', icon: '🥟', color: 'bg-brand-brown' },
+              { id: 'MOMO' as MaterialCategory, title: 'Category A: Auto Deduct', desc: 'Auto-deducts per bill.', icon: '🥟', color: 'bg-brand-brown' },
               { id: 'PACKET' as MaterialCategory, title: 'Category B: Packets', desc: 'Manual mark-as-finished.', icon: '🥫', color: 'bg-brand-red' },
               { id: 'INGREDIENT' as MaterialCategory, title: 'Category C: Veggies', desc: 'Hub usage only.', icon: '🥬', color: 'bg-mountain-green' },
             ].map(cat => (
@@ -780,8 +911,61 @@ NOTIFY pgrst, 'reload schema';`}
 
           {isAdmin && (
             <section className="mb-12 animate-in fade-in duration-500">
-              <h3 className="text-2xl font-black text-brand-brown underline decoration-brand-yellow decoration-4 underline-offset-8 uppercase tracking-tighter italic mb-8">Central Inventory: {materialCategory}</h3>
+              <h3 className="text-2xl font-black text-brand-brown underline decoration-brand-yellow decoration-4 underline-offset-8 uppercase tracking-tighter italic mb-8">Central Inventory: {materialCategory === 'MOMO' ? 'Category A (Auto-Deduct)' : materialCategory}</h3>
               
+              {materialCategory === 'MOMO' && (
+                <div className="flex flex-wrap gap-2 mb-8 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
+                  {[
+                    { id: 'all', label: 'All Items', icon: '🔍' },
+                    { id: 'momo', label: 'Momo', icon: '🥟' },
+                    { id: 'buns', label: 'Burger Buns', icon: '🍔' },
+                    { id: 'cola', label: 'Cola', icon: '🥤' },
+                    { id: 'drinks', label: 'Drinks', icon: '🍹' },
+                  ].map(sub => (
+                    <button
+                      key={sub.id}
+                      onClick={() => setActiveSubcategory(sub.id)}
+                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                        activeSubcategory === sub.id
+                          ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
+                          : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
+                      }`}
+                    >
+                      <span>{sub.icon}</span>
+                      <span>{sub.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {materialCategory === 'PACKET' && (
+                <div className="flex flex-wrap gap-2 mb-8 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
+                  {[
+                    { id: 'all', label: 'All Items', icon: '🔍' },
+                    { id: 'syrups', label: 'Syrups', icon: '🍹' },
+                    { id: 'sauces', label: 'Sauces', icon: '🥫' },
+                    { id: 'packaging', label: 'Packaging', icon: '📦' },
+                    { id: 'oil-butter', label: 'Oil & Butter', icon: '🧈' },
+                    { id: 'spices', label: 'Spices', icon: '🌶️' },
+                    { id: 'fries', label: 'Fries', icon: '🍟' },
+                    { id: 'others', label: 'Others', icon: '🏷️' },
+                  ].map(sub => (
+                    <button
+                      key={sub.id}
+                      onClick={() => setActiveSubcategory(sub.id)}
+                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                        activeSubcategory === sub.id
+                          ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
+                          : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
+                      }`}
+                    >
+                      <span>{sub.icon}</span>
+                      <span>{sub.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {centralStock.length === 0 ? (
                 <div className="bg-white rounded-[3rem] p-16 text-center border-4 border-dashed border-brand-stone">
                    <div className="text-6xl mb-6">📦</div>
@@ -797,7 +981,13 @@ NOTIFY pgrst, 'reload schema';`}
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                    {centralStock.filter(i => i.category === materialCategory).map(item => {
+                    {centralStock.filter(i => {
+                      if (i.category !== materialCategory) return false;
+                      if (activeSubcategory !== 'all') {
+                        return getItemSubcategory(i.name, i.id) === activeSubcategory;
+                      }
+                      return true;
+                    }).map(item => {
                       const linkedItems = menuItems.filter(mi => {
                         const recipe = mi.recipe || {};
                         const hasInMainRecipe = Object.values(recipe).some((r: any) => r.materialId === item.id);
@@ -858,8 +1048,14 @@ NOTIFY pgrst, 'reload schema';`}
                         </div>
                       );
                     })}
-                  {centralStock.filter(i => i.category === materialCategory).length === 0 && (
-                    <div className="lg:col-span-4 p-12 text-center text-brand-brown/20 uppercase font-black text-[10px] tracking-widest">No materials found in this category</div>
+                  {centralStock.filter(i => {
+                    if (i.category !== materialCategory) return false;
+                    if (activeSubcategory !== 'all') {
+                      return getItemSubcategory(i.name, i.id) === activeSubcategory;
+                    }
+                    return true;
+                  }).length === 0 && (
+                    <div className="lg:col-span-4 p-12 text-center text-brand-brown/20 uppercase font-black text-[10px] tracking-widest">No materials found in this subcategory</div>
                   )}
                 </div>
               )}
@@ -891,13 +1087,73 @@ NOTIFY pgrst, 'reload schema';`}
                   )}
                 </div>
               </div>
+
+              {materialCategory === 'MOMO' && (
+                <div className="flex flex-wrap gap-2 mb-8 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
+                  {[
+                    { id: 'all', label: 'All Items', icon: '🔍' },
+                    { id: 'momo', label: 'Momo', icon: '🥟' },
+                    { id: 'buns', label: 'Burger Buns', icon: '🍔' },
+                    { id: 'cola', label: 'Cola', icon: '🥤' },
+                    { id: 'drinks', label: 'Drinks', icon: '🍹' },
+                  ].map(sub => (
+                    <button
+                      key={sub.id}
+                      onClick={() => setActiveSubcategory(sub.id)}
+                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                        activeSubcategory === sub.id
+                          ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
+                          : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
+                      }`}
+                    >
+                      <span>{sub.icon}</span>
+                      <span>{sub.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {materialCategory === 'PACKET' && (
+                <div className="flex flex-wrap gap-2 mb-8 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
+                  {[
+                    { id: 'all', label: 'All Items', icon: '🔍' },
+                    { id: 'syrups', label: 'Syrups', icon: '🍹' },
+                    { id: 'sauces', label: 'Sauces', icon: '🥫' },
+                    { id: 'packaging', label: 'Packaging', icon: '📦' },
+                    { id: 'oil-butter', label: 'Oil & Butter', icon: '🧈' },
+                    { id: 'spices', label: 'Spices', icon: '🌶️' },
+                    { id: 'fries', label: 'Fries', icon: '🍟' },
+                    { id: 'others', label: 'Others', icon: '🏷️' },
+                  ].map(sub => (
+                    <button
+                      key={sub.id}
+                      onClick={() => setActiveSubcategory(sub.id)}
+                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                        activeSubcategory === sub.id
+                          ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
+                          : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
+                      }`}
+                    >
+                      <span>{sub.icon}</span>
+                      <span>{sub.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
               <div className="bg-white rounded-[3rem] shadow-2xl border-4 border-brand-brown overflow-hidden">
                 <table className="w-full">
                   <thead className="bg-brand-brown text-brand-yellow">
                     <tr><th className="px-10 py-6 text-[11px] font-black uppercase text-left tracking-widest">Item</th><th className="px-10 py-6 text-[11px] font-black uppercase text-center tracking-widest">Stock Level</th><th className="px-10 py-6 text-[11px] font-black uppercase text-right tracking-widest">Actions</th></tr>
                   </thead>
                   <tbody className="divide-y divide-brand-stone">
-                    {storeStock.filter(i => i.category === materialCategory).map(item => (
+                    {storeStock.filter(i => {
+                      if (i.category !== materialCategory) return false;
+                      if (activeSubcategory !== 'all') {
+                        return getItemSubcategory(i.name, i.id) === activeSubcategory;
+                      }
+                      return true;
+                    }).map(item => (
                       <tr key={item.id} className={`${item.is_finished ? 'bg-red-50' : 'bg-white'} transition-colors`}>
                         <td className="px-10 py-8"><p className="text-xl font-black text-brand-brown">{item.name}</p>{item.request_pending && <span className="text-[9px] font-black text-brand-red uppercase bg-brand-red/10 px-3 py-1 rounded-full inline-block mt-2 animate-pulse">Low Stock Alert</span>}</td>
                         <td className="px-10 py-8 text-center"><span className={`px-6 py-2 rounded-full text-[10px] font-black uppercase tracking-widest ${item.is_finished ? 'bg-brand-red text-white' : 'bg-brand-brown/5 text-brand-brown'}`}>{item.is_finished ? 'FINISHED' : `${item.current_stock.toFixed(2)} ${item.unit}`}</span></td>
@@ -962,43 +1218,61 @@ NOTIFY pgrst, 'reload schema';`}
             </div>
           </div>
 
-          {ledgerType === 'BUYING' && (
-            <div className="flex justify-start items-center gap-3 mb-8 bg-white p-6 rounded-[2rem] border border-brand-stone shadow-sm w-fit animate-in fade-in slide-in-from-top-4 duration-300">
-              <span className="text-[10px] font-black uppercase text-brand-brown/50 tracking-widest mr-2">Payment Status:</span>
-              <div className="flex bg-brand-brown/5 p-1 rounded-2xl">
-                <button
-                  onClick={() => setLedgerPaidFilter('all')}
-                  className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                    ledgerPaidFilter === 'all'
-                      ? 'bg-brand-brown text-brand-yellow shadow-md'
-                      : 'text-brand-brown/40 hover:text-brand-brown'
-                  }`}
-                >
-                  All Purchases
-                </button>
-                <button
-                  onClick={() => setLedgerPaidFilter('paid')}
-                  className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                    ledgerPaidFilter === 'paid'
-                      ? 'bg-emerald-600 text-white shadow-md'
-                      : 'text-brand-brown/40 hover:text-brand-brown'
-                  }`}
-                >
-                  Paid Only
-                </button>
-                <button
-                  onClick={() => setLedgerPaidFilter('unpaid')}
-                  className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                    ledgerPaidFilter === 'unpaid'
-                      ? 'bg-amber-600 text-white shadow-md'
-                      : 'text-brand-brown/40 hover:text-brand-brown'
-                  }`}
-                >
-                  Unpaid Only
-                </button>
+          <div className="flex flex-wrap items-center gap-4 mb-8">
+            {ledgerType === 'BUYING' && (
+              <div className="flex justify-start items-center gap-3 bg-white p-4 rounded-[1.5rem] border border-brand-stone shadow-sm w-fit animate-in fade-in slide-in-from-top-4 duration-300">
+                <span className="text-[10px] font-black uppercase text-brand-brown/50 tracking-widest mr-2">Payment:</span>
+                <div className="flex bg-brand-brown/5 p-1 rounded-xl">
+                  <button
+                    onClick={() => setLedgerPaidFilter('all')}
+                    className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${
+                      ledgerPaidFilter === 'all'
+                        ? 'bg-brand-brown text-brand-yellow shadow-md'
+                        : 'text-brand-brown/40 hover:text-brand-brown'
+                    }`}
+                  >
+                    All
+                  </button>
+                  <button
+                    onClick={() => setLedgerPaidFilter('paid')}
+                    className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${
+                      ledgerPaidFilter === 'paid'
+                        ? 'bg-emerald-600 text-white shadow-md'
+                        : 'text-brand-brown/40 hover:text-brand-brown'
+                    }`}
+                  >
+                    Paid
+                  </button>
+                  <button
+                    onClick={() => setLedgerPaidFilter('unpaid')}
+                    className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${
+                      ledgerPaidFilter === 'unpaid'
+                        ? 'bg-amber-600 text-white shadow-md'
+                        : 'text-brand-brown/40 hover:text-brand-brown'
+                    }`}
+                  >
+                    Unpaid
+                  </button>
+                </div>
               </div>
+            )}
+
+            <div className="flex justify-start items-center gap-3 bg-white p-4 rounded-[1.5rem] border border-brand-stone shadow-sm w-fit animate-in fade-in slide-in-from-top-4 duration-300">
+              <span className="text-[10px] font-black uppercase text-brand-brown/50 tracking-widest mr-2">Filter Item:</span>
+              <select
+                value={ledgerItemFilter}
+                onChange={(e) => setLedgerItemFilter(e.target.value)}
+                className="bg-brand-brown/5 text-[10px] font-black uppercase text-brand-brown py-2 px-4 rounded-xl border border-brand-brown/10 outline-none cursor-pointer focus:ring-2 focus:ring-brand-yellow"
+              >
+                <option value="all">🔍 Show All Items</option>
+                {centralStock.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
             </div>
-          )}
+          </div>
 
           <div className="bg-white rounded-[3rem] shadow-2xl border-4 border-brand-brown overflow-hidden">
             <table className="w-full text-left">
@@ -1207,7 +1481,7 @@ NOTIFY pgrst, 'reload schema';`}
             
             <div className="lg:col-span-3 bg-white p-8 rounded-[2.5rem] shadow-xl border border-brand-stone flex flex-col md:flex-row gap-8">
               <div className="flex-1 min-h-[300px]">
-                <p className="text-[10px] font-black text-brand-brown/40 uppercase tracking-widest mb-6 text-center">Spend by Category</p>
+                <p className="text-[10px] font-black text-brand-brown/40 uppercase tracking-widest mb-6 text-center">Spend by Category / Subcategory</p>
                 <div className="h-full w-full flex items-center justify-center">
                   <ResponsiveContainer width="100%" height={250}>
                     <PieChart>
@@ -1235,11 +1509,11 @@ NOTIFY pgrst, 'reload schema';`}
               </div>
               
               <div className="flex-1 min-h-[300px]">
-                <p className="text-[10px] font-black text-brand-brown/40 uppercase tracking-widest mb-6 text-center">Top Items (Investment)</p>
+                <p className="text-[10px] font-black text-brand-brown/40 uppercase tracking-widest mb-6 text-center">Category / Subcategory Spend Breakdown</p>
                 <div className="h-full w-full">
                   <ResponsiveContainer width="100%" height={250}>
                     <BarChart 
-                      data={(financialData?.itemData || []).slice(0, 5)}
+                      data={financialData?.categoryData || []}
                       margin={{ top: 10, right: 10, left: 0, bottom: 40 }}
                     >
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
@@ -1259,7 +1533,11 @@ NOTIFY pgrst, 'reload schema';`}
                         contentStyle={{ borderRadius: '1rem', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                         formatter={(value: any) => `₹${Number(value || 0).toLocaleString()}`}
                       />
-                      <Bar dataKey="total" fill="#5D4037" radius={[8, 8, 0, 0]} barSize={40} />
+                      <Bar dataKey="value" radius={[8, 8, 0, 0]} barSize={40}>
+                        {(financialData?.categoryData || []).map((_, index) => (
+                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                      </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -1337,6 +1615,41 @@ NOTIFY pgrst, 'reload schema';`}
                 <input type="number" placeholder="Initial Qty" value={qty} onChange={e => setQty(e.target.value)} className={inputClasses} />
               </div>
               <input type="number" placeholder="Purchase Cost (₹)" value={cost} onChange={e => setCost(e.target.value)} className={inputClasses} />
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Subcategory (Required)</label>
+                <select 
+                  value={newItemSubcategory} 
+                  onChange={e => setNewItemSubcategory(e.target.value)} 
+                  className={inputClasses}
+                >
+                  <option value="">Select Subcategory...</option>
+                  {materialCategory === 'MOMO' && (
+                    <>
+                      <option value="momo">Momo</option>
+                      <option value="buns">Burger Buns</option>
+                      <option value="cola">Cola</option>
+                      <option value="drinks">Drinks</option>
+                    </>
+                  )}
+                  {materialCategory === 'PACKET' && (
+                    <>
+                      <option value="syrups">Syrups</option>
+                      <option value="sauces">Sauces</option>
+                      <option value="packaging">Packaging</option>
+                      <option value="oil-butter">Oil & Butter</option>
+                      <option value="spices">Spices</option>
+                      <option value="fries">Fries</option>
+                      <option value="others">Others</option>
+                    </>
+                  )}
+                  {materialCategory === 'INGREDIENT' && (
+                    <>
+                      <option value="veggies">Veggies / Ingredients</option>
+                      <option value="others">Others</option>
+                    </>
+                  )}
+                </select>
+              </div>
               <div>
                 <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Payment Status</label>
                 <div className="grid grid-cols-2 gap-2">
