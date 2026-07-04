@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../utils/supabase';
-import { getISTDateString, getISTFullDateTime } from '../utils/storage';
+import { getISTDateString, getISTFullDateTime, getStations } from '../utils/storage';
 import { RAW_MATERIALS_LIST } from '../constants';
 import { 
   Camera, 
@@ -29,6 +29,114 @@ import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
 // Unused color normalization utilities removed to prevent lint errors since PDF is now generated via clean offscreen HTML with hex styling
+
+const OP_STAGES: DailyOpStatus[] = ['Arrived', 'AttendanceDone', 'OpeningCashAndInventoryDone', 'Operations', 'ClosingStarted', 'ClosingDone', 'Closed'];
+
+const getNewStatus = (currentStatus: DailyOpStatus, targetStatus: DailyOpStatus): DailyOpStatus => {
+  const currentIndex = OP_STAGES.indexOf(currentStatus);
+  const targetIndex = OP_STAGES.indexOf(targetStatus);
+  return targetIndex > currentIndex ? targetStatus : currentStatus;
+};
+
+const compressImageFile = (file: File, callback: (compressedBase64: string) => void) => {
+  const reader = new FileReader();
+  reader.onloadend = () => {
+    const originalBase64 = reader.result as string;
+    if (!originalBase64.startsWith('data:image')) {
+      callback(originalBase64);
+      return;
+    }
+    
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+      const maxWidth = 800;
+      const maxHeight = 600;
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width = Math.round((width * maxHeight) / height);
+          height = maxHeight;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        callback(originalBase64);
+        return;
+      }
+
+      ctx.drawImage(img, 0, 0, width, height);
+      const compressed = canvas.toDataURL('image/jpeg', 0.6);
+      callback(compressed);
+    };
+    img.onerror = () => {
+      callback(originalBase64);
+    };
+    img.src = originalBase64;
+  };
+  reader.readAsDataURL(file);
+};
+
+const serializeRecordsForLocalStorage = (records: DailyOperationRecord[]): string => {
+  const sanitized = records.map(r => {
+    // If status is Closed, we prune base64 photos to save local storage quota.
+    // Closed records are already fully synced to Supabase database.
+    if (r.status !== 'Closed') {
+      return r;
+    }
+    return {
+      ...r,
+      openingPhoto: r.openingPhoto?.startsWith('data:') ? 'PRUNED' : r.openingPhoto,
+      openingSopPhotos: r.openingSopPhotos?.map(p => p.startsWith('data:') ? 'PRUNED' : p) || [],
+      closingPhoto: r.closingPhoto?.startsWith('data:') ? 'PRUNED' : r.closingPhoto
+    };
+  });
+  
+  return JSON.stringify(sanitized);
+};
+
+const time12To24 = (time12: string): string => {
+  if (!time12) return '';
+  const match = time12.trim().match(/^(\d+):(\d+)\s*(AM|PM)$/i);
+  if (!match) {
+    // Check if it's already in 24-hour HH:MM format
+    const match24 = time12.trim().match(/^(\d{2}):(\d{2})$/);
+    if (match24) return time12.trim();
+    return '';
+  }
+  let hours = parseInt(match[1], 10);
+  const minutes = match[2];
+  const ampm = match[3].toUpperCase();
+  if (ampm === 'PM' && hours < 12) {
+    hours += 12;
+  } else if (ampm === 'AM' && hours === 12) {
+    hours = 0;
+  }
+  return `${hours.toString().padStart(2, '0')}:${minutes}`;
+};
+
+const time24To12 = (time24: string): string => {
+  if (!time24) return '';
+  const match = time24.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return time24;
+  let hours = parseInt(match[1], 10);
+  const minutes = match[2];
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  if (hours === 0) hours = 12;
+  return `${hours.toString().padStart(2, '0')}:${minutes} ${ampm}`;
+};
 
 interface DailyOperationsProps {
   user: User;
@@ -87,16 +195,22 @@ const MOCK_PHOTOS = {
 
 export default function DailyOperations({ user }: DailyOperationsProps) {
   const isAdmin = user.role === 'ADMIN';
-  const currentBranch = user.stationName || 'Headquarters';
 
   // State for all records (Admin view)
   const [allRecords, setAllRecords] = useState<DailyOperationRecord[]>([]);
   const [adminSelectedBranch, setAdminSelectedBranch] = useState<string>('all');
   const [adminSelectedDate, setAdminSelectedDate] = useState<string>(getISTDateString());
   const [branchesList, setBranchesList] = useState<string[]>([]);
+
+  // Effective branch name being controlled/viewed
+  const currentBranch = isAdmin
+    ? (adminSelectedBranch !== 'all' ? adminSelectedBranch : 'All Stations')
+    : (user.stationName || 'Headquarters');
   
   // State for active Store Manager's record
   const [activeRecord, setActiveRecord] = useState<DailyOperationRecord | null>(null);
+  const [viewStage, setViewStage] = useState<DailyOpStatus | null>(null);
+  const [tempOpeningPhoto, setTempOpeningPhoto] = useState<string>('');
   const [todayDate, setTodayDate] = useState<string>(getISTDateString());
   const [employees, setEmployees] = useState<any[]>([]);
   const [posSales, setPosSales] = useState<{ cash: number; upi: number }>({ cash: 0, upi: 0 });
@@ -128,6 +242,23 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
     loadEmployees();
     fetchTodaySales();
   }, [todayDate, currentBranch]);
+
+  // Sync viewStage when activeRecord is loaded or when its status advances
+  useEffect(() => {
+    if (activeRecord) {
+      setViewStage((prev) => {
+        if (!prev) return activeRecord.status;
+        const prevIndex = OP_STAGES.indexOf(prev);
+        const newIndex = OP_STAGES.indexOf(activeRecord.status);
+        if (newIndex > prevIndex) {
+          return activeRecord.status;
+        }
+        return prev;
+      });
+    } else {
+      setViewStage(null);
+    }
+  }, [activeRecord?.status, activeRecord?.branchName, activeRecord?.date]);
 
   // Load all operational records from local storage & Supabase
   const loadAllRecords = async () => {
@@ -188,20 +319,35 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
     const merged = Array.from(mergedMap.values()).sort((a, b) => b.date.localeCompare(a.date));
     
     setAllRecords(merged);
-    localStorage.setItem('minmomos-daily-operations', JSON.stringify(merged));
+    localStorage.setItem('minmomos-daily-operations', serializeRecordsForLocalStorage(merged));
 
     // Get branches list
-    const branches = Array.from(new Set(merged.map(r => r.branchName)));
+    let branches = Array.from(new Set(merged.map(r => r.branchName)));
+    try {
+      const activeStations = await getStations();
+      const stationNames = activeStations.map(s => s.name);
+      branches = Array.from(new Set([...branches, ...stationNames]));
+    } catch (e) {
+      console.warn("Could not load stations from database", e);
+    }
+    // Filter out virtual/aggregated values
+    branches = branches.filter(b => b && b !== 'All Stations' && b !== 'all' && b !== 'All Store Branches');
     setBranchesList(branches);
 
     // Find previous day's closing record for this branch to get expected cash/inventory
-    const branchClosedRecords = merged.filter(r => r.branchName === currentBranch && r.status === 'Closed' && r.date < todayDate);
+    const branchClosedRecords = (currentBranch === 'All Stations')
+      ? []
+      : merged.filter(r => r.branchName === currentBranch && r.status === 'Closed' && r.date < todayDate);
     if (branchClosedRecords.length > 0) {
       setPrevClosingRecord(branchClosedRecords[0]);
+    } else {
+      setPrevClosingRecord(null);
     }
 
-    // Load active record for today
-    const active = merged.find(r => r.branchName === currentBranch && r.date === todayDate);
+    // Load active record for today (prevent loading/acting on virtual 'All Stations' branch)
+    const active = (currentBranch === 'All Stations' || currentBranch === 'all')
+      ? null
+      : merged.find(r => r.branchName === currentBranch && r.date === todayDate);
     if (active) {
       setActiveRecord(active);
     } else {
@@ -274,7 +420,7 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
       updatedAll.push(updated);
     }
     setAllRecords(updatedAll);
-    localStorage.setItem('minmomos-daily-operations', JSON.stringify(updatedAll));
+    localStorage.setItem('minmomos-daily-operations', serializeRecordsForLocalStorage(updatedAll));
 
     // Upsert to Supabase
     try {
@@ -378,7 +524,7 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
       status: 'Arrived',
       openingTime: new Date().toISOString(),
       openingGps: gps,
-      openingPhoto: MOCK_PHOTOS.shutter, // fallback standard mock
+      openingPhoto: tempOpeningPhoto || '',
       attendance: employees.map(emp => ({
         employeeId: emp.id,
         name: emp.name,
@@ -399,52 +545,74 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
 
   // Upload or use mock for opening arrival photo
   const handleArrivalPhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!activeRecord) return;
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        saveRecord({
-          ...activeRecord,
-          openingPhoto: reader.result as string
-        });
-      };
-      reader.readAsDataURL(file);
+      compressImageFile(file, (compressedBase64) => {
+        if (activeRecord) {
+          saveRecord({
+            ...activeRecord,
+            openingPhoto: compressedBase64
+          });
+        } else {
+          setTempOpeningPhoto(compressedBase64);
+        }
+      });
     }
   };
 
   // Stage 2: Attendance Save
   const handleSaveAttendance = () => {
     if (!activeRecord) return;
+    const nextStatus = getNewStatus(activeRecord.status, 'AttendanceDone');
     saveRecord({
       ...activeRecord,
-      status: 'AttendanceDone'
+      status: nextStatus
     });
     setOpenAttendanceModal(false);
+
+    // Advance viewStage
+    const currentIndex = OP_STAGES.indexOf(viewStage || 'Arrived');
+    if (currentIndex < OP_STAGES.length - 1) {
+      setViewStage(OP_STAGES[currentIndex + 1]);
+    }
   };
 
   // Stage 3: Save Opening Cash & Inventory
   const handleSaveOpeningCashAndInventory = (cash: number, discrepancyReason: string, inventory: DailyOpInventoryItem[]) => {
     if (!activeRecord) return;
+    const nextStatus = getNewStatus(activeRecord.status, 'OpeningCashAndInventoryDone');
     saveRecord({
       ...activeRecord,
       openingCash: cash,
       openingCashDiscrepancyReason: discrepancyReason,
       openingInventory: inventory,
-      status: 'OpeningCashAndInventoryDone'
+      status: nextStatus
     });
+
+    // Advance viewStage
+    const currentIndex = OP_STAGES.indexOf(viewStage || 'AttendanceDone');
+    if (currentIndex < OP_STAGES.length - 1) {
+      setViewStage(OP_STAGES[currentIndex + 1]);
+    }
   };
 
   // Stage 4: Save Opening SOP
   const handleSaveOpeningSOP = (sop: { task: string; completed: boolean }[], photos: string[]) => {
     if (!activeRecord) return;
+    const nextStatus = getNewStatus(activeRecord.status, 'Operations');
     saveRecord({
       ...activeRecord,
       openingSopChecklist: sop,
-      openingSopPhotos: photos.length > 0 ? photos : [MOCK_PHOTOS.counter, MOCK_PHOTOS.store],
-      openingSopTime: new Date().toISOString(),
-      status: 'Operations'
+      openingSopPhotos: photos,
+      openingSopTime: activeRecord.openingSopTime || new Date().toISOString(),
+      status: nextStatus
     });
+
+    // Advance viewStage
+    const currentIndex = OP_STAGES.indexOf(viewStage || 'OpeningCashAndInventoryDone');
+    if (currentIndex < OP_STAGES.length - 1) {
+      setViewStage(OP_STAGES[currentIndex + 1]);
+    }
   };
 
   // Stage 5: Business operations - logger functions
@@ -503,37 +671,99 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
   // Stage 6 & 7: Start Closing Sequence
   const handleStartClosing = () => {
     if (!activeRecord) return;
+    const nextStatus = getNewStatus(activeRecord.status, 'ClosingStarted');
     saveRecord({
       ...activeRecord,
-      status: 'ClosingStarted'
+      status: nextStatus
     });
+
+    // Advance viewStage
+    const currentIndex = OP_STAGES.indexOf(viewStage || 'Operations');
+    if (currentIndex < OP_STAGES.length - 1) {
+      setViewStage(OP_STAGES[currentIndex + 1]);
+    }
   };
 
   // Stage 7: Save Closing SOP & Reviews
   const handleSaveClosingSOP = (sop: { task: string; completed: boolean }[], reviews: number, notes: string) => {
     if (!activeRecord) return;
+    const nextStatus = getNewStatus(activeRecord.status, 'ClosingDone');
     saveRecord({
       ...activeRecord,
       closingSopChecklist: sop,
       googleReviewsCount: reviews,
       managerNotes: notes,
-      closingSopTime: new Date().toISOString(),
-      status: 'ClosingDone'
+      closingSopTime: activeRecord.closingSopTime || new Date().toISOString(),
+      status: nextStatus
     });
+
+    // Advance viewStage
+    const currentIndex = OP_STAGES.indexOf(viewStage || 'ClosingStarted');
+    if (currentIndex < OP_STAGES.length - 1) {
+      setViewStage(OP_STAGES[currentIndex + 1]);
+    }
   };
 
   // Stage 8: Save Closing verification and final closing record
   const handleCloseStore = (actualCash: number, actualUpi: number, discrepancyReason: string, photo: string) => {
     if (!activeRecord) return;
+    const nextStatus = getNewStatus(activeRecord.status, 'Closed');
     saveRecord({
       ...activeRecord,
       closingCash: actualCash,
       closingUpi: actualUpi,
       closingDiscrepancyReason: discrepancyReason,
-      closingTime: new Date().toISOString(),
-      closingPhoto: photo || MOCK_PHOTOS.closing,
-      status: 'Closed'
+      closingTime: activeRecord.closingTime || new Date().toISOString(),
+      closingPhoto: photo || activeRecord.closingPhoto || '',
+      status: nextStatus
     });
+
+    // Advance viewStage
+    const currentIndex = OP_STAGES.indexOf(viewStage || 'ClosingDone');
+    if (currentIndex < OP_STAGES.length - 1) {
+      setViewStage(OP_STAGES[currentIndex + 1]);
+    }
+  };
+
+  // Back to previous step/stage without changing operational status
+  const handleGoToPreviousStep = async () => {
+    if (!activeRecord || !viewStage) return;
+
+    // If we are at the very start (Arrived) and actual status is Arrived, delete/reset the day
+    if (activeRecord.status === 'Arrived' && viewStage === 'Arrived') {
+      setActiveRecord(null);
+      setViewStage(null);
+      const updatedAll = allRecords.filter(r => !(r.branchName === activeRecord.branchName && r.date === activeRecord.date));
+      setAllRecords(updatedAll);
+      localStorage.setItem('minmomos-daily-operations', serializeRecordsForLocalStorage(updatedAll));
+      
+      try {
+        await supabase
+          .from('daily_operations')
+          .delete()
+          .eq('branch_name', activeRecord.branchName)
+          .eq('date', activeRecord.date);
+      } catch (e) {
+        console.warn("Could not delete from Supabase", e);
+      }
+      return;
+    }
+
+    // Otherwise, just navigate back in the view stages without changing operational status
+    const currentIndex = OP_STAGES.indexOf(viewStage);
+    if (currentIndex > 0) {
+      setViewStage(OP_STAGES[currentIndex - 1]);
+    }
+  };
+
+  // Forward to next step/stage
+  const handleGoToNextStep = () => {
+    if (!activeRecord || !viewStage) return;
+    const currentIndex = OP_STAGES.indexOf(viewStage);
+    const maxIndex = OP_STAGES.indexOf(activeRecord.status);
+    if (currentIndex < maxIndex) {
+      setViewStage(OP_STAGES[currentIndex + 1]);
+    }
   };
 
   // -------------------------------------------------------------
@@ -1004,20 +1234,21 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
   return (
     <div className="h-full w-full flex flex-col bg-brand-cream overflow-y-auto pb-24">
       {/* Header bar */}
-      <header className="bg-brand-brown text-white p-6 sticky top-0 z-10 shadow-lg border-b-4 border-brand-yellow flex flex-wrap justify-between items-center gap-4">
+      <header className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 px-6 pt-8 md:px-12">
         <div>
-          <span className="text-[10px] uppercase font-black tracking-[0.2em] text-brand-yellow/60">Operational Command</span>
-          <h1 className="text-2xl font-black tracking-tighter uppercase italic">Daily Operations</h1>
+          <h2 className="text-4xl font-black text-brand-brown italic tracking-tighter uppercase">DAILY <span className="text-brand-yellow">OPS</span></h2>
+          <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">Operational Command</p>
         </div>
 
         <div className="flex items-center gap-3">
-          <span className="bg-brand-yellow text-brand-brown font-black text-[10px] px-3 py-1.5 rounded-full uppercase tracking-widest">
+          <span className="bg-brand-brown text-brand-yellow border border-brand-brown font-black text-[10px] px-4 py-2.5 rounded-full uppercase tracking-widest shadow-sm">
             {currentBranch}
           </span>
           <button 
             onClick={loadAllRecords} 
             disabled={isSyncing}
-            className="bg-white/10 hover:bg-white/20 active:scale-95 transition-all text-white p-2.5 rounded-xl border border-white/10"
+            className="bg-white hover:bg-brand-brown/5 active:scale-95 transition-all text-brand-brown p-2.5 rounded-xl border-2 border-brand-stone shadow-sm"
+            title="Refresh logs"
           >
             <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
           </button>
@@ -1067,6 +1298,13 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
                 </button>
               </div>
             </div>
+
+            {adminSelectedBranch === 'all' && (
+              <div className="mt-4 p-4 bg-brand-cream/45 rounded-2xl border-2 border-brand-stone/30 text-xs text-brand-brown/70 font-semibold flex items-center gap-2">
+                <Sparkles className="w-4.5 h-4.5 text-brand-yellow flex-shrink-0" />
+                <span>Select a specific physical store branch (e.g. BNR, MAIN) from the dropdown above to start or advance its active daily operations workflow.</span>
+              </div>
+            )}
           </div>
 
           {/* Admin Records List */}
@@ -1185,26 +1423,49 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
               </div>
 
               <div className="space-y-4">
-                {/* Simulated Shutter Photo */}
+                {/* Shutter Photo Upload */}
                 <div className="border-2 border-dashed border-brand-stone rounded-2xl p-4 bg-brand-cream/30 space-y-3">
                   <p className="text-[10px] font-black text-brand-brown/50 uppercase tracking-widest">Store Front/Shutter Photo Required</p>
-                  <label className="flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-4 rounded-xl cursor-pointer border border-brand-stone transition-all">
-                    <Camera className="w-6 h-6 text-brand-brown/50" />
-                    <span className="text-xs font-bold text-brand-brown">Take Shutter Photo</span>
-                    <input 
-                      type="file" 
-                      accept="image/*" 
-                      capture="environment" 
-                      onChange={handleArrivalPhotoUpload}
-                      className="hidden" 
-                    />
-                  </label>
-                  <p className="text-[9px] text-brand-brown/40">If using a computer, a gorgeous mock placeholder photo will be autogenerated instantly.</p>
+                  
+                  {!tempOpeningPhoto ? (
+                    <label className="flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-6 rounded-xl cursor-pointer border border-brand-stone transition-all">
+                      <Camera className="w-8 h-8 text-brand-brown/50 animate-pulse" />
+                      <span className="text-xs font-black text-brand-brown uppercase">Take Shutter Photo</span>
+                      <p className="text-[9px] text-brand-brown/40">Real photo upload is mandatory to start the session.</p>
+                      <input 
+                        type="file" 
+                        accept="image/*" 
+                        capture="environment" 
+                        onChange={handleArrivalPhotoUpload}
+                        className="hidden" 
+                      />
+                    </label>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="border border-brand-stone rounded-xl overflow-hidden h-40 bg-zinc-100 relative">
+                        <img src={tempOpeningPhoto} alt="Opening Shutter Preview" className="w-full h-full object-cover" />
+                        <button 
+                          onClick={() => setTempOpeningPhoto('')}
+                          className="absolute top-2 right-2 bg-brand-brown text-brand-yellow font-black rounded-full px-2.5 py-1 text-xs shadow-md border border-brand-stone hover:bg-brand-yellow hover:text-brand-brown transition-all"
+                        >
+                          Retake ✕
+                        </button>
+                      </div>
+                      <p className="text-[9px] text-emerald-700 font-bold flex items-center justify-center gap-1">
+                        <Check className="w-3.5 h-3.5" /> Photo captured successfully!
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 <button 
                   onClick={handleStartDay}
-                  className="w-full bg-brand-brown text-brand-yellow font-black uppercase tracking-widest py-4 rounded-2xl shadow-xl hover:scale-102 active:scale-98 transition-all flex items-center justify-center gap-2 text-sm"
+                  disabled={!tempOpeningPhoto}
+                  className={`w-full font-black uppercase tracking-widest py-4 rounded-2xl shadow-xl transition-all flex items-center justify-center gap-2 text-sm ${
+                    tempOpeningPhoto 
+                      ? 'bg-brand-brown text-brand-yellow hover:scale-102 active:scale-98' 
+                      : 'bg-brand-stone text-brand-brown/30 cursor-not-allowed'
+                  }`}
                 >
                   <Activity className="w-5 h-5" />
                   Start Day
@@ -1215,8 +1476,13 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
             <div className="space-y-6">
               {/* CURRENT STAGE CARD */}
               <div className="bg-white rounded-[3rem] p-6 border-4 border-brand-brown shadow-2xl relative overflow-hidden">
-                <div className="absolute top-0 right-0 bg-brand-yellow text-brand-brown font-black text-[9px] px-4 py-1.5 uppercase tracking-widest rounded-bl-2xl border-l-2 border-b-2 border-brand-brown">
-                  Stage: {activeRecord.status}
+                <div className="absolute top-0 right-0 bg-brand-yellow text-brand-brown font-black text-[9px] px-4 py-1.5 uppercase tracking-widest rounded-bl-2xl border-l-2 border-b-2 border-brand-brown flex items-center gap-1.5">
+                  <span>Stage: {activeRecord.status}</span>
+                  {viewStage && viewStage !== activeRecord.status && (
+                    <span className="bg-brand-brown text-brand-yellow px-1.5 py-0.5 rounded text-[8px] font-bold">
+                      Viewing: {viewStage}
+                    </span>
+                  )}
                 </div>
 
                 {/* Progress bar */}
@@ -1237,10 +1503,37 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
                   />
                 </div>
 
+                {/* Back / Next Navigation */}
+                <div className="flex justify-between items-center mb-6">
+                  <div className="flex gap-2">
+                    {(viewStage !== 'Arrived' || activeRecord.status === 'Arrived') && (
+                      <button
+                        onClick={handleGoToPreviousStep}
+                        className="flex items-center gap-1 bg-brand-cream/60 hover:bg-brand-cream text-brand-brown font-black text-[10px] uppercase tracking-wider px-3.5 py-2 rounded-xl border border-brand-stone active:scale-95 transition-all shadow-sm"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5 text-brand-brown" />
+                        <span>{activeRecord.status === 'Arrived' ? 'Cancel Day' : 'Back Step'}</span>
+                      </button>
+                    )}
+                    {viewStage !== activeRecord.status && (
+                      <button
+                        onClick={handleGoToNextStep}
+                        className="flex items-center gap-1 bg-brand-cream/60 hover:bg-brand-cream text-brand-brown font-black text-[10px] uppercase tracking-wider px-3.5 py-2 rounded-xl border border-brand-stone active:scale-95 transition-all shadow-sm"
+                      >
+                        <span>Next Step</span>
+                        <ChevronRight className="w-3.5 h-3.5 text-brand-brown" />
+                      </button>
+                    )}
+                  </div>
+                  <span className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest">
+                    Step Progress
+                  </span>
+                </div>
+
                 {/* DYNAMIC CARD CONTENT */}
 
                 {/* STAGE 1: ARRIVED (Pending Attendance) */}
-                {activeRecord.status === 'Arrived' && (
+                {viewStage === 'Arrived' && (
                   <div className="space-y-6">
                     <div className="flex items-center gap-3">
                       <div className="p-3 bg-brand-cream rounded-2xl text-brand-brown border border-brand-stone">
@@ -1299,18 +1592,18 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
                                     Time of Arrival:
                                   </label>
                                   <input 
-                                    type="text"
-                                    value={emp.arrivalTime || ''}
+                                    type="time"
+                                    value={time12To24(emp.arrivalTime || '')}
                                     onChange={(e) => {
                                       const list = [...(activeRecord.attendance || [])];
+                                      const time24 = e.target.value;
                                       list[index] = {
                                         ...list[index],
-                                        arrivalTime: e.target.value
+                                        arrivalTime: time24To12(time24)
                                       };
                                       saveRecord({ ...activeRecord, attendance: list });
                                     }}
-                                    placeholder="e.g. 01:15 PM"
-                                    className="flex-1 text-right text-xs bg-brand-cream/50 border border-brand-stone/50 rounded px-2 py-1 font-bold text-brand-brown focus:bg-white focus:outline-none focus:border-brand-brown"
+                                    className="flex-1 text-right text-xs bg-brand-cream/50 border border-brand-stone/50 rounded px-2 py-1 font-bold text-brand-brown focus:bg-white focus:outline-none focus:border-brand-brown cursor-pointer [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 hover:[&::-webkit-calendar-picker-indicator]:opacity-100"
                                   />
                                 </div>
                               )}
@@ -1330,23 +1623,27 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
                 )}
 
                 {/* STAGE 2: ATTENDANCE DONE (Pending Opening Cash & Inventory) */}
-                {activeRecord.status === 'AttendanceDone' && (
+                {viewStage === 'AttendanceDone' && (
                   <OpeningCashAndInventoryView 
                     previousClosingCash={prevClosingRecord ? (prevClosingRecord.closingCash || 5000) : 5000}
                     initialInventory={activeRecord.openingInventory}
                     onSave={(cash, reason, inv) => handleSaveOpeningCashAndInventory(cash, reason, inv)}
+                    initialCash={activeRecord.openingCash}
+                    initialCashDiscrepancyReason={activeRecord.openingCashDiscrepancyReason}
                   />
                 )}
 
                 {/* STAGE 3: OPENING VERIFICATION DONE (Pending Opening SOP Checklist) */}
-                {activeRecord.status === 'OpeningCashAndInventoryDone' && (
+                {viewStage === 'OpeningCashAndInventoryDone' && (
                   <OpeningSopView 
+                    initialSop={activeRecord.openingSopChecklist}
+                    initialPhotos={activeRecord.openingSopPhotos}
                     onSave={(sop, photos) => handleSaveOpeningSOP(sop, photos)}
                   />
                 )}
 
                 {/* STAGE 4: MAIN OPERATIONS DASHBOARD (Store is open and active) */}
-                {activeRecord.status === 'Operations' && (
+                {viewStage === 'Operations' && (
                   <div className="space-y-6">
                     <div className="flex justify-between items-center bg-emerald-50 border border-emerald-200 p-4 rounded-2xl">
                       <div className="flex items-center gap-3">
@@ -1453,24 +1750,31 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
                 )}
 
                 {/* STAGE 5: CLOSING CHECKLIST & REVIEW COUNTS */}
-                {activeRecord.status === 'ClosingStarted' && (
+                {viewStage === 'ClosingStarted' && (
                   <ClosingSopAndReviewsView 
+                    initialSop={activeRecord.closingSopChecklist}
+                    initialReviews={activeRecord.googleReviewsCount}
+                    initialNotes={activeRecord.managerNotes}
                     onSave={(sop, reviews, notes) => handleSaveClosingSOP(sop, reviews, notes)}
                   />
                 )}
 
                 {/* STAGE 6: CLOSING VERIFICATION (Cash/UPI actual entry vs calculations) */}
-                {activeRecord.status === 'ClosingDone' && (
+                {viewStage === 'ClosingDone' && (
                   <ClosingVerificationView 
                     openingCash={activeRecord.openingCash || 0}
                     posCashSales={posSales.cash}
                     posUpiSales={posSales.upi}
+                    initialCash={activeRecord.closingCash}
+                    initialUpi={activeRecord.closingUpi}
+                    initialDiscrepancyReason={activeRecord.closingDiscrepancyReason}
+                    initialPhoto={activeRecord.closingPhoto}
                     onSave={(cash, upi, reason, photo) => handleCloseStore(cash, upi, reason, photo)}
                   />
                 )}
 
                 {/* STAGE 7: CLOSED (Day Complete) */}
-                {activeRecord.status === 'Closed' && (
+                {viewStage === 'Closed' && (
                   <div className="text-center space-y-6 py-6">
                     <div className="w-16 h-16 bg-zinc-100 rounded-full flex items-center justify-center mx-auto text-zinc-500 border border-brand-stone">
                       <Check className="w-8 h-8" />
@@ -1546,18 +1850,18 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
                           Time:
                         </label>
                         <input 
-                          type="text"
-                          value={emp.arrivalTime || ''}
+                          type="time"
+                          value={time12To24(emp.arrivalTime || '')}
                           onChange={(e) => {
                             const list = [...(activeRecord.attendance || [])];
+                            const time24 = e.target.value;
                             list[index] = {
                               ...list[index],
-                              arrivalTime: e.target.value
+                              arrivalTime: time24To12(time24)
                             };
                             saveRecord({ ...activeRecord, attendance: list });
                           }}
-                          placeholder="e.g. 01:15 PM"
-                          className="flex-1 text-right text-xs bg-white border border-brand-stone/50 rounded px-2 py-0.5 font-bold text-brand-brown focus:outline-none focus:border-brand-brown"
+                          className="flex-1 text-right text-xs bg-white border border-brand-stone/50 rounded px-2 py-0.5 font-bold text-brand-brown focus:outline-none focus:border-brand-brown cursor-pointer [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 hover:[&::-webkit-calendar-picker-indicator]:opacity-100"
                         />
                       </div>
                     )}
@@ -1967,43 +2271,6 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
                 </div>
               </div>
 
-              {/* Inventory Discrepancy details */}
-              <div className="space-y-3">
-                <h3 className="text-xs font-black uppercase tracking-wider text-brand-brown border-b border-brand-stone pb-1">Critical Material Verification</h3>
-                <div className="overflow-hidden border border-brand-stone rounded-2xl">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-brand-brown text-brand-yellow">
-                      <tr>
-                        <th className="p-3 font-black uppercase tracking-wider">Material Item</th>
-                        <th className="p-3 font-black uppercase tracking-wider text-center">Expected (Yesterday)</th>
-                        <th className="p-3 font-black uppercase tracking-wider text-center">Actual (Today)</th>
-                        <th className="p-3 font-black uppercase tracking-wider">Discrepancy Remarks</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {viewingRecord.openingInventory?.map(item => {
-                        const diff = (item.actualQty || 0) - item.expectedQty;
-                        return (
-                          <tr key={item.id} className="border-b border-brand-stone/30">
-                            <td className="p-3 font-bold text-brand-brown">{item.name}</td>
-                            <td className="p-3 text-center text-brand-brown/70 font-semibold">{item.expectedQty} {item.unit}</td>
-                            <td className="p-3 text-center text-brand-brown font-black">{item.actualQty ?? '--'} {item.unit}</td>
-                            <td className="p-3">
-                              {diff !== 0 && item.actualQty != null ? (
-                                <span className="text-[10px] font-bold text-brand-red block">
-                                  {diff > 0 ? `+${diff}` : diff} {item.unit} discrepancy: {item.reason || 'No reason entered'}
-                                </span>
-                              ) : (
-                                <span className="text-emerald-700 font-bold text-[10px]">✓ Reconciled</span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
 
               {/* Logged incidents & Operational Events */}
               <div className="space-y-3">
@@ -2144,12 +2411,25 @@ interface OpeningCashAndInventoryViewProps {
   previousClosingCash: number;
   initialInventory: DailyOpInventoryItem[];
   onSave: (cash: number, discrepancyReason: string, inventory: DailyOpInventoryItem[]) => void;
+  initialCash?: number;
+  initialCashDiscrepancyReason?: string;
 }
 
-function OpeningCashAndInventoryView({ previousClosingCash, initialInventory, onSave }: OpeningCashAndInventoryViewProps) {
-  const [cash, setCash] = useState<string>(previousClosingCash.toString());
-  const [cashDiscrepancyReason, setCashDiscrepancyReason] = useState<string>('');
-  const [isInventoryChecked, setIsInventoryChecked] = useState<boolean>(false);
+function OpeningCashAndInventoryView({ previousClosingCash, initialInventory, onSave, initialCash, initialCashDiscrepancyReason }: OpeningCashAndInventoryViewProps) {
+  const [cash, setCash] = useState<string>(initialCash !== undefined ? initialCash.toString() : previousClosingCash.toString());
+  const [cashDiscrepancyReason, setCashDiscrepancyReason] = useState<string>(initialCashDiscrepancyReason || '');
+
+  useEffect(() => {
+    if (initialCash !== undefined) {
+      setCash(initialCash.toString());
+    } else {
+      setCash(previousClosingCash.toString());
+    }
+  }, [initialCash, previousClosingCash]);
+
+  useEffect(() => {
+    setCashDiscrepancyReason(initialCashDiscrepancyReason || '');
+  }, [initialCashDiscrepancyReason]);
 
   const needsCashReason = useMemo(() => {
     return Number(cash) !== previousClosingCash;
@@ -2157,8 +2437,8 @@ function OpeningCashAndInventoryView({ previousClosingCash, initialInventory, on
 
   const canContinue = useMemo(() => {
     const cashReasonOk = !needsCashReason || cashDiscrepancyReason.trim().length > 0;
-    return isInventoryChecked && cashReasonOk;
-  }, [isInventoryChecked, needsCashReason, cashDiscrepancyReason]);
+    return cashReasonOk && cash !== '';
+  }, [needsCashReason, cashDiscrepancyReason, cash]);
 
   const handleSave = () => {
     if (!canContinue) return;
@@ -2178,12 +2458,12 @@ function OpeningCashAndInventoryView({ previousClosingCash, initialInventory, on
         </div>
         <div>
           <span className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest">Stage 3</span>
-          <h3 className="text-lg font-black uppercase text-brand-brown tracking-tight">Cash &amp; Inventory Verification</h3>
+          <h3 className="text-lg font-black uppercase text-brand-brown tracking-tight">Drawer Cash Verification</h3>
         </div>
       </div>
 
       <p className="text-xs text-brand-brown/60 leading-relaxed">
-        Count the opening cash float in the drawer and reconcile critical inventory items before taking customers.
+        Count the opening cash float in the drawer before taking customers.
       </p>
 
       {/* Opening Cash Input */}
@@ -2215,26 +2495,6 @@ function OpeningCashAndInventoryView({ previousClosingCash, initialInventory, on
         )}
       </div>
 
-      {/* Opening Inventory Checkbox */}
-      <div className="border border-brand-stone rounded-2xl p-4 bg-brand-cream/30 space-y-3">
-        <p className="text-[10px] font-black text-brand-brown/50 uppercase tracking-widest">Critical Stock Reconciliation</p>
-        
-        <label className="flex items-start gap-3 bg-white p-4 rounded-xl border border-brand-stone/50 cursor-pointer hover:bg-brand-cream/20 transition-all">
-          <input 
-            type="checkbox"
-            checked={isInventoryChecked}
-            onChange={(e) => setIsInventoryChecked(e.target.checked)}
-            className="mt-0.5 h-4 w-4 rounded border-brand-stone text-brand-brown focus:ring-brand-brown"
-          />
-          <div className="space-y-1">
-            <p className="text-xs font-black text-brand-brown">Inventory is entered and checked</p>
-            <p className="text-[10px] text-brand-brown/60 leading-normal">
-              I verify that physical inventory quantities have been verified against yesterday's closing records.
-            </p>
-          </div>
-        </label>
-      </div>
-
       <button 
         onClick={handleSave}
         disabled={!canContinue}
@@ -2244,7 +2504,7 @@ function OpeningCashAndInventoryView({ previousClosingCash, initialInventory, on
             : 'bg-brand-stone text-brand-brown/35 cursor-not-allowed'
         }`}
       >
-        Lock Cash &amp; Inventory
+        Lock Opening Cash
       </button>
     </div>
   );
@@ -2253,19 +2513,46 @@ function OpeningCashAndInventoryView({ previousClosingCash, initialInventory, on
 // STAGE 4: Opening SOP view
 interface OpeningSopViewProps {
   onSave: (sop: { task: string; completed: boolean }[], photos: string[]) => void;
+  initialSop?: { task: string; completed: boolean }[];
+  initialPhotos?: string[];
 }
 
-function OpeningSopView({ onSave }: OpeningSopViewProps) {
+function OpeningSopView({ onSave, initialSop, initialPhotos }: OpeningSopViewProps) {
   const [checklist, setChecklist] = useState<{ task: string; completed: boolean }[]>(
-    OPENING_SOP_TASKS.map(task => ({ task, completed: false }))
+    initialSop && initialSop.length > 0
+      ? initialSop
+      : OPENING_SOP_TASKS.map(task => ({ task, completed: false }))
   );
-  const [photos, setPhotos] = useState<string[]>([]);
+  
+  // Sequential photos
+  const [counterPhoto, setCounterPhoto] = useState<string>(
+    initialPhotos && initialPhotos[0] ? initialPhotos[0] : ''
+  );
+  const [storePhoto, setStorePhoto] = useState<string>(
+    initialPhotos && initialPhotos[1] ? initialPhotos[1] : ''
+  );
+
+  useEffect(() => {
+    if (initialSop && initialSop.length > 0) {
+      setChecklist(initialSop);
+    } else {
+      setChecklist(OPENING_SOP_TASKS.map(task => ({ task, completed: false })));
+    }
+  }, [initialSop]);
+
+  useEffect(() => {
+    setCounterPhoto(initialPhotos && initialPhotos[0] ? initialPhotos[0] : '');
+    setStorePhoto(initialPhotos && initialPhotos[1] ? initialPhotos[1] : '');
+  }, [initialPhotos]);
+  
+  // Step state (1: Checklist, 2: Counter Photo, 3: Store Photo)
+  const [step, setStep] = useState<1 | 2 | 3>(1);
 
   const completedCount = useMemo(() => {
     return checklist.filter(c => c.completed).length;
   }, [checklist]);
 
-  const canSubmit = useMemo(() => {
+  const allTasksChecked = useMemo(() => {
     return completedCount === checklist.length;
   }, [completedCount, checklist]);
 
@@ -2275,110 +2562,261 @@ function OpeningSopView({ onSave }: OpeningSopViewProps) {
     setChecklist(next);
   };
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCheckAll = () => {
+    setChecklist(OPENING_SOP_TASKS.map(task => ({ task, completed: true })));
+  };
+
+  const handleUncheckAll = () => {
+    setChecklist(OPENING_SOP_TASKS.map(task => ({ task, completed: false })));
+  };
+
+  const handleCounterPhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setPhotos(prev => [...prev, reader.result as string].slice(0, 2));
-      };
-      reader.readAsDataURL(file);
+      compressImageFile(file, (compressedBase64) => {
+        setCounterPhoto(compressedBase64);
+      });
+    }
+  };
+
+  const handleStorePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      compressImageFile(file, (compressedBase64) => {
+        setStorePhoto(compressedBase64);
+      });
     }
   };
 
   const handleSave = () => {
-    if (!canSubmit) return;
-    onSave(checklist, photos);
+    if (!allTasksChecked || !counterPhoto || !storePhoto) return;
+    onSave(checklist, [counterPhoto, storePhoto]);
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="p-3 bg-brand-cream rounded-2xl text-brand-brown border border-brand-stone">
-          <ClipboardCheck className="w-6 h-6" />
+      {/* Stage Header */}
+      <div className="flex items-center justify-between border-b border-brand-stone pb-3">
+        <div className="flex items-center gap-3">
+          <div className="p-3 bg-brand-cream rounded-2xl text-brand-brown border border-brand-stone">
+            <ClipboardCheck className="w-6 h-6" />
+          </div>
+          <div>
+            <span className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest">Stage 4</span>
+            <h3 className="text-lg font-black uppercase text-brand-brown tracking-tight">Store Opening</h3>
+          </div>
         </div>
-        <div>
-          <span className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest">Stage 4</span>
-          <h3 className="text-lg font-black uppercase text-brand-brown tracking-tight">Opening SOP Check</h3>
+        
+        {/* Simple step indicators */}
+        <div className="flex items-center gap-1.5">
+          <div className={`w-2.5 h-2.5 rounded-full border border-brand-brown ${step >= 1 ? 'bg-brand-brown' : 'bg-transparent'}`} />
+          <div className={`w-2.5 h-2.5 rounded-full border border-brand-brown ${step >= 2 ? 'bg-brand-brown' : 'bg-transparent'}`} />
+          <div className={`w-2.5 h-2.5 rounded-full border border-brand-brown ${step >= 3 ? 'bg-brand-brown' : 'bg-transparent'}`} />
         </div>
       </div>
 
-      <p className="text-xs text-brand-brown/60 leading-relaxed">
-        Ensure operational excellence by physically completing each check below. (Must verify all 16 steps before customer launch)
-      </p>
+      {/* STEP 1: SOP CHECKLIST */}
+      {step === 1 && (
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <h4 className="text-xs font-black uppercase tracking-wider text-brand-brown">Step 1: Complete SOP Checklist</h4>
+            <p className="text-xs text-brand-brown/60 leading-relaxed">
+              Verify all physical kitchen and dining parameters. Complete all 16 steps before customer launch.
+            </p>
+          </div>
 
-      {/* Checklist items list */}
-      <div className="border border-brand-stone rounded-2xl p-4 bg-brand-cream/30 space-y-2 max-h-72 overflow-y-auto">
-        <p className="text-[10px] font-black text-brand-brown/50 uppercase tracking-widest mb-1">
-          Verification Tasks ({completedCount}/{checklist.length})
-        </p>
-
-        <div className="space-y-2">
-          {checklist.map((item, index) => (
-            <label 
-              key={item.task} 
-              onClick={() => handleToggle(index)}
-              className="flex items-center gap-3 bg-white p-3 rounded-xl border border-brand-stone/40 cursor-pointer hover:bg-brand-cream/10 transition-all"
+          {/* CHECK ALL & UNCHECK ALL BUTTONS */}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={handleCheckAll}
+              className="bg-brand-brown text-brand-yellow font-black text-[10px] uppercase tracking-widest py-2 px-3 rounded-lg hover:scale-102 active:scale-98 transition-all"
             >
-              <input 
-                type="checkbox"
-                checked={item.completed}
-                readOnly
-                className="rounded text-brand-brown focus:ring-brand-brown"
-              />
-              <span className={`text-xs font-bold text-brand-brown ${item.completed ? 'line-through text-brand-brown/40' : ''}`}>
-                {item.task}
-              </span>
-            </label>
-          ))}
-        </div>
-      </div>
+              ✓ Check All
+            </button>
+            <button
+              onClick={handleUncheckAll}
+              className="bg-brand-stone/30 text-brand-brown/70 font-black text-[10px] uppercase tracking-widest py-2 px-3 rounded-lg hover:scale-102 active:scale-98 transition-all border border-brand-stone"
+            >
+              Uncheck All
+            </button>
+          </div>
 
-      {/* Take Photos block */}
-      <div className="border border-brand-stone rounded-2xl p-4 bg-brand-cream/30 space-y-3">
-        <div className="flex justify-between items-center">
-          <p className="text-[10px] font-black text-brand-brown/50 uppercase tracking-widest">Launch Audit Photos ({photos.length}/2)</p>
-          <span className="text-[8px] font-black uppercase text-brand-brown/40">1 Counter, 1 Store front</span>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2">
-          <label className="flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-4 rounded-xl cursor-pointer border border-brand-stone transition-all h-24">
-            <Camera className="w-5 h-5 text-brand-brown/50" />
-            <span className="text-[10px] font-black text-brand-brown uppercase">Add Photo</span>
-            <input 
-              type="file" 
-              accept="image/*" 
-              capture="environment" 
-              onChange={handlePhotoUpload}
-              className="hidden" 
-            />
-          </label>
-
-          {photos.map((ph, idx) => (
-            <div key={idx} className="border border-brand-stone rounded-xl overflow-hidden relative h-24 bg-zinc-100">
-              <img src={ph} alt={`Audit ${idx}`} className="w-full h-full object-cover" />
-              <button 
-                onClick={() => setPhotos(prev => prev.filter((_, i) => i !== idx))}
-                className="absolute top-1 right-1 bg-brand-brown text-brand-yellow rounded-full p-1 shadow"
-              >
-                ✕
-              </button>
+          {/* Checklist Items (Highly mobile-optimized size) */}
+          <div className="border border-brand-stone rounded-2xl p-4 bg-brand-cream/30 space-y-2 max-h-72 overflow-y-auto">
+            <div className="flex justify-between items-center mb-1">
+              <p className="text-[10px] font-black text-brand-brown/50 uppercase tracking-widest">
+                Verification Tasks ({completedCount}/{checklist.length})
+              </p>
             </div>
-          ))}
-        </div>
-      </div>
 
-      <button 
-        onClick={handleSave}
-        disabled={!canSubmit}
-        className={`w-full font-black uppercase tracking-widest py-3.5 rounded-xl shadow-md text-xs transition-all ${
-          canSubmit 
-            ? 'bg-brand-brown text-brand-yellow hover:scale-102 active:scale-98' 
-            : 'bg-brand-stone text-brand-brown/35 cursor-not-allowed'
-        }`}
-      >
-        Declare Store Opened
-      </button>
+            <div className="space-y-2">
+              {checklist.map((item, index) => (
+                <label 
+                  key={item.task} 
+                  onClick={() => handleToggle(index)}
+                  className="flex items-center gap-3 bg-white p-3 rounded-xl border border-brand-stone/40 cursor-pointer hover:bg-brand-cream/10 transition-all select-none"
+                >
+                  <input 
+                    type="checkbox"
+                    checked={item.completed}
+                    readOnly
+                    className="rounded text-brand-brown focus:ring-brand-brown h-4 w-4"
+                  />
+                  <span className={`text-xs font-bold text-brand-brown leading-tight ${item.completed ? 'line-through text-brand-brown/40' : ''}`}>
+                    {item.task}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <button
+            onClick={() => setStep(2)}
+            disabled={!allTasksChecked}
+            className={`w-full font-black uppercase tracking-widest py-3.5 rounded-xl shadow-md text-xs transition-all flex items-center justify-center gap-2 ${
+              allTasksChecked 
+                ? 'bg-brand-brown text-brand-yellow hover:scale-102 active:scale-98' 
+                : 'bg-brand-stone text-brand-brown/35 cursor-not-allowed'
+            }`}
+          >
+            Next: Take Counter Photo
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* STEP 2: OPEN COUNTER PHOTO */}
+      {step === 2 && (
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <h4 className="text-xs font-black uppercase tracking-wider text-brand-brown">Step 2: Counter Ready Stage</h4>
+            <p className="text-xs text-brand-brown/60 leading-relaxed">
+              Please take a real, live photo of the main service counter. This ensures sanitization standards are met.
+            </p>
+          </div>
+
+          {/* Real Counter Photo Capture Target */}
+          <div className="border-2 border-dashed border-brand-stone rounded-2xl p-6 bg-brand-cream/30 text-center">
+            {!counterPhoto ? (
+              <label className="flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-8 rounded-xl cursor-pointer border border-brand-stone transition-all">
+                <Camera className="w-8 h-8 text-brand-brown/50 animate-pulse" />
+                <span className="text-xs font-black text-brand-brown uppercase">Click Open Counter</span>
+                <p className="text-[9px] text-brand-brown/40">Take/upload photo of the ready counter</p>
+                <input 
+                  type="file" 
+                  accept="image/*" 
+                  capture="environment" 
+                  onChange={handleCounterPhotoUpload}
+                  className="hidden" 
+                />
+              </label>
+            ) : (
+              <div className="space-y-2">
+                <div className="border border-brand-stone rounded-xl overflow-hidden h-44 bg-zinc-100 relative">
+                  <img src={counterPhoto} alt="Clean Counter Preview" className="w-full h-full object-cover" />
+                  <button 
+                    onClick={() => setCounterPhoto('')}
+                    className="absolute top-2 right-2 bg-brand-brown text-brand-yellow font-black rounded-full px-2.5 py-1 text-xs shadow-md border border-brand-stone hover:bg-brand-yellow hover:text-brand-brown transition-all"
+                  >
+                    Retake ✕
+                  </button>
+                </div>
+                <p className="text-[9px] text-emerald-700 font-bold flex items-center justify-center gap-1">
+                  <Check className="w-3.5 h-3.5" /> Counter photo captured!
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={() => setStep(1)}
+              className="bg-brand-stone/30 text-brand-brown/70 font-black text-xs uppercase tracking-widest py-3.5 rounded-xl border border-brand-stone hover:scale-102 active:scale-98 transition-all flex items-center justify-center gap-1"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              Back
+            </button>
+            <button
+              onClick={() => setStep(3)}
+              disabled={!counterPhoto}
+              className={`font-black uppercase tracking-widest py-3.5 rounded-xl text-xs transition-all flex items-center justify-center gap-1 ${
+                counterPhoto 
+                  ? 'bg-brand-brown text-brand-yellow hover:scale-102 active:scale-98' 
+                  : 'bg-brand-stone text-brand-brown/35 cursor-not-allowed'
+              }`}
+            >
+              Next
+              <ChevronRight className="w-4 h-4 animate-bounce" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* STEP 3: OPEN STORE PHOTO */}
+      {step === 3 && (
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <h4 className="text-xs font-black uppercase tracking-wider text-brand-brown">Step 3: Store Front Stage</h4>
+            <p className="text-xs text-brand-brown/60 leading-relaxed">
+              Please take a real, live photo of the open store front ready for customers.
+            </p>
+          </div>
+
+          {/* Real Store Photo Capture Target */}
+          <div className="border-2 border-dashed border-brand-stone rounded-2xl p-6 bg-brand-cream/30 text-center">
+            {!storePhoto ? (
+              <label className="flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-8 rounded-xl cursor-pointer border border-brand-stone transition-all">
+                <Camera className="w-8 h-8 text-brand-brown/50 animate-pulse" />
+                <span className="text-xs font-black text-brand-brown uppercase">Click Open Store</span>
+                <p className="text-[9px] text-brand-brown/40">Take/upload photo of open store front</p>
+                <input 
+                  type="file" 
+                  accept="image/*" 
+                  capture="environment" 
+                  onChange={handleStorePhotoUpload}
+                  className="hidden" 
+                />
+              </label>
+            ) : (
+              <div className="space-y-2">
+                <div className="border border-brand-stone rounded-xl overflow-hidden h-44 bg-zinc-100 relative">
+                  <img src={storePhoto} alt="Open Store Preview" className="w-full h-full object-cover" />
+                  <button 
+                    onClick={() => setStorePhoto('')}
+                    className="absolute top-2 right-2 bg-brand-brown text-brand-yellow font-black rounded-full px-2.5 py-1 text-xs shadow-md border border-brand-stone hover:bg-brand-yellow hover:text-brand-brown transition-all"
+                  >
+                    Retake ✕
+                  </button>
+                </div>
+                <p className="text-[9px] text-emerald-700 font-bold flex items-center justify-center gap-1">
+                  <Check className="w-3.5 h-3.5" /> Store photo captured!
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={() => setStep(2)}
+              className="bg-brand-stone/30 text-brand-brown/70 font-black text-xs uppercase tracking-widest py-3.5 rounded-xl border border-brand-stone hover:scale-102 active:scale-98 transition-all flex items-center justify-center gap-1"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              Back
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={!storePhoto}
+              className={`font-black uppercase tracking-widest py-3.5 rounded-xl text-xs transition-all flex items-center justify-center gap-1 ${
+                storePhoto 
+                  ? 'bg-brand-brown text-brand-yellow hover:scale-102 active:scale-98' 
+                  : 'bg-brand-stone text-brand-brown/35 cursor-not-allowed'
+              }`}
+            >
+              Declare Store Opened 🎉
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2386,14 +2824,35 @@ function OpeningSopView({ onSave }: OpeningSopViewProps) {
 // STAGE 7: Closing Checklist & Review Counts
 interface ClosingSopAndReviewsViewProps {
   onSave: (sop: { task: string; completed: boolean }[], reviews: number, notes: string) => void;
+  initialSop?: { task: string; completed: boolean }[];
+  initialReviews?: number;
+  initialNotes?: string;
 }
 
-function ClosingSopAndReviewsView({ onSave }: ClosingSopAndReviewsViewProps) {
+function ClosingSopAndReviewsView({ onSave, initialSop, initialReviews, initialNotes }: ClosingSopAndReviewsViewProps) {
   const [checklist, setChecklist] = useState<{ task: string; completed: boolean }[]>(
-    CLOSING_SOP_TASKS.map(task => ({ task, completed: false }))
+    initialSop && initialSop.length > 0
+      ? initialSop
+      : CLOSING_SOP_TASKS.map(task => ({ task, completed: false }))
   );
-  const [reviews, setReviews] = useState<string>('0');
-  const [notes, setNotes] = useState<string>('');
+  const [reviews, setReviews] = useState<string>(initialReviews !== undefined ? initialReviews.toString() : '0');
+  const [notes, setNotes] = useState<string>(initialNotes || '');
+
+  useEffect(() => {
+    if (initialSop && initialSop.length > 0) {
+      setChecklist(initialSop);
+    } else {
+      setChecklist(CLOSING_SOP_TASKS.map(task => ({ task, completed: false })));
+    }
+  }, [initialSop]);
+
+  useEffect(() => {
+    setReviews(initialReviews !== undefined ? initialReviews.toString() : '0');
+  }, [initialReviews]);
+
+  useEffect(() => {
+    setNotes(initialNotes || '');
+  }, [initialNotes]);
 
   const completedCount = useMemo(() => {
     return checklist.filter(c => c.completed).length;
@@ -2407,6 +2866,14 @@ function ClosingSopAndReviewsView({ onSave }: ClosingSopAndReviewsViewProps) {
     const next = [...checklist];
     next[index].completed = !next[index].completed;
     setChecklist(next);
+  };
+
+  const handleCheckAll = () => {
+    setChecklist(CLOSING_SOP_TASKS.map(task => ({ task, completed: true })));
+  };
+
+  const handleUncheckAll = () => {
+    setChecklist(CLOSING_SOP_TASKS.map(task => ({ task, completed: false })));
   };
 
   const handleSave = () => {
@@ -2430,6 +2897,22 @@ function ClosingSopAndReviewsView({ onSave }: ClosingSopAndReviewsViewProps) {
         Verify that the restaurant premises are safe, neat, and secured for the night. Complete all 10 checks below.
       </p>
 
+      {/* CHECK ALL & UNCHECK ALL BUTTONS */}
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          onClick={handleCheckAll}
+          className="bg-brand-brown text-brand-yellow font-black text-[10px] uppercase tracking-widest py-2 px-3 rounded-lg hover:scale-102 active:scale-98 transition-all"
+        >
+          ✓ Check All
+        </button>
+        <button
+          onClick={handleUncheckAll}
+          className="bg-brand-stone/30 text-brand-brown/70 font-black text-[10px] uppercase tracking-widest py-2 px-3 rounded-lg hover:scale-102 active:scale-98 transition-all border border-brand-stone"
+        >
+          Uncheck All
+        </button>
+      </div>
+
       {/* Checklist items list */}
       <div className="border border-brand-stone rounded-2xl p-4 bg-brand-cream/30 space-y-2 max-h-70 overflow-y-auto">
         <p className="text-[10px] font-black text-brand-brown/50 uppercase tracking-widest mb-1">
@@ -2441,15 +2924,15 @@ function ClosingSopAndReviewsView({ onSave }: ClosingSopAndReviewsViewProps) {
             <label 
               key={item.task} 
               onClick={() => handleToggle(index)}
-              className="flex items-center gap-3 bg-white p-3 rounded-xl border border-brand-stone/40 cursor-pointer hover:bg-brand-cream/10 transition-all"
+              className="flex items-center gap-3 bg-white p-3 rounded-xl border border-brand-stone/40 cursor-pointer hover:bg-brand-cream/10 transition-all select-none"
             >
               <input 
                 type="checkbox"
                 checked={item.completed}
                 readOnly
-                className="rounded text-brand-brown focus:ring-brand-brown"
+                className="rounded text-brand-brown focus:ring-brand-brown h-4 w-4"
               />
-              <span className={`text-xs font-bold text-brand-brown ${item.completed ? 'line-through text-brand-brown/40' : ''}`}>
+              <span className={`text-xs font-bold text-brand-brown leading-tight ${item.completed ? 'line-through text-brand-brown/40' : ''}`}>
                 {item.task}
               </span>
             </label>
@@ -2502,14 +2985,40 @@ interface ClosingVerificationViewProps {
   posCashSales: number;
   posUpiSales: number;
   onSave: (cash: number, upi: number, discrepancyReason: string, photo: string) => void;
+  initialCash?: number;
+  initialUpi?: number;
+  initialDiscrepancyReason?: string;
+  initialPhoto?: string;
 }
 
-function ClosingVerificationView({ openingCash, posCashSales, posUpiSales, onSave }: ClosingVerificationViewProps) {
-  const [actualCash, setActualCash] = useState<string>('');
-  const [actualUpi, setActualUpi] = useState<string>('');
-  const [discrepancyReason, setDiscrepancyReason] = useState<string>('');
-  const [isPosMarked, setIsPosMarked] = useState<boolean>(false);
-  const [closingPhoto, setClosingPhoto] = useState<string>('');
+function ClosingVerificationView({ openingCash, posCashSales, posUpiSales, onSave, initialCash, initialUpi, initialDiscrepancyReason, initialPhoto }: ClosingVerificationViewProps) {
+  const [actualCash, setActualCash] = useState<string>(initialCash !== undefined ? initialCash.toString() : '');
+  const [actualUpi, setActualUpi] = useState<string>(initialUpi !== undefined ? initialUpi.toString() : '');
+  const [discrepancyReason, setDiscrepancyReason] = useState<string>(initialDiscrepancyReason || '');
+  const [isPosMarked, setIsPosMarked] = useState<boolean>(initialCash !== undefined && initialUpi !== undefined);
+  const [closingPhoto, setClosingPhoto] = useState<string>(initialPhoto || '');
+
+  useEffect(() => {
+    setActualCash(initialCash !== undefined ? initialCash.toString() : '');
+  }, [initialCash]);
+
+  useEffect(() => {
+    setActualUpi(initialUpi !== undefined ? initialUpi.toString() : '');
+  }, [initialUpi]);
+
+  useEffect(() => {
+    setDiscrepancyReason(initialDiscrepancyReason || '');
+  }, [initialDiscrepancyReason]);
+
+  useEffect(() => {
+    setClosingPhoto(initialPhoto || '');
+  }, [initialPhoto]);
+
+  useEffect(() => {
+    if (initialCash !== undefined && initialUpi !== undefined) {
+      setIsPosMarked(true);
+    }
+  }, [initialCash, initialUpi]);
 
   const expectedClosingCash = useMemo(() => {
     return openingCash + posCashSales;
@@ -2530,18 +3039,17 @@ function ClosingVerificationView({ openingCash, posCashSales, posUpiSales, onSav
     const upiFilled = actualUpi !== '';
     const hasDiff = hasCashDiff || hasUpiDiff;
     const reasonFilled = !hasDiff || discrepancyReason.trim().length > 0;
+    const photoFilled = closingPhoto !== '';
     
-    return cashFilled && upiFilled && reasonFilled && isPosMarked;
-  }, [actualCash, actualUpi, hasCashDiff, hasUpiDiff, discrepancyReason, isPosMarked]);
+    return cashFilled && upiFilled && reasonFilled && isPosMarked && photoFilled;
+  }, [actualCash, actualUpi, hasCashDiff, hasUpiDiff, discrepancyReason, isPosMarked, closingPhoto]);
 
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setClosingPhoto(reader.result as string);
-      };
-      reader.readAsDataURL(file);
+      compressImageFile(file, (compressedBase64) => {
+        setClosingPhoto(compressedBase64);
+      });
     }
   };
 
@@ -2567,7 +3075,7 @@ function ClosingVerificationView({ openingCash, posCashSales, posUpiSales, onSav
       </p>
 
       {/* POS Inventory marked check */}
-      <label className="flex items-center gap-3 bg-brand-yellow/10 p-4 rounded-2xl border border-brand-yellow/40 cursor-pointer">
+      <label className="flex items-center gap-3 bg-brand-yellow/10 p-4 rounded-2xl border border-brand-yellow/40 cursor-pointer select-none">
         <input 
           type="checkbox"
           checked={isPosMarked}
@@ -2628,22 +3136,34 @@ function ClosingVerificationView({ openingCash, posCashSales, posUpiSales, onSav
 
       {/* Shutter photo close */}
       <div className="border border-brand-stone rounded-2xl p-4 bg-brand-cream/30 space-y-3">
-        <p className="text-[10px] font-black text-brand-brown/50 uppercase tracking-widest">Final shutter Closing Photo</p>
-        <label className="flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-4 rounded-xl cursor-pointer border border-brand-stone transition-all">
-          <Camera className="w-5 h-5 text-brand-brown/50" />
-          <span className="text-xs font-bold text-brand-brown">Take Shutter Close Photo</span>
-          <input 
-            type="file" 
-            accept="image/*" 
-            capture="environment" 
-            onChange={handlePhotoUpload}
-            className="hidden" 
-          />
-        </label>
+        <p className="text-[10px] font-black text-brand-brown/50 uppercase tracking-widest">Final shutter Closing Photo Required</p>
         
-        {closingPhoto && (
-          <div className="border border-brand-stone rounded-xl overflow-hidden h-32 bg-zinc-100">
-            <img src={closingPhoto} alt="Closing Photo" className="w-full h-full object-cover" />
+        {!closingPhoto ? (
+          <label className="flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-6 rounded-xl cursor-pointer border border-brand-stone transition-all">
+            <Camera className="w-8 h-8 text-brand-brown/50 animate-pulse" />
+            <span className="text-xs font-black text-brand-brown uppercase">Take Shutter Close Photo</span>
+            <input 
+              type="file" 
+              accept="image/*" 
+              capture="environment" 
+              onChange={handlePhotoUpload}
+              className="hidden" 
+            />
+          </label>
+        ) : (
+          <div className="space-y-2">
+            <div className="border border-brand-stone rounded-xl overflow-hidden h-40 bg-zinc-100 relative">
+              <img src={closingPhoto} alt="Closing Photo Preview" className="w-full h-full object-cover" />
+              <button 
+                onClick={() => setClosingPhoto('')}
+                className="absolute top-2 right-2 bg-brand-brown text-brand-yellow font-black rounded-full px-2.5 py-1 text-xs shadow-md border border-brand-stone hover:bg-brand-yellow hover:text-brand-brown transition-all"
+              >
+                Retake ✕
+              </button>
+            </div>
+            <p className="text-[9px] text-emerald-700 font-bold flex items-center justify-center gap-1">
+              <Check className="w-3.5 h-3.5" /> Closing photo captured!
+            </p>
           </div>
         )}
       </div>
