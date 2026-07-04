@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import { CameraCapture } from './CameraCapture';
 import { supabase } from '../utils/supabase';
 import { getISTDateString, getISTFullDateTime, getStations } from '../utils/storage';
 import { RAW_MATERIALS_LIST } from '../constants';
@@ -36,56 +37,6 @@ const getNewStatus = (currentStatus: DailyOpStatus, targetStatus: DailyOpStatus)
   const currentIndex = OP_STAGES.indexOf(currentStatus);
   const targetIndex = OP_STAGES.indexOf(targetStatus);
   return targetIndex > currentIndex ? targetStatus : currentStatus;
-};
-
-const compressImageFile = (file: File, callback: (compressedBase64: string) => void) => {
-  const reader = new FileReader();
-  reader.onloadend = () => {
-    const originalBase64 = reader.result as string;
-    if (!originalBase64.startsWith('data:image')) {
-      callback(originalBase64);
-      return;
-    }
-    
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      let width = img.width;
-      let height = img.height;
-      const maxWidth = 800;
-      const maxHeight = 600;
-
-      if (width > height) {
-        if (width > maxWidth) {
-          height = Math.round((height * maxWidth) / width);
-          width = maxWidth;
-        }
-      } else {
-        if (height > maxHeight) {
-          width = Math.round((width * maxHeight) / height);
-          height = maxHeight;
-        }
-      }
-
-      canvas.width = width;
-      canvas.height = height;
-
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        callback(originalBase64);
-        return;
-      }
-
-      ctx.drawImage(img, 0, 0, width, height);
-      const compressed = canvas.toDataURL('image/jpeg', 0.6);
-      callback(compressed);
-    };
-    img.onerror = () => {
-      callback(originalBase64);
-    };
-    img.src = originalBase64;
-  };
-  reader.readAsDataURL(file);
 };
 
 const serializeRecordsForLocalStorage = (records: DailyOperationRecord[]): string => {
@@ -211,6 +162,7 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
   const [activeRecord, setActiveRecord] = useState<DailyOperationRecord | null>(null);
   const [viewStage, setViewStage] = useState<DailyOpStatus | null>(null);
   const [tempOpeningPhoto, setTempOpeningPhoto] = useState<string>('');
+  const [activeCameraTarget, setActiveCameraTarget] = useState<'opening' | 'counter' | 'store' | 'closing' | null>(null);
   const [todayDate, setTodayDate] = useState<string>(getISTDateString());
   const [employees, setEmployees] = useState<any[]>([]);
   const [posSales, setPosSales] = useState<{ cash: number; upi: number }>({ cash: 0, upi: 0 });
@@ -541,23 +493,6 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
     };
 
     saveRecord(newRecord);
-  };
-
-  // Upload or use mock for opening arrival photo
-  const handleArrivalPhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      compressImageFile(file, (compressedBase64) => {
-        if (activeRecord) {
-          saveRecord({
-            ...activeRecord,
-            openingPhoto: compressedBase64
-          });
-        } else {
-          setTempOpeningPhoto(compressedBase64);
-        }
-      });
-    }
   };
 
   // Stage 2: Attendance Save
@@ -1428,18 +1363,14 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
                   <p className="text-[10px] font-black text-brand-brown/50 uppercase tracking-widest">Store Front/Shutter Photo Required</p>
                   
                   {!tempOpeningPhoto ? (
-                    <label className="flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-6 rounded-xl cursor-pointer border border-brand-stone transition-all">
+                    <button 
+                      onClick={() => setActiveCameraTarget('opening')}
+                      className="w-full flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-6 rounded-xl cursor-pointer border border-brand-stone transition-all"
+                    >
                       <Camera className="w-8 h-8 text-brand-brown/50 animate-pulse" />
                       <span className="text-xs font-black text-brand-brown uppercase">Take Shutter Photo</span>
                       <p className="text-[9px] text-brand-brown/40">Real photo upload is mandatory to start the session.</p>
-                      <input 
-                        type="file" 
-                        accept="image/*" 
-                        capture="environment" 
-                        onChange={handleArrivalPhotoUpload}
-                        className="hidden" 
-                      />
-                    </label>
+                    </button>
                   ) : (
                     <div className="space-y-2">
                       <div className="border border-brand-stone rounded-xl overflow-hidden h-40 bg-zinc-100 relative">
@@ -2398,6 +2329,24 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
           </div>
         </div>
       )}
+
+      {activeCameraTarget === 'opening' && (
+        <CameraCapture 
+          title="Take Shutter Opening Photo"
+          onCapture={(base64) => {
+            if (activeRecord) {
+              saveRecord({
+                ...activeRecord,
+                openingPhoto: base64
+              });
+            } else {
+              setTempOpeningPhoto(base64);
+            }
+            setActiveCameraTarget(null);
+          }}
+          onClose={() => setActiveCameraTarget(null)}
+        />
+      )}
     </div>
   );
 }
@@ -2531,6 +2480,7 @@ function OpeningSopView({ onSave, initialSop, initialPhotos }: OpeningSopViewPro
   const [storePhoto, setStorePhoto] = useState<string>(
     initialPhotos && initialPhotos[1] ? initialPhotos[1] : ''
   );
+  const [activeCameraTarget, setActiveCameraTarget] = useState<'counter' | 'store' | null>(null);
 
   useEffect(() => {
     if (initialSop && initialSop.length > 0) {
@@ -2568,24 +2518,6 @@ function OpeningSopView({ onSave, initialSop, initialPhotos }: OpeningSopViewPro
 
   const handleUncheckAll = () => {
     setChecklist(OPENING_SOP_TASKS.map(task => ({ task, completed: false })));
-  };
-
-  const handleCounterPhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      compressImageFile(file, (compressedBase64) => {
-        setCounterPhoto(compressedBase64);
-      });
-    }
-  };
-
-  const handleStorePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      compressImageFile(file, (compressedBase64) => {
-        setStorePhoto(compressedBase64);
-      });
-    }
   };
 
   const handleSave = () => {
@@ -2698,18 +2630,14 @@ function OpeningSopView({ onSave, initialSop, initialPhotos }: OpeningSopViewPro
           {/* Real Counter Photo Capture Target */}
           <div className="border-2 border-dashed border-brand-stone rounded-2xl p-6 bg-brand-cream/30 text-center">
             {!counterPhoto ? (
-              <label className="flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-8 rounded-xl cursor-pointer border border-brand-stone transition-all">
+              <button 
+                onClick={() => setActiveCameraTarget('counter')}
+                className="w-full flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-8 rounded-xl cursor-pointer border border-brand-stone transition-all"
+              >
                 <Camera className="w-8 h-8 text-brand-brown/50 animate-pulse" />
                 <span className="text-xs font-black text-brand-brown uppercase">Click Open Counter</span>
                 <p className="text-[9px] text-brand-brown/40">Take/upload photo of the ready counter</p>
-                <input 
-                  type="file" 
-                  accept="image/*" 
-                  capture="environment" 
-                  onChange={handleCounterPhotoUpload}
-                  className="hidden" 
-                />
-              </label>
+              </button>
             ) : (
               <div className="space-y-2">
                 <div className="border border-brand-stone rounded-xl overflow-hidden h-44 bg-zinc-100 relative">
@@ -2765,18 +2693,14 @@ function OpeningSopView({ onSave, initialSop, initialPhotos }: OpeningSopViewPro
           {/* Real Store Photo Capture Target */}
           <div className="border-2 border-dashed border-brand-stone rounded-2xl p-6 bg-brand-cream/30 text-center">
             {!storePhoto ? (
-              <label className="flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-8 rounded-xl cursor-pointer border border-brand-stone transition-all">
+              <button 
+                onClick={() => setActiveCameraTarget('store')}
+                className="w-full flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-8 rounded-xl cursor-pointer border border-brand-stone transition-all"
+              >
                 <Camera className="w-8 h-8 text-brand-brown/50 animate-pulse" />
                 <span className="text-xs font-black text-brand-brown uppercase">Click Open Store</span>
                 <p className="text-[9px] text-brand-brown/40">Take/upload photo of open store front</p>
-                <input 
-                  type="file" 
-                  accept="image/*" 
-                  capture="environment" 
-                  onChange={handleStorePhotoUpload}
-                  className="hidden" 
-                />
-              </label>
+              </button>
             ) : (
               <div className="space-y-2">
                 <div className="border border-brand-stone rounded-xl overflow-hidden h-44 bg-zinc-100 relative">
@@ -2816,6 +2740,21 @@ function OpeningSopView({ onSave, initialSop, initialPhotos }: OpeningSopViewPro
             </button>
           </div>
         </div>
+      )}
+
+      {activeCameraTarget && (
+        <CameraCapture 
+          title={activeCameraTarget === 'counter' ? 'Capture Clean Counter' : 'Capture Open Store Front'}
+          onCapture={(base64) => {
+            if (activeCameraTarget === 'counter') {
+              setCounterPhoto(base64);
+            } else {
+              setStorePhoto(base64);
+            }
+            setActiveCameraTarget(null);
+          }}
+          onClose={() => setActiveCameraTarget(null)}
+        />
       )}
     </div>
   );
@@ -2997,6 +2936,7 @@ function ClosingVerificationView({ openingCash, posCashSales, posUpiSales, onSav
   const [discrepancyReason, setDiscrepancyReason] = useState<string>(initialDiscrepancyReason || '');
   const [isPosMarked, setIsPosMarked] = useState<boolean>(initialCash !== undefined && initialUpi !== undefined);
   const [closingPhoto, setClosingPhoto] = useState<string>(initialPhoto || '');
+  const [showCamera, setShowCamera] = useState<boolean>(false);
 
   useEffect(() => {
     setActualCash(initialCash !== undefined ? initialCash.toString() : '');
@@ -3043,15 +2983,6 @@ function ClosingVerificationView({ openingCash, posCashSales, posUpiSales, onSav
     
     return cashFilled && upiFilled && reasonFilled && isPosMarked && photoFilled;
   }, [actualCash, actualUpi, hasCashDiff, hasUpiDiff, discrepancyReason, isPosMarked, closingPhoto]);
-
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      compressImageFile(file, (compressedBase64) => {
-        setClosingPhoto(compressedBase64);
-      });
-    }
-  };
 
   const handleSave = () => {
     if (!canSubmit) return;
@@ -3139,17 +3070,13 @@ function ClosingVerificationView({ openingCash, posCashSales, posUpiSales, onSav
         <p className="text-[10px] font-black text-brand-brown/50 uppercase tracking-widest">Final shutter Closing Photo Required</p>
         
         {!closingPhoto ? (
-          <label className="flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-6 rounded-xl cursor-pointer border border-brand-stone transition-all">
+          <button 
+            onClick={() => setShowCamera(true)}
+            className="w-full flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-6 rounded-xl cursor-pointer border border-brand-stone transition-all"
+          >
             <Camera className="w-8 h-8 text-brand-brown/50 animate-pulse" />
             <span className="text-xs font-black text-brand-brown uppercase">Take Shutter Close Photo</span>
-            <input 
-              type="file" 
-              accept="image/*" 
-              capture="environment" 
-              onChange={handlePhotoUpload}
-              className="hidden" 
-            />
-          </label>
+          </button>
         ) : (
           <div className="space-y-2">
             <div className="border border-brand-stone rounded-xl overflow-hidden h-40 bg-zinc-100 relative">
@@ -3179,6 +3106,17 @@ function ClosingVerificationView({ openingCash, posCashSales, posUpiSales, onSav
       >
         Lock Session &amp; Close Store
       </button>
+
+      {showCamera && (
+        <CameraCapture 
+          title="Take Shutter Closing Photo"
+          onCapture={(base64) => {
+            setClosingPhoto(base64);
+            setShowCamera(false);
+          }}
+          onClose={() => setShowCamera(false)}
+        />
+      )}
     </div>
   );
 }
