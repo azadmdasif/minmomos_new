@@ -200,6 +200,12 @@ const Bill: React.FC<BillProps> = ({
 
   const loyaltyDiscount = React.useMemo(() => {
     if (!customer) return null;
+    if (customer.note === 'STUDENT') {
+      if (customer.totalOrders > 0) {
+        return { percentage: 10, label: '10% Student Discount', code: `STUDENT10-${customer.phone.slice(-4)}` };
+      }
+      return null;
+    }
     const count = customer.totalOrders;
     if (count === 1) return { percentage: 15, label: '15% Loyalty (2nd Visit)', code: `DISC15-${customer.phone.slice(-4)}` };
     if (count === 2) return { percentage: 10, label: '10% Loyalty (3rd Visit)', code: `DISC10-${customer.phone.slice(-4)}` };
@@ -284,12 +290,27 @@ const Bill: React.FC<BillProps> = ({
           }
 
           // VOIDED / RE-FIRST ORDER Logic
-          const hasGiftInOrder = orderItems.some(item => item.name.includes('Celebratory Campa Cola (Gift)'));
-          if (cust.totalOrders === 0 && !hasGiftInOrder) {
-            onAddItem([{
-              ...GIFT_CAMPA_COLA,
-              id: `welcome-gift-${Date.now()}`
-            }]);
+          const isStudent = cust.note === 'STUDENT';
+          if (isStudent) {
+            const hasMojitoInOrder = orderItems.some(item => item.id === 'student-mojito-gift' || item.name.includes('Student Promo'));
+            if (cust.totalOrders === 0 && !hasMojitoInOrder) {
+              onAddItem([{
+                id: 'student-mojito-gift',
+                menuItemId: 'promo-mojito',
+                name: '🍹 Free Virgin Mojito (Student Promo)',
+                price: 0,
+                quantity: 1,
+                cost: 0
+              }]);
+            }
+          } else {
+            const hasGiftInOrder = orderItems.some(item => item.name.includes('Celebratory Campa Cola (Gift)'));
+            if (cust.totalOrders === 0 && !hasGiftInOrder) {
+              onAddItem([{
+                ...GIFT_CAMPA_COLA,
+                id: `welcome-gift-${Date.now()}`
+              }]);
+            }
           }
         } else {
           setUsualOrder(null);
@@ -310,18 +331,33 @@ const Bill: React.FC<BillProps> = ({
     }
   }, [customerPhone]);
 
-  const handleRegisterCustomer = async (name: string) => {
+  const handleRegisterCustomer = async (name: string, isStudentRegister?: boolean) => {
     try {
       if (isPromptForExisting && customer) {
         await updateCustomer(customer.id, { name });
         setCustomer({ ...customer, name });
       } else {
-        const newCust = await registerCustomer(customerPhone, name);
+        const newCust = await registerCustomer(customerPhone, name, isStudentRegister);
         setCustomer(newCust);
-        // Welcome Gift logic
-        const hasGift = orderItems.some(item => item.id === GIFT_CAMPA_COLA.id);
-        if (!hasGift) {
-          onAddItem([{ ...GIFT_CAMPA_COLA, id: `welcome-gift-${Date.now()}` }]);
+        if (isStudentRegister) {
+          // Add Free Virgin Mojito
+          const hasMojito = orderItems.some(item => item.id === 'student-mojito-gift' || item.name.includes('Student Promo'));
+          if (!hasMojito) {
+            onAddItem([{
+              id: 'student-mojito-gift',
+              menuItemId: 'promo-mojito',
+              name: '🍹 Free Virgin Mojito (Student Promo)',
+              price: 0,
+              quantity: 1,
+              cost: 0
+            }]);
+          }
+        } else {
+          // Welcome Gift logic
+          const hasGift = orderItems.some(item => item.id === GIFT_CAMPA_COLA.id);
+          if (!hasGift) {
+            onAddItem([{ ...GIFT_CAMPA_COLA, id: `welcome-gift-${Date.now()}` }]);
+          }
         }
       }
       setShowNewCustomerPrompt(false);
@@ -330,10 +366,24 @@ const Bill: React.FC<BillProps> = ({
     }
   };
 
-  // Auto-update discount if items change
+  // Auto-apply or update discount
   React.useEffect(() => {
     const discountItems = orderItems.filter(i => i.id === 'loyalty-discount');
-    if (discountItems.length > 0) {
+    const isStudentSubsequent = customer && customer.note === 'STUDENT' && customer.totalOrders > 0;
+    
+    if (isStudentSubsequent && discountItems.length === 0) {
+      const subtotal = orderItems.reduce((acc, i) => acc + (i.id !== 'loyalty-discount' && i.price > 0 ? i.price * i.quantity : 0), 0);
+      if (subtotal > 0 && loyaltyDiscount) {
+        onAddItem([{
+          id: 'loyalty-discount',
+          menuItemId: 'discount',
+          name: loyaltyDiscount.label,
+          price: -(subtotal * (loyaltyDiscount.percentage / 100)),
+          quantity: 1,
+          cost: 0
+        }]);
+      }
+    } else if (discountItems.length > 0) {
       const subtotal = orderItems.reduce((acc, i) => acc + (i.id !== 'loyalty-discount' && i.price > 0 ? i.price * i.quantity : 0), 0);
       
       discountItems.forEach(discountItem => {
@@ -352,7 +402,7 @@ const Bill: React.FC<BillProps> = ({
         }
       });
     }
-  }, [orderItems, onAddItem, onUpdateQuantity, loyaltyDiscount]);
+  }, [orderItems, onAddItem, onUpdateQuantity, loyaltyDiscount, customer]);
 
   const canRedeemSomething = customer && (customer.minCoins || 0) >= 100;
   const projectedTotal = (customer?.totalSpent || 0) + total;

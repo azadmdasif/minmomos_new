@@ -422,87 +422,30 @@ export async function saveOrder(
     for (const item of orderItems) {
       if (!item.menuItemId || item.menuItemId === 'discount') continue;
 
-      // Special Case: Celebratory Campa Cola Gift
-      const isCampaGift = item.name.toLowerCase().includes('celebratory campa cola') || 
-                         item.name.toLowerCase().includes('campa cola (gift)');
-
-      if (isCampaGift) {
-        const materialId = 'campa-cola-small';
-        const totalConsumption = 1 * item.quantity;
-
-        const { data: existingInv } = await supabase
-          .from('inventory')
-          .select('current_stock')
-          .eq('id', materialId)
-          .eq('branch_name', branchName)
-          .maybeSingle();
-
-        if (existingInv) {
-          const newStock = existingInv.current_stock - totalConsumption;
-          await supabase.from('inventory')
-            .update({ current_stock: newStock })
-            .eq('id', materialId)
-            .eq('branch_name', branchName);
-          
-          await supabase.from('inventory_logs').insert({
-            inventory_id: materialId,
-            branch_name: branchName,
-            quantity_change: -totalConsumption,
-            reason: `ORDER_BILL_${nextBillNumber}`,
-            date: getISTISOString()
-          });
-        } else {
-          // If material not in station inventory, check central and create entry
-          const { data: centralInfo } = await supabase
-            .from('central_inventory')
-            .select('*')
-            .eq('id', materialId)
-            .maybeSingle();
-          
-          if (centralInfo) {
-            await supabase.from('inventory').insert({
-              id: materialId,
-              branch_name: branchName,
-              name: centralInfo.name,
-              unit: centralInfo.unit,
-              category: centralInfo.category,
-              current_stock: -totalConsumption,
-              is_finished: false,
-              request_pending: false
-            });
-
-            await supabase.from('inventory_logs').insert({
-              inventory_id: materialId,
-              branch_name: branchName,
-              quantity_change: -totalConsumption,
-              reason: `ORDER_BILL_${nextBillNumber}`,
-              date: getISTISOString()
-            });
-          }
-        }
-        continue; // Handled specially, skip regular recipe deduction
+      let menuDetail = menuItems?.find(m => m.id === item.menuItemId);
+      if (!menuDetail) {
+        // Robust Fallback: Try matching by name if item.menuItemId doesn't map directly
+        const baseName = item.name.replace(/^(Steamed|Fried|Pan Fried|Pan-Fried|Peri-Peri|Peri peri)\s+/i, '').split(' (')[0].trim();
+        menuDetail = menuItems?.find(m => m.name.toLowerCase() === baseName.toLowerCase() || m.name.toLowerCase() === item.name.toLowerCase());
       }
 
-      const menuDetail = menuItems?.find(m => m.id === item.menuItemId);
       if (!menuDetail) {
         console.warn(`Deduction Skip: Menu item details not found for ID: ${item.menuItemId} (Name: ${item.name})`);
         continue;
       }
 
-       // Determine size from name suffix
+      // Determine size robustly from name suffix
       let size: Size = 'medium';
-      if (item.name.includes('(Small)')) size = 'small';
-      else if (item.name.includes('(Large)')) size = 'large';
+      const nameLower = item.name.toLowerCase();
+      if (nameLower.includes('(small)') || nameLower.includes('small')) size = 'small';
+      else if (nameLower.includes('(large)') || nameLower.includes('large')) size = 'large';
+      else if (nameLower.includes('(medium)') || nameLower.includes('medium')) size = 'medium';
 
-      // 1. Get the right recipe: Fallback to global if size recipe is empty or not configured.
-      let activeRecipe = menuDetail.recipe || [];
+      // Only deduct the stock based on size specific recipe for each item as specified by menu.
       const sizeRecipe = menuDetail.sizeRecipes?.[size];
-
-      if (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) {
-        activeRecipe = sizeRecipe;
-      }
+      const activeRecipe = (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) ? sizeRecipe : [];
       
-      if (activeRecipe && Array.isArray(activeRecipe) && activeRecipe.length > 0) {
+      if (activeRecipe.length > 0) {
         for (const requirement of activeRecipe) {
           const totalConsumption = requirement.quantity * item.quantity;
           
@@ -562,10 +505,7 @@ export async function saveOrder(
           }
         }
       } else {
-        // Recipe is empty or not defined
-        if (menuDetail.category !== 'drink') {
-          console.info(`No recipe defined for item: ${menuDetail.name}. Stock not deducted.`);
-        }
+        console.info(`No size-specific recipe defined for item: ${menuDetail.name} (Size: ${size}). Stock not deducted.`);
       }
     }
 
@@ -1149,54 +1089,29 @@ export async function deleteOrderByBillNumber(billNumber: number, reason: string
       const branchName = order.branch_name;
 
       for (const item of (order.order_items as any[] || [])) {
-        // Handle Celebratory Gift Reversal FIRST (before skipping items without menu_item_id)
-        const isCampaGift = item.name.toLowerCase().includes('celebratory campa cola') || 
-                           item.name.toLowerCase().includes('campa cola (gift)');
-                           
-        if (isCampaGift) {
-          const materialId = 'campa-cola-small';
-          const totalToReturn = 1 * item.quantity;
-          const { data: existingInv } = await supabase.from('inventory').select('current_stock').eq('id', materialId).eq('branch_name', branchName).maybeSingle();
-          if (existingInv) {
-            const newStock = existingInv.current_stock + totalToReturn;
-            await supabase.from('inventory').update({ current_stock: newStock }).eq('id', materialId).eq('branch_name', branchName);
-            
-            // Log the reversal
-            await supabase.from('inventory_logs').insert({
-              inventory_id: materialId,
-              branch_name: branchName,
-              quantity_change: totalToReturn,
-              reason: `VOID_ORDER_BILL_${billNumber}`,
-              date: getISTISOString()
-            });
-          }
-          continue;
-        }
-
         // 2. Handle Regular Recipe Reversal
         let menuDetail = menuItems?.find(m => m.id === item.menu_item_id);
         
-        // Fallback: If menu_item_id is null (older data or mock IDs), try matching by name
+        // Robust Fallback: If menu_item_id is null, try matching by name
         if (!menuDetail) {
-          const baseName = item.name.split(' (')[0];
-          menuDetail = menuItems?.find(m => m.name === baseName || m.name === item.name);
+          const baseName = item.name.replace(/^(Steamed|Fried|Pan Fried|Pan-Fried|Peri-Peri|Peri peri)\s+/i, '').split(' (')[0].trim();
+          menuDetail = menuItems?.find(m => m.name.toLowerCase() === baseName.toLowerCase() || m.name.toLowerCase() === item.name.toLowerCase());
         }
 
         if (!menuDetail) continue;
 
+        // Determine size robustly from name suffix
         let size: Size = 'medium';
-        if (item.name.includes('(Small)')) size = 'small';
-        else if (item.name.includes('(Large)')) size = 'large';
+        const nameLower = item.name.toLowerCase();
+        if (nameLower.includes('(small)') || nameLower.includes('small')) size = 'small';
+        else if (nameLower.includes('(large)') || nameLower.includes('large')) size = 'large';
+        else if (nameLower.includes('(medium)') || nameLower.includes('medium')) size = 'medium';
 
-        // 1. Get the right recipe: Fallback to global if size recipe is empty or not configured.
-        let activeRecipe = menuDetail.recipe || [];
+        // Only reverse size-specific recipes as specified by menu
         const sizeRecipe = menuDetail.sizeRecipes?.[size];
-
-        if (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) {
-          activeRecipe = sizeRecipe;
-        }
+        const activeRecipe = (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) ? sizeRecipe : [];
         
-        if (activeRecipe && Array.isArray(activeRecipe) && activeRecipe.length > 0) {
+        if (activeRecipe.length > 0) {
           for (const requirement of activeRecipe) {
             const totalToReturn = requirement.quantity * item.quantity;
             if (totalToReturn <= 0) continue;
@@ -1389,12 +1304,13 @@ export async function searchCustomers(query: string): Promise<Customer[]> {
   });
 }
 
-export async function registerCustomer(phone: string, name: string): Promise<Customer> {
+export async function registerCustomer(phone: string, name: string, isStudent?: boolean): Promise<Customer> {
   const normalized = normalizePhone(phone);
   const couponCode = `DISC15-${normalized.slice(-4)}`;
+  const note = isStudent ? "STUDENT" : "REGULAR";
   const { data, error } = await supabase
     .from('customers')
-    .upsert({ phone: normalized, name, welcome_coupon_code: couponCode }, { onConflict: 'phone' })
+    .upsert({ phone: normalized, name, welcome_coupon_code: couponCode, note }, { onConflict: 'phone' })
     .select()
     .single();
 
@@ -1407,6 +1323,9 @@ export async function registerCustomer(phone: string, name: string): Promise<Cus
     id: data.id,
     phone: data.phone,
     name: data.name,
+    email: data.email,
+    birthday: data.birthday,
+    note: data.note,
     totalOrders: Number(data.total_orders || 0),
     totalSpent: Number(data.ltv || 0),
     minCoins: Number(data.min_coins || 0),

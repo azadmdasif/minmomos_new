@@ -5,17 +5,18 @@ interface NewCustomerModalProps {
   isOpen: boolean;
   phone: string;
   isExisting?: boolean;
-  onRegister: (name: string) => void;
+  onRegister: (name: string, isStudent: boolean) => void;
   onCancel: () => void;
 }
 
 const NewCustomerModal: React.FC<NewCustomerModalProps> = ({ isOpen, phone, isExisting, onRegister, onCancel }) => {
   const [name, setName] = React.useState('');
+  const [isStudent, setIsStudent] = React.useState(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (name.trim()) {
-      onRegister(name.trim());
+      onRegister(name.trim(), isStudent);
     }
   };
 
@@ -53,7 +54,15 @@ const NewCustomerModal: React.FC<NewCustomerModalProps> = ({ isOpen, phone, isEx
               <p className={`font-black text-xl mb-1 ${isExisting ? 'text-mountain-green' : 'text-brand-yellow'}`}>{phone}</p>
               {!isExisting && (
                 <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest leading-relaxed">
-                  A <span className="text-white">Welcome Campa Cola</span> will be gifted <br />to this explorer!
+                  {isStudent ? (
+                    <>
+                      A <span className="text-brand-yellow">Welcome Virgin Mojito</span> will be gifted <br />to this Student!
+                    </>
+                  ) : (
+                    <>
+                      A <span className="text-white">Welcome Campa Cola</span> will be gifted <br />to this explorer!
+                    </>
+                  )}
                 </p>
               )}
             </div>
@@ -69,6 +78,34 @@ const NewCustomerModal: React.FC<NewCustomerModalProps> = ({ isOpen, phone, isEx
                   placeholder="Enter Name..."
                   className="w-full bg-white/10 border border-white/10 rounded-2xl p-4 text-white font-bold placeholder:text-zinc-700 outline-none focus:border-brand-yellow transition-all"
                 />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase text-zinc-500 tracking-widest px-1">Category</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setIsStudent(true)}
+                    className={`py-3 rounded-2xl font-black uppercase tracking-widest text-[9px] border transition-all ${
+                      isStudent 
+                        ? 'bg-brand-yellow/20 border-brand-yellow text-brand-yellow' 
+                        : 'bg-white/5 border-white/10 text-zinc-500 hover:bg-white/10'
+                    }`}
+                  >
+                    🎓 Student
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsStudent(false)}
+                    className={`py-3 rounded-2xl font-black uppercase tracking-widest text-[9px] border transition-all ${
+                      !isStudent 
+                        ? 'bg-white/10 border-white/30 text-white' 
+                        : 'bg-white/5 border-white/10 text-zinc-500 hover:bg-white/10'
+                    }`}
+                  >
+                    👤 Regular
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4 pt-2">
