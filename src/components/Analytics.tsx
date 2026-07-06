@@ -1336,7 +1336,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                       <div className="max-h-[250px] overflow-y-auto no-scrollbar pr-2">
                         {foundOrder.items.length > 0 ? (
                           foundOrder.items.map((it, idx) => {
-                            const isGift = it.name.includes('(Gift)') || it.id === 'gift-campa-cola';
+                            const isGift = it.name.includes('(Gift)') || it.id === 'gift-campa-cola' || it.name.includes('Student Promo') || it.price === 0;
                             return (
                               <div key={idx} className={`flex justify-between items-center border-b border-brand-stone/50 py-3 group/item ${isGift ? 'bg-brand-red/5 p-2 rounded-lg my-1 border-none' : ''}`}>
                                   <div>
@@ -2470,6 +2470,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                        <div className="text-left">
                          <div className="flex items-center gap-2">
                            <p className="text-sm font-black tracking-tight">{c.phone}</p>
+                           {c.note === 'STUDENT' && (
+                             <span className="text-[10px]" title="Student Customer">🎓</span>
+                           )}
                            {label && (
                              <span className={`text-[7px] font-black uppercase px-1.5 py-0.5 rounded-full ${activeCustomer?.id === c.id ? 'bg-brand-yellow text-brand-brown' : labelColor}`}>
                                {label}
@@ -2605,6 +2608,14 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                               <span className="text-[10px] uppercase font-black px-2 py-0.5 bg-brand-yellow/20 rounded border border-brand-yellow/30 text-brand-yellow">
                                 {getTierInfo(activeCustomer.totalSpent || 0).name} Stage
                               </span>
+                              {activeCustomer.note === 'STUDENT' && (
+                                <>
+                                  <span className="text-white/20">•</span>
+                                  <span className="text-[10px] uppercase font-black px-2 py-0.5 bg-emerald-500/20 rounded border border-emerald-500/30 text-emerald-400">
+                                    🎓 Student
+                                  </span>
+                                </>
+                              )}
                               {activeCustomer.email && (
                                 <>
                                   <span className="text-white/20">•</span>
@@ -2709,6 +2720,12 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                              <div className="flex items-center gap-2 bg-white/5 px-4 py-2 rounded-xl border border-white/10">
                                <Calendar className="w-3.5 h-3.5 text-brand-yellow" />
                                <span className="text-[9px] font-black uppercase tracking-widest">DOB: {getISTDateString(activeCustomer.birthday)}</span>
+                             </div>
+                          )}
+                          {activeCustomer.note === 'STUDENT' && (
+                             <div className="flex items-center gap-2 bg-emerald-500/10 px-4 py-2 rounded-xl border border-emerald-500/20 text-emerald-400">
+                               <span className="text-xs">🎓</span>
+                               <span className="text-[9px] font-black uppercase tracking-widest">Student Discount (10% Off Subsequent Orders)</span>
                              </div>
                           )}
                           {activeCustomer.note && (

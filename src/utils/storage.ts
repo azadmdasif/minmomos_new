@@ -437,13 +437,16 @@ export async function saveOrder(
       // Determine size robustly from name suffix
       let size: Size = 'medium';
       const nameLower = item.name.toLowerCase();
-      if (nameLower.includes('(small)') || nameLower.includes('small')) size = 'small';
+      if (nameLower.includes('(small)') || nameLower.includes('small') || item.id === 'gift-campa-cola' || nameLower.includes('campa cola (gift)')) size = 'small';
       else if (nameLower.includes('(large)') || nameLower.includes('large')) size = 'large';
       else if (nameLower.includes('(medium)') || nameLower.includes('medium')) size = 'medium';
 
       // Only deduct the stock based on size specific recipe for each item as specified by menu.
       const sizeRecipe = menuDetail.sizeRecipes?.[size];
-      const activeRecipe = (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) ? sizeRecipe : [];
+      let activeRecipe = (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) ? sizeRecipe : [];
+      if (activeRecipe.length === 0 && menuDetail.recipe && Array.isArray(menuDetail.recipe) && menuDetail.recipe.length > 0) {
+        activeRecipe = menuDetail.recipe;
+      }
       
       if (activeRecipe.length > 0) {
         for (const requirement of activeRecipe) {
@@ -1103,13 +1106,16 @@ export async function deleteOrderByBillNumber(billNumber: number, reason: string
         // Determine size robustly from name suffix
         let size: Size = 'medium';
         const nameLower = item.name.toLowerCase();
-        if (nameLower.includes('(small)') || nameLower.includes('small')) size = 'small';
+        if (nameLower.includes('(small)') || nameLower.includes('small') || item.id === 'gift-campa-cola' || nameLower.includes('campa cola (gift)')) size = 'small';
         else if (nameLower.includes('(large)') || nameLower.includes('large')) size = 'large';
         else if (nameLower.includes('(medium)') || nameLower.includes('medium')) size = 'medium';
 
         // Only reverse size-specific recipes as specified by menu
         const sizeRecipe = menuDetail.sizeRecipes?.[size];
-        const activeRecipe = (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) ? sizeRecipe : [];
+        let activeRecipe = (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) ? sizeRecipe : [];
+        if (activeRecipe.length === 0 && menuDetail.recipe && Array.isArray(menuDetail.recipe) && menuDetail.recipe.length > 0) {
+          activeRecipe = menuDetail.recipe;
+        }
         
         if (activeRecipe.length > 0) {
           for (const requirement of activeRecipe) {

@@ -421,9 +421,11 @@ const Bill: React.FC<BillProps> = ({
         setShowCelebration(true);
         
         // Add Campa Cola if not already added as gift
-        const hasGift = orderItems.some(item => item.id === GIFT_CAMPA_COLA.id);
-        if (!hasGift) {
-          onAddItem([GIFT_CAMPA_COLA]);
+        if (customer.note !== 'STUDENT') {
+          const hasGift = orderItems.some(item => item.id === GIFT_CAMPA_COLA.id);
+          if (!hasGift) {
+            onAddItem([GIFT_CAMPA_COLA]);
+          }
         }
       }
     }
