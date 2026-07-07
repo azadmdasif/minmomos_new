@@ -233,7 +233,7 @@ function patchColorSpaces() {
   // 2. Patch window.getComputedStyle
   const originalGetComputedStyle = window.getComputedStyle;
   window.getComputedStyle = function(elt, pseudoElt) {
-    const style = originalGetComputedStyle.call(this, elt, pseudoElt);
+    const style = originalGetComputedStyle.call(window, elt, pseudoElt);
     return new Proxy(style, {
       get(target, prop) {
         if (prop === 'getPropertyValue') {

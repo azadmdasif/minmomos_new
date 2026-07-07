@@ -202,6 +202,9 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [isAddVendorModalOpen, setIsAddVendorModalOpen] = useState(false);
   const [editingVendorId, setEditingVendorId] = useState<string | null>(null);
   const [expandedVendorUnpaidId, setExpandedVendorUnpaidId] = useState<string | null>(null);
+  const [unpaidDatePreset, setUnpaidDatePreset] = useState<string>('all');
+  const [unpaidCustomStart, setUnpaidCustomStart] = useState<string>('');
+  const [unpaidCustomEnd, setUnpaidCustomEnd] = useState<string>('');
   const [newVendorName, setNewVendorName] = useState('');
   const [newVendorContact, setNewVendorContact] = useState('');
   const [newVendorPhone, setNewVendorPhone] = useState('');
@@ -751,6 +754,82 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     } catch (err: any) {
       alert("Failed to record bulk payment: " + err.message);
     }
+  };
+
+  const filterUnpaidProcurements = (items: any[]) => {
+    if (unpaidDatePreset === 'all') return items;
+
+    const now = new Date();
+    
+    // helper to get start of a day
+    const getStartOfDay = (d: Date) => {
+      const nd = new Date(d);
+      nd.setHours(0, 0, 0, 0);
+      return nd;
+    };
+
+    // helper to get end of a day
+    const getEndOfDay = (d: Date) => {
+      const nd = new Date(d);
+      nd.setHours(23, 59, 59, 999);
+      return nd;
+    };
+
+    let startDate: Date | null = null;
+    let endDate: Date | null = null;
+
+    if (unpaidDatePreset === 'today') {
+      startDate = getStartOfDay(now);
+      endDate = getEndOfDay(now);
+    } else if (unpaidDatePreset === 'yesterday') {
+      const yesterday = new Date();
+      yesterday.setDate(now.getDate() - 1);
+      startDate = getStartOfDay(yesterday);
+      endDate = getEndOfDay(yesterday);
+    } else if (unpaidDatePreset === 'week') {
+      // This week: Monday to Sunday
+      const day = now.getDay();
+      const diff = now.getDate() - (day === 0 ? 6 : day - 1);
+      const monday = new Date(now);
+      monday.setDate(diff);
+      startDate = getStartOfDay(monday);
+      endDate = getEndOfDay(now);
+    } else if (unpaidDatePreset === 'last-week') {
+      // Last week: previous Monday to previous Sunday
+      const day = now.getDay();
+      const diffToThisMonday = now.getDate() - (day === 0 ? 6 : day - 1);
+      const lastMonday = new Date(now);
+      lastMonday.setDate(diffToThisMonday - 7);
+      const lastSunday = new Date(now);
+      lastSunday.setDate(diffToThisMonday - 1);
+      startDate = getStartOfDay(lastMonday);
+      endDate = getEndOfDay(lastSunday);
+    } else if (unpaidDatePreset === 'month') {
+      // This Month: 1st of current month to end of current month
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+      startDate = getStartOfDay(firstDay);
+      endDate = getEndOfDay(now);
+    } else if (unpaidDatePreset === 'last-month') {
+      // Last Month: 1st of last month to last day of last month
+      const firstDayLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const lastDayLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+      startDate = getStartOfDay(firstDayLastMonth);
+      endDate = getEndOfDay(lastDayLastMonth);
+    } else if (unpaidDatePreset === 'custom') {
+      if (unpaidCustomStart) {
+        startDate = getStartOfDay(new Date(unpaidCustomStart));
+      }
+      if (unpaidCustomEnd) {
+        endDate = getEndOfDay(new Date(unpaidCustomEnd));
+      }
+    }
+
+    return items.filter(item => {
+      const itemDate = new Date(item.date);
+      if (startDate && itemDate < startDate) return false;
+      if (endDate && itemDate > endDate) return false;
+      return true;
+    });
   };
 
   const openPaymentModal = (proc: any, mode: 'PAY' | 'EDIT' | 'UNPAY') => {
@@ -2187,7 +2266,10 @@ NOTIFY pgrst, 'reload schema';`}
                         p.is_paid === false && 
                         p.is_voided !== true
                       );
-                      const unpaidTotalForVendor = unpaidItemsForVendor.reduce((sum, p) => sum + (p.total_cost || 0), 0);
+                      const filteredUnpaidItemsForVendor = filterUnpaidProcurements(unpaidItemsForVendor);
+                      const unpaidTotalForVendor = filteredUnpaidItemsForVendor.reduce((sum, p) => sum + (p.total_cost || 0), 0);
+                      const absoluteUnpaidCount = unpaidItemsForVendor.length;
+                      const absoluteUnpaidTotal = unpaidItemsForVendor.reduce((sum, p) => sum + (p.total_cost || 0), 0);
 
                       return (
                         <div key={v.id} className="py-6 first:pt-0 last:pb-0 flex flex-col md:flex-row md:items-start justify-between gap-4">
@@ -2242,37 +2324,92 @@ NOTIFY pgrst, 'reload schema';`}
                                   onClick={() => setExpandedVendorUnpaidId(expandedVendorUnpaidId === v.id ? null : v.id)}
                                   className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg text-[9px] font-black uppercase tracking-wider text-amber-800 transition-all cursor-pointer"
                                 >
-                                  <span>⚠️ {unpaidItemsForVendor.length} Unpaid {unpaidItemsForVendor.length === 1 ? 'Item' : 'Items'} (₹{unpaidTotalForVendor.toLocaleString()})</span>
+                                  <span>⚠️ {absoluteUnpaidCount} Unpaid {absoluteUnpaidCount === 1 ? 'Item' : 'Items'} (₹{absoluteUnpaidTotal.toLocaleString()})</span>
                                   <span className="text-[8px] font-bold">{expandedVendorUnpaidId === v.id ? '▲ Hide' : '▼ See Items'}</span>
                                 </button>
                                 
                                 {expandedVendorUnpaidId === v.id && (
                                   <div className="mt-3 p-4 bg-brand-cream/50 rounded-2xl border border-brand-stone space-y-3 max-w-xl animate-in fade-in duration-200">
-                                    <div className="flex justify-between items-center pb-2 border-b border-brand-stone/40">
-                                      <span className="text-[9px] font-black text-brand-brown/50 uppercase tracking-widest">Unpaid Procurements</span>
-                                      <button
-                                        onClick={() => openBulkPaymentModal(v.name, unpaidItemsForVendor)}
-                                        className="px-3 py-1.5 bg-brand-brown hover:bg-brand-brown/90 text-brand-yellow rounded-xl text-[9px] font-black uppercase tracking-widest transition-transform hover:scale-102 flex items-center gap-1.5 cursor-pointer"
-                                      >
-                                        💸 Pay All (₹{unpaidTotalForVendor.toLocaleString()})
-                                      </button>
-                                    </div>
                                     
-                                    <div className="space-y-1.5 max-h-[160px] overflow-y-auto no-scrollbar">
-                                      {unpaidItemsForVendor.map((item) => (
-                                        <div key={item.id} className="flex justify-between items-center bg-white p-2.5 rounded-xl border border-brand-stone/30 text-[11px] font-medium text-brand-brown">
+                                    {/* Date Filter Controls */}
+                                    <div className="bg-white/60 p-3 rounded-xl border border-brand-stone/40 space-y-2">
+                                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                        <span className="text-[9px] font-black text-brand-brown/60 uppercase tracking-widest">Filter unpaid by Date</span>
+                                        <select
+                                          value={unpaidDatePreset}
+                                          onChange={(e) => setUnpaidDatePreset(e.target.value)}
+                                          className="text-[10px] font-black uppercase bg-white border border-brand-stone/60 rounded-lg px-2.5 py-1.5 text-brand-brown outline-none focus:ring-1 focus:ring-brand-yellow cursor-pointer"
+                                        >
+                                          <option value="all">✨ Show All</option>
+                                          <option value="today">📅 Today</option>
+                                          <option value="yesterday">📅 Yesterday</option>
+                                          <option value="week">📅 This Week</option>
+                                          <option value="last-week">📅 Last Week</option>
+                                          <option value="month">📅 This Month</option>
+                                          <option value="last-month">📅 Last Month</option>
+                                          <option value="custom">⚙️ Custom Range</option>
+                                        </select>
+                                      </div>
+
+                                      {unpaidDatePreset === 'custom' && (
+                                        <div className="grid grid-cols-2 gap-2 pt-1.5 border-t border-brand-stone/30">
                                           <div>
-                                            <p className="font-black text-xs text-brand-brown">{item.item_name}</p>
-                                            <p className="text-[9px] text-brand-brown/40 font-bold uppercase mt-0.5">
-                                              Qty: {item.quantity} {item.unit} • {new Date(item.date).toLocaleDateString([], { dateStyle: 'short' })}
-                                            </p>
+                                            <label className="text-[8px] font-bold text-brand-brown/50 uppercase ml-1 mb-0.5 block">Start Date</label>
+                                            <input
+                                              type="date"
+                                              value={unpaidCustomStart}
+                                              onChange={(e) => setUnpaidCustomStart(e.target.value)}
+                                              className="w-full text-[10px] bg-white border border-brand-stone/60 rounded-lg px-2 py-1 text-brand-brown font-bold"
+                                            />
                                           </div>
-                                          <div className="text-right font-black text-brand-brown">
-                                            ₹{(item.total_cost ?? 0).toLocaleString()}
+                                          <div>
+                                            <label className="text-[8px] font-bold text-brand-brown/50 uppercase ml-1 mb-0.5 block">End Date</label>
+                                            <input
+                                              type="date"
+                                              value={unpaidCustomEnd}
+                                              onChange={(e) => setUnpaidCustomEnd(e.target.value)}
+                                              className="w-full text-[10px] bg-white border border-brand-stone/60 rounded-lg px-2 py-1 text-brand-brown font-bold"
+                                            />
                                           </div>
                                         </div>
-                                      ))}
+                                      )}
                                     </div>
+
+                                    <div className="flex justify-between items-center pb-2 border-b border-brand-stone/40">
+                                      <span className="text-[9px] font-black text-brand-brown/50 uppercase tracking-widest">
+                                        Unpaid Procurements {unpaidDatePreset !== 'all' && `(${unpaidDatePreset.toUpperCase().replace('-', ' ')})`}
+                                      </span>
+                                      {filteredUnpaidItemsForVendor.length > 0 && (
+                                        <button
+                                          onClick={() => openBulkPaymentModal(v.name, filteredUnpaidItemsForVendor)}
+                                          className="px-3 py-1.5 bg-brand-brown hover:bg-brand-brown/90 text-brand-yellow rounded-xl text-[9px] font-black uppercase tracking-widest transition-transform hover:scale-102 flex items-center gap-1.5 cursor-pointer"
+                                        >
+                                          💸 Pay Filtered (₹{unpaidTotalForVendor.toLocaleString()})
+                                        </button>
+                                      )}
+                                    </div>
+                                    
+                                    {filteredUnpaidItemsForVendor.length === 0 ? (
+                                      <div className="p-8 text-center text-brand-brown/40 uppercase font-black text-[9px] tracking-wider bg-white rounded-xl border border-brand-stone/30">
+                                        No unpaid items found in this date range
+                                      </div>
+                                    ) : (
+                                      <div className="space-y-1.5 max-h-[160px] overflow-y-auto no-scrollbar">
+                                        {filteredUnpaidItemsForVendor.map((item) => (
+                                          <div key={item.id} className="flex justify-between items-center bg-white p-2.5 rounded-xl border border-brand-stone/30 text-[11px] font-medium text-brand-brown">
+                                            <div>
+                                              <p className="font-black text-xs text-brand-brown">{item.item_name}</p>
+                                              <p className="text-[9px] text-brand-brown/40 font-bold uppercase mt-0.5">
+                                                Qty: {item.quantity} {item.unit} • {new Date(item.date).toLocaleDateString([], { dateStyle: 'short' })}
+                                              </p>
+                                            </div>
+                                            <div className="text-right font-black text-brand-brown">
+                                              ₹{(item.total_cost ?? 0).toLocaleString()}
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                               </div>
