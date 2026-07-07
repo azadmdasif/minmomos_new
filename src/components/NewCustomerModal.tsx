@@ -5,18 +5,19 @@ interface NewCustomerModalProps {
   isOpen: boolean;
   phone: string;
   isExisting?: boolean;
-  onRegister: (name: string, isStudent: boolean) => void;
+  onRegister: (name: string, isStudent: boolean, schoolName?: string) => void;
   onCancel: () => void;
 }
 
 const NewCustomerModal: React.FC<NewCustomerModalProps> = ({ isOpen, phone, isExisting, onRegister, onCancel }) => {
   const [name, setName] = React.useState('');
   const [isStudent, setIsStudent] = React.useState(false);
+  const [schoolName, setSchoolName] = React.useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (name.trim()) {
-      onRegister(name.trim(), isStudent);
+      onRegister(name.trim(), isStudent, isStudent ? schoolName.trim() : undefined);
     }
   };
 
@@ -107,6 +108,20 @@ const NewCustomerModal: React.FC<NewCustomerModalProps> = ({ isOpen, phone, isEx
                   </button>
                 </div>
               </div>
+
+              {isStudent && (
+                <div className="space-y-2 animate-in fade-in slide-in-from-top-3 duration-300">
+                  <label className="text-[10px] font-black uppercase text-zinc-500 tracking-widest px-1">School / College Name</label>
+                  <input
+                    type="text"
+                    value={schoolName}
+                    onChange={(e) => setSchoolName(e.target.value)}
+                    placeholder="e.g. Delhi University, IIT..."
+                    className="w-full bg-white/10 border border-white/10 rounded-2xl p-4 text-white font-bold placeholder:text-zinc-700 outline-none focus:border-brand-yellow transition-all"
+                    required={isStudent}
+                  />
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-4 pt-2">
                 <button

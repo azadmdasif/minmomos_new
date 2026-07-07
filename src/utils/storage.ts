@@ -193,6 +193,93 @@ export async function toggleProcurementPaidStatus(id: string, isPaid: boolean): 
   if (error) throw error;
 }
 
+export async function updateProcurementPayment(
+  id: string,
+  isPaid: boolean,
+  paidAt: string | null,
+  paidBy: string | null,
+  paymentNotes: string | null,
+  paymentMode: string | null,
+  paymentHistory: any[]
+): Promise<void> {
+  try {
+    const { error } = await supabase
+      .from('procurements')
+      .update({
+        is_paid: isPaid,
+        paid_at: paidAt,
+        paid_by: paidBy,
+        payment_notes: paymentNotes,
+        payment_mode: paymentMode,
+        payment_history: paymentHistory
+      })
+      .eq('id', id);
+    if (error) {
+      if (error.code === '42703') {
+        const { error: fallbackError } = await supabase
+          .from('procurements')
+          .update({ is_paid: isPaid })
+          .eq('id', id);
+        if (fallbackError) throw fallbackError;
+        throw new Error("COLUMN_MISSING");
+      }
+      throw error;
+    }
+  } catch (err: any) {
+    if (err.message === "COLUMN_MISSING") {
+      throw new Error("Advanced payment tracking columns are missing. Simple status was updated. Please run the Master Sync Script in Supabase to enable audit logs!");
+    }
+    throw err;
+  }
+}
+
+export async function bulkPayProcurements(
+  ids: string[],
+  paidAt: string,
+  paidBy: string,
+  paymentNotes: string | null,
+  paymentMode: string
+): Promise<void> {
+  try {
+    const { data: procs, error: fetchErr } = await supabase
+      .from('procurements')
+      .select('id, payment_history, total_cost')
+      .in('id', ids);
+
+    if (fetchErr) throw fetchErr;
+    if (!procs || procs.length === 0) return;
+
+    for (const proc of procs) {
+      const nextHistory = Array.isArray(proc.payment_history) ? [...proc.payment_history] : [];
+      nextHistory.push({
+        event: 'payment',
+        amount: proc.total_cost || 0,
+        date: paidAt,
+        performed_by: paidBy,
+        notes: paymentNotes,
+        payment_mode: paymentMode,
+        reason: 'Bulk Vendor Payment'
+      });
+
+      const { error: updateErr } = await supabase
+        .from('procurements')
+        .update({
+          is_paid: true,
+          paid_at: paidAt,
+          paid_by: paidBy,
+          payment_notes: paymentNotes,
+          payment_mode: paymentMode,
+          payment_history: nextHistory
+        })
+        .eq('id', proc.id);
+
+      if (updateErr) throw updateErr;
+    }
+  } catch (err: any) {
+    throw err;
+  }
+}
+
 // --- ALLOCATIONS ---
 
 export async function fetchAllocations(startDate: string, endDate: string): Promise<{ data: StockAllocation[], error: any }> {
@@ -1310,10 +1397,15 @@ export async function searchCustomers(query: string): Promise<Customer[]> {
   });
 }
 
-export async function registerCustomer(phone: string, name: string, isStudent?: boolean): Promise<Customer> {
+export async function registerCustomer(phone: string, name: string, isStudent?: boolean, schoolName?: string): Promise<Customer> {
   const normalized = normalizePhone(phone);
   const couponCode = `DISC15-${normalized.slice(-4)}`;
-  const note = isStudent ? "STUDENT" : "REGULAR";
+  let note = "REGULAR";
+  if (isStudent) {
+    const random8Digit = Math.floor(10000000 + Math.random() * 90000000);
+    const hikerNo = `HIKER-${random8Digit}`;
+    note = `STUDENT|${schoolName || ''}|${hikerNo}`;
+  }
   const { data, error } = await supabase
     .from('customers')
     .upsert({ phone: normalized, name, welcome_coupon_code: couponCode, note }, { onConflict: 'phone' })
@@ -1620,3 +1712,92 @@ export async function fetchCustomerHistory(phone: string): Promise<CompletedOrde
 
   return results;
 }
+
+// --- VENDORS & MAPPINGS ---
+
+export async function getVendors(): Promise<any[]> {
+  try {
+    const { data, error } = await supabase.from('vendors').select('*').order('name');
+    if (error) {
+      if (error.code === '42P01') {
+        console.warn("vendors table does not exist yet. Please run vendors_schema.sql in Supabase.");
+        return [];
+      }
+      throw error;
+    }
+    return data || [];
+  } catch (e) {
+    console.error("Failed to fetch vendors:", e);
+    return [];
+  }
+}
+
+export async function createVendor(vendor: {
+  name: string;
+  contact_person?: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+}): Promise<void> {
+  const { error } = await supabase.from('vendors').insert([vendor]);
+  if (error) {
+    if (error.code === '42P01') {
+      throw new Error("The 'vendors' table does not exist in your database. Please run the SQL script first.");
+    }
+    throw error;
+  }
+}
+
+export async function deleteVendor(id: string): Promise<void> {
+  const { error } = await supabase.from('vendors').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export async function updateVendor(id: string, vendor: {
+  name: string;
+  contact_person?: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+}): Promise<void> {
+  const { error } = await supabase.from('vendors').update(vendor).eq('id', id);
+  if (error) throw error;
+}
+
+export async function getVendorMappings(): Promise<any[]> {
+  try {
+    const { data, error } = await supabase.from('vendor_mappings').select('*');
+    if (error) {
+      if (error.code === '42P01') {
+        console.warn("vendor_mappings table does not exist yet. Please run vendors_schema.sql in Supabase.");
+        return [];
+      }
+      throw error;
+    }
+    return data || [];
+  } catch (e) {
+    console.error("Failed to fetch vendor mappings:", e);
+    return [];
+  }
+}
+
+export async function mapItemToVendor(itemId: string, vendorId: string): Promise<void> {
+  const { error } = await supabase.from('vendor_mappings').upsert({
+    item_id: itemId,
+    vendor_id: vendorId,
+    created_at: getISTISOString()
+  }, { onConflict: 'item_id' });
+  
+  if (error) {
+    if (error.code === '42P01') {
+      throw new Error("The 'vendor_mappings' table does not exist in your database. Please run the SQL script first.");
+    }
+    throw error;
+  }
+}
+
+export async function removeVendorMapping(itemId: string): Promise<void> {
+  const { error } = await supabase.from('vendor_mappings').delete().eq('item_id', itemId);
+  if (error) throw error;
+}
+

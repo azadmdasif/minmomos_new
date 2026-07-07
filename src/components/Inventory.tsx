@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { RawMaterial, User, CentralMaterial, Station, MaterialCategory, StockAllocation } from '../types';
+import { RawMaterial, User, CentralMaterial, Station, MaterialCategory, StockAllocation, Vendor, VendorMapping } from '../types';
 import { 
   getInventory, 
   getCentralInventory, 
@@ -25,7 +25,15 @@ import {
   manuallyAdjustCentralStock,
   fetchManualAdjustments,
   resetAllStockToZero,
-  toggleProcurementPaidStatus
+  updateProcurementPayment,
+  bulkPayProcurements,
+  getVendors,
+  createVendor,
+  deleteVendor,
+  updateVendor,
+  getVendorMappings,
+  mapItemToVendor,
+  removeVendorMapping
 } from '../utils/storage';
 import { 
   PieChart, 
@@ -46,12 +54,12 @@ interface InventoryProps {
   currentBranch: string | null;
 }
 
-type InventoryTab = 'HUB' | 'LEDGER' | 'FINANCE';
+type InventoryTab = 'HUB' | 'LEDGER' | 'FINANCE' | 'VENDORS';
 type LedgerType = 'BUYING' | 'ALLOCATION' | 'ADJUSTMENT';
 type DatePreset = 'today' | 'yesterday' | 'week' | 'last-week' | 'month' | 'last-month' | 'custom';
 type SortBy = 'date' | 'quantity' | 'cost';
 
-export const getItemSubcategory = (name: string, id: string): string => {
+export const getItemSubcategory = (name: string, id: string, category?: string): string => {
   try {
     const saved = localStorage.getItem('custom_subcategories');
     if (saved) {
@@ -105,6 +113,9 @@ export const getItemSubcategory = (name: string, id: string): string => {
     nid.includes('methi') || nname.includes('methi')
   ) return 'spices';
   
+  if (category === 'INGREDIENT' || category === 'Raw Ingredients') return 'veggies';
+  if (nid.includes('veg') || nname.includes('veg') || nid.includes('chicken') || nname.includes('chicken') || nid.includes('paneer') || nname.includes('paneer') || nid.includes('onion') || nname.includes('onion')) return 'veggies';
+
   return 'others'; // Default fallback
 };
 
@@ -152,6 +163,29 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [financialPaidFilter, setFinancialPaidFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
   const [ledgerPaidFilter, setLedgerPaidFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
   const [ledgerItemFilter, setLedgerItemFilter] = useState<string>('all');
+  const [ledgerVendorFilter, setLedgerVendorFilter] = useState<string>('all');
+  const [ledgerSubcategoryFilter, setLedgerSubcategoryFilter] = useState<string>('all');
+
+  // Payment Details & Audit States
+  const [selectedProcurementForPayment, setSelectedProcurementForPayment] = useState<any>(null);
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [paymentDate, setPaymentDate] = useState('');
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paidByInput, setPaidByInput] = useState('');
+  const [paymentNotesInput, setPaymentNotesInput] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<string>('CASH');
+  const [paymentActionReason, setPaymentActionReason] = useState('');
+  const [paymentMode, setPaymentMode] = useState<'PAY' | 'EDIT' | 'UNPAY'>('PAY');
+
+  // Bulk Payment States
+  const [isBulkPaymentModalOpen, setIsBulkPaymentModalOpen] = useState(false);
+  const [bulkPaymentVendorName, setBulkPaymentVendorName] = useState('');
+  const [bulkPaymentIds, setBulkPaymentIds] = useState<string[]>([]);
+  const [bulkPaymentTotal, setBulkPaymentTotal] = useState(0);
+  const [bulkPaymentDate, setBulkPaymentDate] = useState('');
+  const [bulkPaymentMethod, setBulkPaymentMethod] = useState('CASH');
+  const [bulkPaymentNotes, setBulkPaymentNotes] = useState('');
+  const [bulkPaidBy, setBulkPaidBy] = useState('');
   
   const [qty, setQty] = useState('');
   const [cost, setCost] = useState('');
@@ -161,6 +195,29 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [newItemSubcategory, setNewItemSubcategory] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSeeding, setIsSeeding] = useState(false);
+
+  // Vendor states
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [vendorMappings, setVendorMappings] = useState<VendorMapping[]>([]);
+  const [isAddVendorModalOpen, setIsAddVendorModalOpen] = useState(false);
+  const [editingVendorId, setEditingVendorId] = useState<string | null>(null);
+  const [expandedVendorUnpaidId, setExpandedVendorUnpaidId] = useState<string | null>(null);
+  const [newVendorName, setNewVendorName] = useState('');
+  const [newVendorContact, setNewVendorContact] = useState('');
+  const [newVendorPhone, setNewVendorPhone] = useState('');
+  const [newVendorEmail, setNewVendorEmail] = useState('');
+  const [newVendorAddress, setNewVendorAddress] = useState('');
+
+  // Item to Vendor Mapping search/filters
+  const [vendorMappingSearch, setVendorMappingSearch] = useState('');
+  const [vendorMappingSubcategoryFilter, setVendorMappingSubcategoryFilter] = useState('all');
+  const [bulkVendorId, setBulkVendorId] = useState('');
+  const [isBulkMappingInProgress, setIsBulkMappingInProgress] = useState(false);
+  const [bulkMappingConfirm, setBulkMappingConfirm] = useState(false);
+  const [bulkFeedback, setBulkFeedback] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+
+  // Active Stock item search state
+  const [activeStockSearch, setActiveStockSearch] = useState('');
 
   const fetchData = useCallback(async (isSilent = false) => {
     if (!isSilent) setIsLoading(true);
@@ -179,6 +236,18 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
       }
 
       if (isAdmin) {
+        // Fetch Vendors and Mappings
+        try {
+          const [vList, mList] = await Promise.all([
+            getVendors(),
+            getVendorMappings()
+          ]);
+          setVendors(vList || []);
+          setVendorMappings(mList || []);
+        } catch (vErr) {
+          console.error("Failed to load vendors / mappings:", vErr);
+        }
+
         // Fetch Stations
         const s = await getStations();
         setStations(s);
@@ -243,6 +312,25 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     setActiveSubcategory('all');
   }, [materialCategory]);
 
+  useEffect(() => {
+    setLedgerVendorFilter('all');
+    setLedgerSubcategoryFilter('all');
+  }, [ledgerType]);
+
+  useEffect(() => {
+    if (isRestockModalOpen && selectedItem) {
+      const mapping = vendorMappings.find(m => m.item_id === selectedItem.id);
+      if (mapping) {
+        const mappedVendor = vendors.find(v => v.id === mapping.vendor_id);
+        if (mappedVendor) {
+          setVendor(mappedVendor.name);
+          return;
+        }
+      }
+      setVendor('');
+    }
+  }, [isRestockModalOpen, selectedItem, vendorMappings, vendors]);
+
   const handleInitializeStock = async () => {
     setIsSeeding(true);
     try {
@@ -291,6 +379,44 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     setEndDate(getISTDateString(end));
   };
 
+  const availableVendors = useMemo(() => {
+    const names = vendors.map(v => v.name);
+    return Array.from(new Set(names)).sort();
+  }, [vendors]);
+
+  const availableSubcategories = useMemo(() => {
+    const subIds = new Set<string>();
+    const subList: { id: string; label: string }[] = [];
+    
+    const subcatLabels: Record<string, string> = {
+      momo: 'Momo',
+      buns: 'Burger Buns',
+      cola: 'Cola',
+      drinks: 'Drinks',
+      syrups: 'Syrups',
+      sauces: 'Sauces',
+      packaging: 'Packaging',
+      'oil-butter': 'Oil & Butter',
+      spices: 'Spices',
+      fries: 'Fries',
+      veggies: 'Veggies',
+      others: 'Others'
+    };
+
+    centralStock.forEach(item => {
+      const subId = getItemSubcategory(item.name, item.id, item.category);
+      if (!subIds.has(subId)) {
+        subIds.add(subId);
+        subList.push({
+          id: subId,
+          label: subcatLabels[subId] || subId.toUpperCase()
+        });
+      }
+    });
+
+    return subList.sort((a, b) => a.label.localeCompare(b.label));
+  }, [centralStock]);
+
   const sortedProcurements = useMemo(() => {
     let list = [...procurements];
     if (ledgerPaidFilter === 'paid') {
@@ -301,13 +427,26 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     if (ledgerItemFilter !== 'all') {
       list = list.filter(p => p.item_id === ledgerItemFilter || p.item_name === ledgerItemFilter);
     }
+    if (ledgerVendorFilter !== 'all') {
+      list = list.filter(p => {
+        const v = p.vendor || 'Local Market';
+        return v === ledgerVendorFilter;
+      });
+    }
+    if (ledgerSubcategoryFilter !== 'all') {
+      list = list.filter(p => {
+        const centralItem = centralStock.find(c => c.id === p.item_id);
+        const subId = getItemSubcategory(p.item_name, p.item_id, centralItem?.category);
+        return subId === ledgerSubcategoryFilter;
+      });
+    }
     return list.sort((a, b) => {
       let valA: any = a[sortBy === 'cost' ? 'total_cost' : sortBy];
       let valB: any = b[sortBy === 'cost' ? 'total_cost' : sortBy];
       if (sortBy === 'date') { valA = new Date(a.date).getTime(); valB = new Date(b.date).getTime(); }
       return sortOrder === 'desc' ? valB - valA : valA - valB;
     });
-  }, [procurements, sortBy, sortOrder, ledgerPaidFilter, ledgerItemFilter]);
+  }, [procurements, sortBy, sortOrder, ledgerPaidFilter, ledgerItemFilter, ledgerVendorFilter, ledgerSubcategoryFilter, centralStock]);
 
   const sortedAllocations = useMemo(() => {
     let list = [...allocations];
@@ -461,6 +600,83 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     }
   };
 
+  const handleAddVendor = async () => {
+    if (!newVendorName.trim()) {
+      alert("Please enter a vendor name.");
+      return;
+    }
+    try {
+      const vendorPayload = {
+        name: newVendorName.trim(),
+        contact_person: newVendorContact.trim() || undefined,
+        phone: newVendorPhone.trim() || undefined,
+        email: newVendorEmail.trim() || undefined,
+        address: newVendorAddress.trim() || undefined
+      };
+
+      if (editingVendorId) {
+        await updateVendor(editingVendorId, vendorPayload);
+      } else {
+        await createVendor(vendorPayload);
+      }
+      setIsAddVendorModalOpen(false);
+      setEditingVendorId(null);
+      // Clear fields
+      setNewVendorName('');
+      setNewVendorContact('');
+      setNewVendorPhone('');
+      setNewVendorEmail('');
+      setNewVendorAddress('');
+      await fetchData();
+    } catch (err: any) {
+      alert(`Failed to ${editingVendorId ? 'update' : 'register'} vendor: ` + err.message);
+    }
+  };
+
+  const openAddVendorModal = () => {
+    setEditingVendorId(null);
+    setNewVendorName('');
+    setNewVendorContact('');
+    setNewVendorPhone('');
+    setNewVendorEmail('');
+    setNewVendorAddress('');
+    setIsAddVendorModalOpen(true);
+  };
+
+  const openEditVendorModal = (v: Vendor) => {
+    setEditingVendorId(v.id);
+    setNewVendorName(v.name);
+    setNewVendorContact(v.contact_person || '');
+    setNewVendorPhone(v.phone || '');
+    setNewVendorEmail(v.email || '');
+    setNewVendorAddress(v.address || '');
+    setIsAddVendorModalOpen(true);
+  };
+
+  const handleDeleteVendor = async (id: string) => {
+    if (confirm("Are you sure you want to delete this vendor? This will also unmap any items mapped to them.")) {
+      try {
+        await deleteVendor(id);
+        await fetchData();
+      } catch (err: any) {
+        alert("Failed to delete vendor: " + err.message);
+      }
+    }
+  };
+
+  const handleMapItem = async (itemId: string, vendorId: string) => {
+    try {
+      if (!vendorId) {
+        await removeVendorMapping(itemId);
+      } else {
+        await mapItemToVendor(itemId, vendorId);
+      }
+      await fetchData();
+    } catch (err: any) {
+      alert("Failed to update vendor mapping: " + err.message);
+    }
+  };
+
   const handleStoreAction = async (itemId: string, action: 'finish' | 'request') => {
     if (!user.stationName) return;
     if (action === 'finish') {
@@ -493,6 +709,185 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
       await fetchData();
     } catch (e: any) {
       alert("Void operation failed: " + e.message);
+    }
+  };
+
+  const openBulkPaymentModal = (vendorName: string, unpaidProcs: any[]) => {
+    setBulkPaymentVendorName(vendorName);
+    const ids = unpaidProcs.map(p => p.id);
+    setBulkPaymentIds(ids);
+    const total = unpaidProcs.reduce((acc, p) => acc + (p.total_cost || 0), 0);
+    setBulkPaymentTotal(total);
+    
+    let defaultDate = '';
+    try {
+      const tzoffset = (new Date()).getTimezoneOffset() * 60000;
+      defaultDate = (new Date(Date.now() - tzoffset)).toISOString().substring(0, 16);
+    } catch (e) {
+      defaultDate = getISTISOString().substring(0, 16);
+    }
+    
+    setBulkPaymentDate(defaultDate);
+    setBulkPaidBy(user.username);
+    setBulkPaymentNotes('');
+    setBulkPaymentMethod('CASH');
+    setIsBulkPaymentModalOpen(true);
+  };
+
+  const handleSaveBulkPayment = async () => {
+    if (bulkPaymentIds.length === 0) return;
+    try {
+      const formattedDate = bulkPaymentDate ? new Date(bulkPaymentDate).toISOString() : getISTISOString();
+      await bulkPayProcurements(
+        bulkPaymentIds,
+        formattedDate,
+        bulkPaidBy.trim() || user.username,
+        bulkPaymentNotes.trim() || null,
+        bulkPaymentMethod
+      );
+      
+      setIsBulkPaymentModalOpen(false);
+      await fetchData();
+    } catch (err: any) {
+      alert("Failed to record bulk payment: " + err.message);
+    }
+  };
+
+  const openPaymentModal = (proc: any, mode: 'PAY' | 'EDIT' | 'UNPAY') => {
+    setSelectedProcurementForPayment(proc);
+    setPaymentMode(mode);
+    
+    let defaultDate = '';
+    if (proc.paid_at) {
+      try {
+        defaultDate = new Date(proc.paid_at).toISOString().substring(0, 16);
+      } catch (e) {
+        defaultDate = proc.paid_at.substring(0, 16);
+      }
+    } else {
+      try {
+        // Adjust for browser timezone display
+        const tzoffset = (new Date()).getTimezoneOffset() * 60000;
+        defaultDate = (new Date(Date.now() - tzoffset)).toISOString().substring(0, 16);
+      } catch (e) {
+        defaultDate = getISTISOString().substring(0, 16);
+      }
+    }
+    
+    setPaymentDate(defaultDate);
+    setPaymentAmount(proc.total_cost?.toString() || '');
+    setPaidByInput(proc.paid_by || user.username);
+    setPaymentNotesInput(proc.payment_notes || '');
+    setPaymentMethod(proc.payment_mode || 'CASH');
+    setPaymentActionReason('');
+    setIsPaymentModalOpen(true);
+  };
+
+  const handleSavePaymentDetails = async () => {
+    if (!selectedProcurementForPayment) return;
+    const p = selectedProcurementForPayment;
+
+    try {
+      let nextIsPaid = p.is_paid;
+      let nextPaidAt = p.paid_at || null;
+      let nextPaidBy = p.paid_by || null;
+      let nextPaymentNotes = p.payment_notes || null;
+      let nextPaymentMode = p.payment_mode || null;
+      let nextHistory = Array.isArray(p.payment_history) ? [...p.payment_history] : [];
+
+      if (paymentMode === 'PAY') {
+        const amt = parseFloat(paymentAmount);
+        if (isNaN(amt) || amt < 0) {
+          alert("Please enter a valid payment amount.");
+          return;
+        }
+        nextIsPaid = true;
+        nextPaidAt = paymentDate ? new Date(paymentDate).toISOString() : getISTISOString();
+        nextPaidBy = paidByInput.trim() || user.username;
+        nextPaymentNotes = paymentNotesInput.trim() || null;
+        nextPaymentMode = paymentMethod;
+
+        const newHistoryEntry = {
+          event: 'payment' as const,
+          amount: amt,
+          date: getISTISOString(),
+          performed_by: user.username,
+          notes: nextPaymentNotes,
+          payment_mode: nextPaymentMode,
+          reason: paymentActionReason.trim() || 'Initial Payment'
+        };
+        nextHistory.push(newHistoryEntry);
+      } else if (paymentMode === 'EDIT') {
+        if (!paymentActionReason.trim()) {
+          alert("Reason for editing is required to track changes.");
+          return;
+        }
+        const amt = parseFloat(paymentAmount);
+        if (isNaN(amt) || amt < 0) {
+          alert("Please enter a valid payment amount.");
+          return;
+        }
+        
+        const prevDetails = {
+          paid_at: p.paid_at,
+          paid_by: p.paid_by,
+          payment_notes: p.payment_notes,
+          amount: p.total_cost,
+          payment_mode: p.payment_mode
+        };
+
+        nextPaidAt = paymentDate ? new Date(paymentDate).toISOString() : getISTISOString();
+        nextPaidBy = paidByInput.trim() || user.username;
+        nextPaymentNotes = paymentNotesInput.trim() || null;
+        nextPaymentMode = paymentMethod;
+
+        const newHistoryEntry = {
+          event: 'edit' as const,
+          amount: amt,
+          date: getISTISOString(),
+          performed_by: user.username,
+          notes: nextPaymentNotes,
+          payment_mode: nextPaymentMode,
+          reason: paymentActionReason.trim(),
+          previous_details: prevDetails
+        };
+        nextHistory.push(newHistoryEntry);
+      } else if (paymentMode === 'UNPAY') {
+        if (!paymentActionReason.trim()) {
+          alert("Reason for marking back as unpaid is required.");
+          return;
+        }
+        nextIsPaid = false;
+        nextPaidAt = null;
+        nextPaidBy = null;
+        nextPaymentNotes = null;
+        nextPaymentMode = null;
+
+        const newHistoryEntry = {
+          event: 'unpay' as const,
+          date: getISTISOString(),
+          performed_by: user.username,
+          reason: paymentActionReason.trim()
+        };
+        nextHistory.push(newHistoryEntry);
+      }
+
+      await updateProcurementPayment(
+        p.id,
+        nextIsPaid,
+        nextPaidAt,
+        nextPaidBy,
+        nextPaymentNotes,
+        nextPaymentMode,
+        nextHistory
+      );
+
+      setIsPaymentModalOpen(false);
+      setSelectedProcurementForPayment(null);
+      setPaymentActionReason('');
+      await fetchData();
+    } catch (err: any) {
+      alert("Failed to update payment details: " + err.message);
     }
   };
 
@@ -800,7 +1195,12 @@ CREATE TABLE IF NOT EXISTS procurements (
   date TIMESTAMPTZ DEFAULT NOW(),
   is_voided BOOLEAN DEFAULT false,
   void_reason TEXT,
-  is_paid BOOLEAN DEFAULT true
+  is_paid BOOLEAN DEFAULT true,
+  paid_at TIMESTAMPTZ,
+  paid_by TEXT,
+  payment_notes TEXT,
+  payment_mode TEXT,
+  payment_history JSONB DEFAULT '[]'::jsonb
 );
 
 CREATE TABLE IF NOT EXISTS stock_allocations (
@@ -829,6 +1229,21 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='procurements' AND column_name='is_paid') THEN
         ALTER TABLE procurements ADD COLUMN is_paid BOOLEAN DEFAULT true;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='procurements' AND column_name='paid_at') THEN
+        ALTER TABLE procurements ADD COLUMN paid_at TIMESTAMPTZ;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='procurements' AND column_name='paid_by') THEN
+        ALTER TABLE procurements ADD COLUMN paid_by TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='procurements' AND column_name='payment_notes') THEN
+        ALTER TABLE procurements ADD COLUMN payment_notes TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='procurements' AND column_name='payment_mode') THEN
+        ALTER TABLE procurements ADD COLUMN payment_mode TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='procurements' AND column_name='payment_history') THEN
+        ALTER TABLE procurements ADD COLUMN payment_history JSONB DEFAULT '[]'::jsonb;
     END IF;
 END $$;
 
@@ -876,6 +1291,7 @@ NOTIFY pgrst, 'reload schema';`}
               <button onClick={() => setActiveTab('HUB')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'HUB' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Active Stock</button>
               <button onClick={() => setActiveTab('LEDGER')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'LEDGER' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Transaction Ledger</button>
               <button onClick={() => setActiveTab('FINANCE')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'FINANCE' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Financial View</button>
+              <button onClick={() => setActiveTab('VENDORS')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'VENDORS' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Vendors</button>
               
               <div className="h-6 w-[2px] bg-brand-stone mx-2 hidden md:block"></div>
               
@@ -890,6 +1306,9 @@ NOTIFY pgrst, 'reload schema';`}
           {isAdmin && (activeTab === 'HUB' || activeTab === 'FINANCE') && (
             <button onClick={() => { resetForm(); setIsAddItemModalOpen(true); }} className="bg-brand-brown text-brand-yellow px-8 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl hover:scale-105 transition-transform">Register New Item</button>
           )}
+          {isAdmin && activeTab === 'VENDORS' && (
+            <button onClick={openAddVendorModal} className="bg-brand-brown text-brand-yellow px-8 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl hover:scale-105 transition-transform">Register New Vendor</button>
+          )}
         </div>
       </header>
 
@@ -901,7 +1320,7 @@ NOTIFY pgrst, 'reload schema';`}
               { id: 'PACKET' as MaterialCategory, title: 'Category B: Packets', desc: 'Manual mark-as-finished.', icon: '🥫', color: 'bg-brand-red' },
               { id: 'INGREDIENT' as MaterialCategory, title: 'Category C: Veggies', desc: 'Hub usage only.', icon: '🥬', color: 'bg-mountain-green' },
             ].map(cat => (
-              <button key={cat.id} onClick={() => setMaterialCategory(cat.id)} className={`text-left p-8 rounded-[3rem] border-4 transition-all duration-500 shadow-xl ${materialCategory === cat.id ? `${cat.color} text-white scale-105 border-brand-yellow` : 'bg-white border-brand-stone text-brand-brown hover:border-brand-yellow/30'}`}>
+              <button key={cat.id} onClick={() => { setMaterialCategory(cat.id); setActiveSubcategory('all'); }} className={`text-left p-8 rounded-[3rem] border-4 transition-all duration-500 shadow-xl ${materialCategory === cat.id ? `${cat.color} text-white scale-105 border-brand-yellow` : 'bg-white border-brand-stone text-brand-brown hover:border-brand-yellow/30'}`}>
                 <div className="text-5xl mb-6">{cat.icon}</div>
                 <h3 className="text-2xl font-black mb-2">{cat.title}</h3>
                 <p className={`text-[11px] font-bold uppercase tracking-tight leading-relaxed ${materialCategory === cat.id ? 'text-brand-yellow' : 'text-brand-brown/40'}`}>{cat.desc}</p>
@@ -913,58 +1332,86 @@ NOTIFY pgrst, 'reload schema';`}
             <section className="mb-12 animate-in fade-in duration-500">
               <h3 className="text-2xl font-black text-brand-brown underline decoration-brand-yellow decoration-4 underline-offset-8 uppercase tracking-tighter italic mb-8">Central Inventory: {materialCategory === 'MOMO' ? 'Category A (Auto-Deduct)' : materialCategory}</h3>
               
-              {materialCategory === 'MOMO' && (
-                <div className="flex flex-wrap gap-2 mb-8 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
-                  {[
-                    { id: 'all', label: 'All Items', icon: '🔍' },
-                    { id: 'momo', label: 'Momo', icon: '🥟' },
-                    { id: 'buns', label: 'Burger Buns', icon: '🍔' },
-                    { id: 'cola', label: 'Cola', icon: '🥤' },
-                    { id: 'drinks', label: 'Drinks', icon: '🍹' },
-                  ].map(sub => (
-                    <button
-                      key={sub.id}
-                      onClick={() => setActiveSubcategory(sub.id)}
-                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                        activeSubcategory === sub.id
-                          ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
-                          : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
-                      }`}
-                    >
-                      <span>{sub.icon}</span>
-                      <span>{sub.label}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+                {materialCategory === 'MOMO' && (
+                  <div className="flex flex-wrap gap-2 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
+                    {[
+                      { id: 'all', label: 'All Items', icon: '🔍' },
+                      { id: 'momo', label: 'Momo', icon: '🥟' },
+                      { id: 'buns', label: 'Burger Buns', icon: '🍔' },
+                      { id: 'cola', label: 'Cola', icon: '🥤' },
+                      { id: 'drinks', label: 'Drinks', icon: '🍹' },
+                    ].map(sub => (
+                      <button
+                        key={sub.id}
+                        onClick={() => setActiveSubcategory(sub.id)}
+                        className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                          activeSubcategory === sub.id
+                            ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
+                            : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
+                        }`}
+                      >
+                        <span>{sub.icon}</span>
+                        <span>{sub.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
 
-              {materialCategory === 'PACKET' && (
-                <div className="flex flex-wrap gap-2 mb-8 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
-                  {[
-                    { id: 'all', label: 'All Items', icon: '🔍' },
-                    { id: 'syrups', label: 'Syrups', icon: '🍹' },
-                    { id: 'sauces', label: 'Sauces', icon: '🥫' },
-                    { id: 'packaging', label: 'Packaging', icon: '📦' },
-                    { id: 'oil-butter', label: 'Oil & Butter', icon: '🧈' },
-                    { id: 'spices', label: 'Spices', icon: '🌶️' },
-                    { id: 'fries', label: 'Fries', icon: '🍟' },
-                    { id: 'others', label: 'Others', icon: '🏷️' },
-                  ].map(sub => (
+                {materialCategory === 'PACKET' && (
+                  <div className="flex flex-wrap gap-2 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
+                    {[
+                      { id: 'all', label: 'All Items', icon: '🔍' },
+                      { id: 'syrups', label: 'Syrups', icon: '🍹' },
+                      { id: 'sauces', label: 'Sauces', icon: '🥫' },
+                      { id: 'packaging', label: 'Packaging', icon: '📦' },
+                      { id: 'oil-butter', label: 'Oil & Butter', icon: '🧈' },
+                      { id: 'spices', label: 'Spices', icon: '🌶️' },
+                      { id: 'fries', label: 'Fries', icon: '🍟' },
+                      { id: 'others', label: 'Others', icon: '🏷️' },
+                    ].map(sub => (
+                      <button
+                        key={sub.id}
+                        onClick={() => setActiveSubcategory(sub.id)}
+                        className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                          activeSubcategory === sub.id
+                            ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
+                            : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
+                        }`}
+                      >
+                        <span>{sub.icon}</span>
+                        <span>{sub.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {materialCategory === 'INGREDIENT' && <div />}
+
+                {/* Active Stock Search Bar */}
+                <div className="relative w-full md:max-w-xs flex-shrink-0">
+                  <input
+                    type="text"
+                    placeholder="Search stock items..."
+                    value={activeStockSearch}
+                    onChange={(e) => setActiveStockSearch(e.target.value)}
+                    className="w-full pl-10 pr-16 py-3 bg-white border border-brand-stone rounded-2xl text-xs font-bold text-brand-brown outline-none focus:ring-2 focus:ring-brand-yellow placeholder:text-brand-brown/30"
+                  />
+                  <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-brand-brown/40">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                  </div>
+                  {activeStockSearch && (
                     <button
-                      key={sub.id}
-                      onClick={() => setActiveSubcategory(sub.id)}
-                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                        activeSubcategory === sub.id
-                          ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
-                          : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
-                      }`}
+                      onClick={() => setActiveStockSearch('')}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-brand-brown/40 hover:text-brand-brown text-[10px] font-black uppercase tracking-widest"
                     >
-                      <span>{sub.icon}</span>
-                      <span>{sub.label}</span>
+                      Clear
                     </button>
-                  ))}
+                  )}
                 </div>
-              )}
+              </div>
 
               {centralStock.length === 0 ? (
                 <div className="bg-white rounded-[3rem] p-16 text-center border-4 border-dashed border-brand-stone">
@@ -984,7 +1431,13 @@ NOTIFY pgrst, 'reload schema';`}
                     {centralStock.filter(i => {
                       if (i.category !== materialCategory) return false;
                       if (activeSubcategory !== 'all') {
-                        return getItemSubcategory(i.name, i.id) === activeSubcategory;
+                        if (getItemSubcategory(i.name, i.id, i.category) !== activeSubcategory) return false;
+                      }
+                      if (activeStockSearch.trim() !== '') {
+                        const terms = activeStockSearch.toLowerCase().split(/\s+/).filter(Boolean);
+                        const nameLower = i.name.toLowerCase();
+                        const matchesAll = terms.every(term => nameLower.includes(term));
+                        if (!matchesAll) return false;
                       }
                       return true;
                     }).map(item => {
@@ -1051,11 +1504,19 @@ NOTIFY pgrst, 'reload schema';`}
                   {centralStock.filter(i => {
                     if (i.category !== materialCategory) return false;
                     if (activeSubcategory !== 'all') {
-                      return getItemSubcategory(i.name, i.id) === activeSubcategory;
+                      if (getItemSubcategory(i.name, i.id, i.category) !== activeSubcategory) return false;
+                    }
+                    if (activeStockSearch.trim() !== '') {
+                      const terms = activeStockSearch.toLowerCase().split(/\s+/).filter(Boolean);
+                      const nameLower = i.name.toLowerCase();
+                      const matchesAll = terms.every(term => nameLower.includes(term));
+                      if (!matchesAll) return false;
                     }
                     return true;
                   }).length === 0 && (
-                    <div className="lg:col-span-4 p-12 text-center text-brand-brown/20 uppercase font-black text-[10px] tracking-widest">No materials found in this subcategory</div>
+                    <div className="lg:col-span-4 p-12 text-center text-brand-brown/20 uppercase font-black text-[10px] tracking-widest">
+                      {activeStockSearch ? "No materials match your search" : "No materials found in this subcategory"}
+                    </div>
                   )}
                 </div>
               )}
@@ -1088,58 +1549,84 @@ NOTIFY pgrst, 'reload schema';`}
                 </div>
               </div>
 
-              {materialCategory === 'MOMO' && (
-                <div className="flex flex-wrap gap-2 mb-8 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
-                  {[
-                    { id: 'all', label: 'All Items', icon: '🔍' },
-                    { id: 'momo', label: 'Momo', icon: '🥟' },
-                    { id: 'buns', label: 'Burger Buns', icon: '🍔' },
-                    { id: 'cola', label: 'Cola', icon: '🥤' },
-                    { id: 'drinks', label: 'Drinks', icon: '🍹' },
-                  ].map(sub => (
-                    <button
-                      key={sub.id}
-                      onClick={() => setActiveSubcategory(sub.id)}
-                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                        activeSubcategory === sub.id
-                          ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
-                          : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
-                      }`}
-                    >
-                      <span>{sub.icon}</span>
-                      <span>{sub.label}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+                {materialCategory === 'MOMO' && (
+                  <div className="flex flex-wrap gap-2 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
+                    {[
+                      { id: 'all', label: 'All Items', icon: '🔍' },
+                      { id: 'momo', label: 'Momo', icon: '🥟' },
+                      { id: 'buns', label: 'Burger Buns', icon: '🍔' },
+                      { id: 'cola', label: 'Cola', icon: '🥤' },
+                      { id: 'drinks', label: 'Drinks', icon: '🍹' },
+                    ].map(sub => (
+                      <button
+                        key={sub.id}
+                        onClick={() => setActiveSubcategory(sub.id)}
+                        className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                          activeSubcategory === sub.id
+                            ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
+                            : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
+                        }`}
+                      >
+                        <span>{sub.icon}</span>
+                        <span>{sub.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
 
-              {materialCategory === 'PACKET' && (
-                <div className="flex flex-wrap gap-2 mb-8 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
-                  {[
-                    { id: 'all', label: 'All Items', icon: '🔍' },
-                    { id: 'syrups', label: 'Syrups', icon: '🍹' },
-                    { id: 'sauces', label: 'Sauces', icon: '🥫' },
-                    { id: 'packaging', label: 'Packaging', icon: '📦' },
-                    { id: 'oil-butter', label: 'Oil & Butter', icon: '🧈' },
-                    { id: 'spices', label: 'Spices', icon: '🌶️' },
-                    { id: 'fries', label: 'Fries', icon: '🍟' },
-                    { id: 'others', label: 'Others', icon: '🏷️' },
-                  ].map(sub => (
+                {materialCategory === 'PACKET' && (
+                  <div className="flex flex-wrap gap-2 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
+                    {[
+                      { id: 'all', label: 'All Items', icon: '🔍' },
+                      { id: 'syrups', label: 'Syrups', icon: '🍹' },
+                      { id: 'sauces', label: 'Sauces', icon: '🥫' },
+                      { id: 'packaging', label: 'Packaging', icon: '📦' },
+                      { id: 'oil-butter', label: 'Oil & Butter', icon: '🧈' },
+                      { id: 'spices', label: 'Spices', icon: '🌶️' },
+                      { id: 'fries', label: 'Fries', icon: '🍟' },
+                      { id: 'others', label: 'Others', icon: '🏷️' },
+                    ].map(sub => (
+                      <button
+                        key={sub.id}
+                        onClick={() => setActiveSubcategory(sub.id)}
+                        className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                          activeSubcategory === sub.id
+                            ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
+                            : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
+                        }`}
+                      >
+                        <span>{sub.icon}</span>
+                        <span>{sub.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Active Stock Search Bar (Store Stock view) */}
+                <div className="relative w-full md:max-w-xs flex-shrink-0">
+                  <input
+                    type="text"
+                    placeholder="Search stock items..."
+                    value={activeStockSearch}
+                    onChange={(e) => setActiveStockSearch(e.target.value)}
+                    className="w-full pl-10 pr-16 py-3 bg-white border border-brand-stone rounded-2xl text-xs font-bold text-brand-brown outline-none focus:ring-2 focus:ring-brand-yellow placeholder:text-brand-brown/30"
+                  />
+                  <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-brand-brown/40">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                  </div>
+                  {activeStockSearch && (
                     <button
-                      key={sub.id}
-                      onClick={() => setActiveSubcategory(sub.id)}
-                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                        activeSubcategory === sub.id
-                          ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
-                          : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
-                      }`}
+                      onClick={() => setActiveStockSearch('')}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-brand-brown/40 hover:text-brand-brown text-[10px] font-black uppercase tracking-widest"
                     >
-                      <span>{sub.icon}</span>
-                      <span>{sub.label}</span>
+                      Clear
                     </button>
-                  ))}
+                  )}
                 </div>
-              )}
+              </div>
 
               <div className="bg-white rounded-[3rem] shadow-2xl border-4 border-brand-brown overflow-hidden">
                 <table className="w-full">
@@ -1147,45 +1634,65 @@ NOTIFY pgrst, 'reload schema';`}
                     <tr><th className="px-10 py-6 text-[11px] font-black uppercase text-left tracking-widest">Item</th><th className="px-10 py-6 text-[11px] font-black uppercase text-center tracking-widest">Stock Level</th><th className="px-10 py-6 text-[11px] font-black uppercase text-right tracking-widest">Actions</th></tr>
                   </thead>
                   <tbody className="divide-y divide-brand-stone">
-                    {storeStock.filter(i => {
-                      if (i.category !== materialCategory) return false;
-                      if (activeSubcategory !== 'all') {
-                        return getItemSubcategory(i.name, i.id) === activeSubcategory;
+                    {(() => {
+                      const filteredStoreStock = storeStock.filter(i => {
+                        if (i.category !== materialCategory) return false;
+                        if (activeSubcategory !== 'all') {
+                          if (getItemSubcategory(i.name, i.id, i.category) !== activeSubcategory) return false;
+                        }
+                        if (activeStockSearch.trim() !== '') {
+                          const terms = activeStockSearch.toLowerCase().split(/\s+/).filter(Boolean);
+                          const nameLower = i.name.toLowerCase();
+                          const matchesAll = terms.every(term => nameLower.includes(term));
+                          if (!matchesAll) return false;
+                        }
+                        return true;
+                      });
+
+                      if (filteredStoreStock.length === 0) {
+                        return (
+                          <tr>
+                            <td colSpan={3} className="px-10 py-12 text-center text-brand-brown/20 uppercase font-black text-[10px] tracking-widest">
+                              {activeStockSearch ? "No materials match your search" : "No materials found in this subcategory"}
+                            </td>
+                          </tr>
+                        );
                       }
-                      return true;
-                    }).map(item => (
-                      <tr key={item.id} className={`${item.is_finished ? 'bg-red-50' : 'bg-white'} transition-colors`}>
-                        <td className="px-10 py-8"><p className="text-xl font-black text-brand-brown">{item.name}</p>{item.request_pending && <span className="text-[9px] font-black text-brand-red uppercase bg-brand-red/10 px-3 py-1 rounded-full inline-block mt-2 animate-pulse">Low Stock Alert</span>}</td>
-                        <td className="px-10 py-8 text-center"><span className={`px-6 py-2 rounded-full text-[10px] font-black uppercase tracking-widest ${item.is_finished ? 'bg-brand-red text-white' : 'bg-brand-brown/5 text-brand-brown'}`}>{item.is_finished ? 'FINISHED' : `${item.current_stock.toFixed(2)} ${item.unit}`}</span></td>
-                        <td className="px-10 py-8 text-right">
-                          <div className="flex justify-end gap-2">
-                            {(isAdmin || user.role === 'STORE_MANAGER') && (
-                              <button 
-                                onClick={() => { setSelectedItem(item); setAdjustValue(item.current_stock.toString()); setIsAdjustModalOpen(true); }}
-                                className="px-4 py-2 bg-brand-brown text-brand-yellow rounded-xl text-[10px] font-black uppercase tracking-widest hover:scale-105 transition-all shadow-sm"
-                              >
-                                Set Stock
-                              </button>
-                            )}
-                            {!isAdmin && materialCategory === 'PACKET' && (
-                              <>
-                                {!item.is_finished ? (
-                                  <button 
-                                    onClick={() => handleStoreAction(item.id, 'finish')} 
-                                    className="px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-md transition-all bg-brand-red/10 text-brand-red hover:bg-brand-red hover:text-white"
-                                  >
-                                    Mark as Empty
-                                  </button>
-                                ) : (
-                                  <span className="text-[10px] font-black text-brand-red uppercase tracking-widest animate-pulse italic">Awaiting Hub Supply</span>
-                                )}
-                              </>
-                            )}
-                            {materialCategory === 'MOMO' && !isAdmin && user.role !== 'STORE_MANAGER' && <span className="text-[10px] font-black text-brand-brown/20 italic tracking-widest">DEDUCTED PER SALE</span>}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+
+                      return filteredStoreStock.map(item => (
+                        <tr key={item.id} className={`${item.is_finished ? 'bg-red-50' : 'bg-white'} transition-colors`}>
+                          <td className="px-10 py-8"><p className="text-xl font-black text-brand-brown">{item.name}</p>{item.request_pending && <span className="text-[9px] font-black text-brand-red uppercase bg-brand-red/10 px-3 py-1 rounded-full inline-block mt-2 animate-pulse">Low Stock Alert</span>}</td>
+                          <td className="px-10 py-8 text-center"><span className={`px-6 py-2 rounded-full text-[10px] font-black uppercase tracking-widest ${item.is_finished ? 'bg-brand-red text-white' : 'bg-brand-brown/5 text-brand-brown'}`}>{item.is_finished ? 'FINISHED' : `${item.current_stock.toFixed(2)} ${item.unit}`}</span></td>
+                          <td className="px-10 py-8 text-right">
+                            <div className="flex justify-end gap-2">
+                              {(isAdmin || user.role === 'STORE_MANAGER') && (
+                                <button 
+                                  onClick={() => { setSelectedItem(item); setAdjustValue(item.current_stock.toString()); setIsAdjustModalOpen(true); }}
+                                  className="px-4 py-2 bg-brand-brown text-brand-yellow rounded-xl text-[10px] font-black uppercase tracking-widest hover:scale-105 transition-all shadow-sm"
+                                >
+                                  Set Stock
+                                </button>
+                              )}
+                              {!isAdmin && materialCategory === 'PACKET' && (
+                                <>
+                                  {!item.is_finished ? (
+                                    <button 
+                                      onClick={() => handleStoreAction(item.id, 'finish')} 
+                                      className="px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-md transition-all bg-brand-red/10 text-brand-red hover:bg-brand-red hover:text-white"
+                                    >
+                                      Mark as Empty
+                                    </button>
+                                  ) : (
+                                    <span className="text-[10px] font-black text-brand-red uppercase tracking-widest animate-pulse italic">Awaiting Hub Supply</span>
+                                  )}
+                                </>
+                              )}
+                              {materialCategory === 'MOMO' && !isAdmin && user.role !== 'STORE_MANAGER' && <span className="text-[10px] font-black text-brand-brown/20 italic tracking-widest">DEDUCTED PER SALE</span>}
+                            </div>
+                          </td>
+                        </tr>
+                      ));
+                    })()}
                   </tbody>
                 </table>
               </div>
@@ -1272,6 +1779,42 @@ NOTIFY pgrst, 'reload schema';`}
                 ))}
               </select>
             </div>
+
+            {ledgerType === 'BUYING' && (
+              <>
+                <div className="flex justify-start items-center gap-3 bg-white p-4 rounded-[1.5rem] border border-brand-stone shadow-sm w-fit animate-in fade-in slide-in-from-top-4 duration-300">
+                  <span className="text-[10px] font-black uppercase text-brand-brown/50 tracking-widest mr-2">Filter Vendor:</span>
+                  <select
+                    value={ledgerVendorFilter}
+                    onChange={(e) => setLedgerVendorFilter(e.target.value)}
+                    className="bg-brand-brown/5 text-[10px] font-black uppercase text-brand-brown py-2 px-4 rounded-xl border border-brand-brown/10 outline-none cursor-pointer focus:ring-2 focus:ring-brand-yellow"
+                  >
+                    <option value="all">🤝 Show All Vendors</option>
+                    {availableVendors.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex justify-start items-center gap-3 bg-white p-4 rounded-[1.5rem] border border-brand-stone shadow-sm w-fit animate-in fade-in slide-in-from-top-4 duration-300">
+                  <span className="text-[10px] font-black uppercase text-brand-brown/50 tracking-widest mr-2">Subcategory:</span>
+                  <select
+                    value={ledgerSubcategoryFilter}
+                    onChange={(e) => setLedgerSubcategoryFilter(e.target.value)}
+                    className="bg-brand-brown/5 text-[10px] font-black uppercase text-brand-brown py-2 px-4 rounded-xl border border-brand-brown/10 outline-none cursor-pointer focus:ring-2 focus:ring-brand-yellow"
+                  >
+                    <option value="all">📁 All Subcategories</option>
+                    {availableSubcategories.map((sub) => (
+                      <option key={sub.id} value={sub.id}>
+                        {sub.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
           </div>
 
           <div className="bg-white rounded-[3rem] shadow-2xl border-4 border-brand-brown overflow-hidden">
@@ -1301,15 +1844,13 @@ NOTIFY pgrst, 'reload schema';`}
                       <td className="px-8 py-6">
                         <div className="flex flex-col items-start">
                           <span className={`text-[10px] font-black uppercase ${p.is_voided ? 'text-brand-brown/40' : 'text-brand-red'}`}>{p.vendor || 'Local Market'}</span>
-                          {!p.is_voided && (
+                           {!p.is_voided && (
                             <button 
-                              onClick={async () => {
-                                try {
-                                  const nextStatus = p.is_paid === false ? true : false;
-                                  await toggleProcurementPaidStatus(p.id, nextStatus);
-                                  await fetchData();
-                                } catch (err: any) {
-                                  alert("Failed to change payment status: " + err.message);
+                              onClick={() => {
+                                if (p.is_paid === false) {
+                                  openPaymentModal(p, 'PAY');
+                                } else {
+                                  openPaymentModal(p, 'EDIT');
                                 }
                               }}
                               className={`mt-1.5 px-3 py-1 text-[9px] font-black uppercase tracking-widest rounded-full transition-all border ${
@@ -1318,12 +1859,17 @@ NOTIFY pgrst, 'reload schema';`}
                                   : 'bg-emerald-100 text-emerald-800 border-emerald-300 hover:bg-emerald-200'
                               }`}
                             >
-                              {p.is_paid === false ? '🔴 Unpaid' : '🟢 Paid'}
+                              {p.is_paid === false ? '🔴 Unpaid' : `🟢 Paid (${p.payment_mode ? p.payment_mode.toUpperCase() : 'CASH'})`}
                             </button>
+                          )}
+                          {!p.is_voided && p.is_paid && p.payment_notes && (
+                            <span className="text-[8px] font-semibold text-brand-brown/50 mt-1 block max-w-[150px] truncate" title={p.payment_notes}>
+                              Ref: {p.payment_notes}
+                            </span>
                           )}
                           {p.is_voided && (
                             <span className="text-[9px] font-bold text-brand-brown/30 uppercase mt-1 block">
-                              {p.is_paid === false ? 'Unpaid' : 'Paid'}
+                              {p.is_paid === false ? 'Unpaid' : `Paid (${p.payment_mode ? p.payment_mode.toUpperCase() : 'CASH'})`}
                             </span>
                           )}
                         </div>
@@ -1601,6 +2147,435 @@ NOTIFY pgrst, 'reload schema';`}
             </div>
           )}
         </section>
+      ) : activeTab === 'VENDORS' ? (
+        <section className="animate-in slide-in-from-bottom-6 duration-700 space-y-12">
+          {/* Main Grid: Vendors List (Left/Left-Center) and Item-to-Vendor Mapping (Right/Right-Center) */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            
+            {/* COLUMN 1: Vendors List (7 cols) */}
+            <div className="lg:col-span-7 space-y-6">
+              <div className="bg-white p-8 rounded-[3rem] border border-brand-stone shadow-sm">
+                <div className="flex justify-between items-center mb-6">
+                  <div>
+                    <h3 className="text-2xl font-black text-brand-brown uppercase italic">Registered Suppliers</h3>
+                    <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">
+                      Manage vendors, manufacturers and suppliers
+                    </p>
+                  </div>
+                  <button 
+                    onClick={openAddVendorModal}
+                    className="bg-brand-brown text-brand-yellow px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest hover:scale-105 transition-transform"
+                  >
+                    Add Vendor
+                  </button>
+                </div>
+
+                {vendors.length === 0 ? (
+                  <div className="p-16 text-center text-brand-brown/10 uppercase font-black text-xs tracking-[0.3em]">
+                    No vendors registered yet
+                  </div>
+                ) : (
+                  <div className="divide-y divide-brand-stone">
+                    {vendors.map((v) => {
+                      // Find items mapped to this vendor
+                      const mappedItems = centralStock.filter(item => 
+                        vendorMappings.some(m => m.item_id === item.id && m.vendor_id === v.id)
+                      );
+
+                      const unpaidItemsForVendor = procurements.filter(p => 
+                        p.vendor === v.name && 
+                        p.is_paid === false && 
+                        p.is_voided !== true
+                      );
+                      const unpaidTotalForVendor = unpaidItemsForVendor.reduce((sum, p) => sum + (p.total_cost || 0), 0);
+
+                      return (
+                        <div key={v.id} className="py-6 first:pt-0 last:pb-0 flex flex-col md:flex-row md:items-start justify-between gap-4">
+                          <div className="space-y-2 flex-grow">
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-lg font-black text-brand-brown">{v.name}</h4>
+                              {v.contact_person && (
+                                <span className="px-2.5 py-0.5 bg-brand-stone text-brand-brown/70 text-[8px] font-black uppercase rounded-md">
+                                  {v.contact_person}
+                                </span>
+                              )}
+                            </div>
+                            
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-[11px] text-brand-brown/60 font-medium">
+                              {v.phone && (
+                                <p className="flex items-center gap-1.5">
+                                  <span className="font-bold">Phone:</span> {v.phone}
+                                </p>
+                              )}
+                              {v.email && (
+                                <p className="flex items-center gap-1.5">
+                                  <span className="font-bold">Email:</span> {v.email}
+                                </p>
+                              )}
+                              {v.address && (
+                                <p className="sm:col-span-2 flex items-start gap-1.5 mt-0.5">
+                                  <span className="font-bold flex-shrink-0">Address:</span> {v.address}
+                                </p>
+                              )}
+                            </div>
+
+                            {/* Mapped Items Badges */}
+                            {mappedItems.length > 0 && (
+                              <div className="pt-2">
+                                <p className="text-[8px] font-black text-brand-brown/30 uppercase tracking-widest mb-1">
+                                  Mapped Items:
+                                </p>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {mappedItems.map(item => (
+                                    <span key={item.id} className="px-2 py-0.5 bg-emerald-50 border border-emerald-200 text-emerald-800 text-[8px] font-bold rounded-md">
+                                      {item.name}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Unpaid Items Collapsible Section */}
+                            {unpaidItemsForVendor.length > 0 ? (
+                              <div className="pt-2">
+                                <button
+                                  onClick={() => setExpandedVendorUnpaidId(expandedVendorUnpaidId === v.id ? null : v.id)}
+                                  className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg text-[9px] font-black uppercase tracking-wider text-amber-800 transition-all cursor-pointer"
+                                >
+                                  <span>⚠️ {unpaidItemsForVendor.length} Unpaid {unpaidItemsForVendor.length === 1 ? 'Item' : 'Items'} (₹{unpaidTotalForVendor.toLocaleString()})</span>
+                                  <span className="text-[8px] font-bold">{expandedVendorUnpaidId === v.id ? '▲ Hide' : '▼ See Items'}</span>
+                                </button>
+                                
+                                {expandedVendorUnpaidId === v.id && (
+                                  <div className="mt-3 p-4 bg-brand-cream/50 rounded-2xl border border-brand-stone space-y-3 max-w-xl animate-in fade-in duration-200">
+                                    <div className="flex justify-between items-center pb-2 border-b border-brand-stone/40">
+                                      <span className="text-[9px] font-black text-brand-brown/50 uppercase tracking-widest">Unpaid Procurements</span>
+                                      <button
+                                        onClick={() => openBulkPaymentModal(v.name, unpaidItemsForVendor)}
+                                        className="px-3 py-1.5 bg-brand-brown hover:bg-brand-brown/90 text-brand-yellow rounded-xl text-[9px] font-black uppercase tracking-widest transition-transform hover:scale-102 flex items-center gap-1.5 cursor-pointer"
+                                      >
+                                        💸 Pay All (₹{unpaidTotalForVendor.toLocaleString()})
+                                      </button>
+                                    </div>
+                                    
+                                    <div className="space-y-1.5 max-h-[160px] overflow-y-auto no-scrollbar">
+                                      {unpaidItemsForVendor.map((item) => (
+                                        <div key={item.id} className="flex justify-between items-center bg-white p-2.5 rounded-xl border border-brand-stone/30 text-[11px] font-medium text-brand-brown">
+                                          <div>
+                                            <p className="font-black text-xs text-brand-brown">{item.item_name}</p>
+                                            <p className="text-[9px] text-brand-brown/40 font-bold uppercase mt-0.5">
+                                              Qty: {item.quantity} {item.unit} • {new Date(item.date).toLocaleDateString([], { dateStyle: 'short' })}
+                                            </p>
+                                          </div>
+                                          <div className="text-right font-black text-brand-brown">
+                                            ₹{(item.total_cost ?? 0).toLocaleString()}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="pt-2">
+                                <span className="px-3 py-1 bg-emerald-50 border border-emerald-200 rounded-lg text-[9px] font-black uppercase tracking-wider text-emerald-800 inline-flex items-center gap-1">
+                                  🟢 All Procurements Paid
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex gap-1.5 self-end md:self-start flex-shrink-0">
+                            <button
+                              onClick={() => openEditVendorModal(v)}
+                              className="px-3 py-2 text-brand-brown hover:bg-brand-brown/5 border border-transparent hover:border-brand-stone rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDeleteVendor(v.id)}
+                              className="px-3 py-2 text-brand-red hover:bg-red-50 border border-transparent hover:border-brand-red/15 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* COLUMN 2: Item-to-Vendor Mapping Table (5 cols) */}
+            <div className="lg:col-span-5 space-y-6">
+              <div className="bg-white p-8 rounded-[3rem] border border-brand-stone shadow-sm">
+                <div>
+                  <h3 className="text-2xl font-black text-brand-brown uppercase italic">Item-to-Vendor Mapping</h3>
+                  <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1 mb-6">
+                    Map hub items to auto-fill their vendor during Quick Buy restocks
+                  </p>
+                </div>
+
+                {/* Filters Row */}
+                <div className="flex flex-col gap-3 mb-6">
+                  <div className="relative">
+                    <input
+                      type="text"
+                      placeholder="Search items..."
+                      value={vendorMappingSearch}
+                      onChange={(e) => setVendorMappingSearch(e.target.value)}
+                      className="w-full pl-10 pr-4 py-3 bg-brand-cream/40 border border-brand-stone rounded-2xl text-xs font-bold text-brand-brown outline-none focus:ring-2 focus:ring-brand-yellow"
+                    />
+                    <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-brand-brown/40">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                    </div>
+                    {vendorMappingSearch && (
+                      <button
+                        onClick={() => setVendorMappingSearch('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-brand-brown/40 hover:text-brand-brown text-xs font-bold"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+
+                  <select
+                    value={vendorMappingSubcategoryFilter}
+                    onChange={(e) => {
+                      setVendorMappingSubcategoryFilter(e.target.value);
+                      setBulkVendorId('');
+                    }}
+                    className="w-full p-3 bg-brand-cream/40 border border-brand-stone rounded-2xl text-xs font-bold text-brand-brown outline-none focus:ring-2 focus:ring-brand-yellow"
+                  >
+                    <option value="all">All Subcategories</option>
+                    <optgroup label="Category A (Auto Deduct)">
+                      <option value="momo">🥟 Momo Types</option>
+                      <option value="buns">🍔 Burger Buns</option>
+                      <option value="cola">🥤 Cola</option>
+                      <option value="drinks">🍹 Drinks / Beverages</option>
+                    </optgroup>
+                    <optgroup label="Category B (Packets)">
+                      <option value="syrups">🍹 Syrups</option>
+                      <option value="sauces">🥫 Sauces / Dips</option>
+                      <option value="packaging">📦 Packaging Materials</option>
+                      <option value="oil-butter">🧈 Oil & Butter</option>
+                      <option value="spices">🌶️ Spices</option>
+                      <option value="fries">🍟 French Fries</option>
+                      <option value="others">🏷️ Others</option>
+                    </optgroup>
+                    <optgroup label="Category C (Raw Ingredients)">
+                      <option value="veggies">🥬 Veggies / Ingredients</option>
+                    </optgroup>
+                  </select>
+
+                  {vendorMappingSubcategoryFilter !== 'all' && (
+                    <div className="p-4 bg-brand-yellow/10 border border-brand-yellow/30 rounded-2xl flex flex-col gap-3 mt-1 animate-in slide-in-from-top-2 duration-300">
+                      <p className="text-[9px] font-black text-brand-brown uppercase tracking-widest">
+                        ⚡ Quick Bulk Subcategory Mapper
+                      </p>
+                      
+                      {bulkFeedback && (
+                        <div className={`p-3 rounded-xl text-[10px] font-bold ${
+                          bulkFeedback.type === 'success' 
+                            ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' 
+                            : bulkFeedback.type === 'error'
+                            ? 'bg-rose-50 text-rose-800 border border-rose-200'
+                            : 'bg-blue-50 text-blue-800 border border-blue-200'
+                        }`}>
+                          {bulkFeedback.message}
+                        </div>
+                      )}
+
+                      {isBulkMappingInProgress ? (
+                        <div className="flex items-center justify-center py-4 gap-2">
+                          <svg className="w-5 h-5 animate-spin text-brand-brown" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                          </svg>
+                          <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Applying Mapping...</span>
+                        </div>
+                      ) : bulkMappingConfirm ? (
+                        (() => {
+                          const targetItems = centralStock.filter(item => 
+                            getItemSubcategory(item.name, item.id, item.category) === vendorMappingSubcategoryFilter
+                          );
+                          const vendorName = bulkVendorId === 'CLEAR_ALL_MAPPINGS' 
+                            ? 'Unmapped' 
+                            : vendors.find(v => v.id === bulkVendorId)?.name || 'Selected Vendor';
+
+                          return (
+                            <div className="space-y-3 p-3 bg-white/60 rounded-xl border border-brand-stone/30">
+                              <p className="text-[10px] font-black uppercase tracking-wider text-brand-brown">
+                                Confirm Bulk Action
+                              </p>
+                              <p className="text-[11px] text-brand-brown/80 font-bold leading-normal">
+                                {bulkVendorId === 'CLEAR_ALL_MAPPINGS'
+                                  ? `This will remove vendor mapping for all ${targetItems.length} items in "${vendorMappingSubcategoryFilter.toUpperCase()}" subcategory.`
+                                  : `This will map all ${targetItems.length} items in "${vendorMappingSubcategoryFilter.toUpperCase()}" subcategory to "${vendorName}".`}
+                              </p>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={async () => {
+                                    setIsBulkMappingInProgress(true);
+                                    setBulkMappingConfirm(false);
+                                    setBulkFeedback(null);
+                                    try {
+                                      if (bulkVendorId === 'CLEAR_ALL_MAPPINGS') {
+                                        for (const item of targetItems) {
+                                          await removeVendorMapping(item.id);
+                                        }
+                                      } else {
+                                        for (const item of targetItems) {
+                                          await mapItemToVendor(item.id, bulkVendorId);
+                                        }
+                                      }
+                                      await fetchData(true);
+                                      setBulkFeedback({
+                                        type: 'success',
+                                        message: `Successfully mapped all ${targetItems.length} items in "${vendorMappingSubcategoryFilter.toUpperCase()}" subcategory!`
+                                      });
+                                      setBulkVendorId('');
+                                      // Auto clear feedback after 5 seconds
+                                      setTimeout(() => setBulkFeedback(null), 5000);
+                                    } catch (err: any) {
+                                      setBulkFeedback({
+                                        type: 'error',
+                                        message: "Failed to map: " + err.message
+                                      });
+                                    } finally {
+                                      setIsBulkMappingInProgress(false);
+                                    }
+                                  }}
+                                  className="flex-grow bg-brand-brown text-brand-yellow py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest hover:scale-105 transition-all"
+                                >
+                                  Yes, Apply Now
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setBulkMappingConfirm(false);
+                                  }}
+                                  className="px-4 py-2.5 bg-transparent border border-brand-stone/40 text-brand-brown/70 hover:bg-black/5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        <div className="space-y-2">
+                          <p className="text-[10px] text-brand-brown/70 leading-relaxed font-bold">
+                            Assign all items in "{vendorMappingSubcategoryFilter.toUpperCase()}" to:
+                          </p>
+                          <div className="flex gap-2">
+                            <select
+                              value={bulkVendorId}
+                              onChange={(e) => {
+                                setBulkVendorId(e.target.value);
+                                setBulkFeedback(null);
+                              }}
+                              className="flex-grow p-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-brand-brown outline-none focus:ring-2 focus:ring-brand-yellow"
+                            >
+                              <option value="">Choose vendor...</option>
+                              <option value="CLEAR_ALL_MAPPINGS">-- Unmap All Items --</option>
+                              {vendors.map(v => (
+                                <option key={v.id} value={v.id}>{v.name}</option>
+                              ))}
+                            </select>
+                            <button
+                              onClick={() => {
+                                setBulkFeedback(null);
+                                if (!bulkVendorId) {
+                                  setBulkFeedback({ type: 'error', message: "Please select a vendor or clear option first." });
+                                  return;
+                                }
+                                
+                                const targetItems = centralStock.filter(item => 
+                                  getItemSubcategory(item.name, item.id, item.category) === vendorMappingSubcategoryFilter
+                                );
+                                
+                                if (targetItems.length === 0) {
+                                  setBulkFeedback({ type: 'info', message: `No items found in "${vendorMappingSubcategoryFilter.toUpperCase()}" subcategory.` });
+                                  return;
+                                }
+
+                                setBulkMappingConfirm(true);
+                              }}
+                              className="bg-brand-brown text-brand-yellow px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:scale-105 transition-all flex-shrink-0"
+                            >
+                              Map All
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {centralStock.length === 0 ? (
+                  <div className="p-16 text-center text-brand-brown/10 uppercase font-black text-xs tracking-[0.3em]">
+                    No items in central stock
+                  </div>
+                ) : (
+                  (() => {
+                    const filteredList = centralStock.filter(item => {
+                      if (vendorMappingSearch.trim() !== '') {
+                        const terms = vendorMappingSearch.toLowerCase().split(/\s+/).filter(Boolean);
+                        const nameLower = item.name.toLowerCase();
+                        const matchesAll = terms.every(term => nameLower.includes(term));
+                        if (!matchesAll) return false;
+                      }
+                      if (vendorMappingSubcategoryFilter !== 'all') {
+                        if (getItemSubcategory(item.name, item.id, item.category) !== vendorMappingSubcategoryFilter) {
+                          return false;
+                        }
+                      }
+                      return true;
+                    });
+
+                    if (filteredList.length === 0) {
+                      return (
+                        <div className="p-16 text-center text-brand-brown/30 uppercase font-black text-xs tracking-wider">
+                          No matching items found
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="space-y-4 max-h-[500px] overflow-y-auto no-scrollbar pr-1">
+                        {filteredList.map((item) => {
+                          const currentMapping = vendorMappings.find(m => m.item_id === item.id);
+                          return (
+                            <div key={item.id} className="p-4 bg-brand-cream/40 rounded-2xl border border-brand-stone flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                              <div>
+                                <p className="font-bold text-brand-brown text-sm leading-snug">{item.name}</p>
+                                <p className="text-[8px] font-black text-brand-brown/30 uppercase tracking-widest mt-0.5">{item.category} • {item.unit}</p>
+                              </div>
+                              
+                              <select
+                                value={currentMapping?.vendor_id || ''}
+                                onChange={(e) => handleMapItem(item.id, e.target.value)}
+                                className="p-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-brand-brown outline-none focus:ring-2 focus:ring-brand-yellow min-w-[140px] max-w-[200px]"
+                              >
+                                <option value="">No vendor mapped</option>
+                                {vendors.map(v => (
+                                  <option key={v.id} value={v.id}>{v.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()
+                )}
+              </div>
+            </div>
+
+          </div>
+        </section>
       ) : null}
 
       {/* Modals */}
@@ -1684,6 +2659,86 @@ NOTIFY pgrst, 'reload schema';`}
         </div>
       )}
 
+      {isAddVendorModalOpen && (
+        <div className="fixed inset-0 bg-brand-brown/80 backdrop-blur-md flex items-center justify-center z-[110] p-4 animate-in fade-in duration-200">
+          <div className="bg-brand-cream rounded-[4rem] p-12 w-full max-w-md border-8 border-brand-yellow shadow-2xl">
+            <h3 className="text-3xl font-black mb-8 italic text-brand-brown uppercase">
+              {editingVendorId ? 'Edit Vendor Details' : 'Register New Vendor'}
+            </h3>
+            <div className="space-y-5">
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Vendor Name *</label>
+                <input 
+                  type="text" 
+                  placeholder="e.g. Peak Momo Supplies Ltd." 
+                  value={newVendorName} 
+                  onChange={e => setNewVendorName(e.target.value)} 
+                  className={inputClasses} 
+                />
+              </div>
+              
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Contact Person</label>
+                <input 
+                  type="text" 
+                  placeholder="e.g. John Doe" 
+                  value={newVendorContact} 
+                  onChange={e => setNewVendorContact(e.target.value)} 
+                  className={inputClasses} 
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Phone</label>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. 9876543210" 
+                    value={newVendorPhone} 
+                    onChange={e => setNewVendorPhone(e.target.value)} 
+                    className={inputClasses} 
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Email</label>
+                  <input 
+                    type="email" 
+                    placeholder="e.g. contact@vendor.com" 
+                    value={newVendorEmail} 
+                    onChange={e => setNewVendorEmail(e.target.value)} 
+                    className={inputClasses} 
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Address</label>
+                <textarea 
+                  placeholder="e.g. 123 Industrial Area, Phase 1" 
+                  value={newVendorAddress} 
+                  onChange={e => setNewVendorAddress(e.target.value)} 
+                  className={`${inputClasses} h-20 resize-none py-3`} 
+                />
+              </div>
+
+              <button 
+                onClick={handleAddVendor} 
+                className="w-full py-5 bg-brand-brown text-brand-yellow rounded-3xl font-black uppercase tracking-widest shadow-2xl hover:scale-105 transition-transform mt-2"
+              >
+                {editingVendorId ? 'Update Vendor' : 'Register Vendor'}
+              </button>
+              
+              <button 
+                onClick={() => setIsAddVendorModalOpen(false)} 
+                className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isRestockModalOpen && (
         <div className="fixed inset-0 bg-brand-brown/80 backdrop-blur-md flex items-center justify-center z-[110] p-4">
           <div className="bg-brand-cream rounded-[4rem] p-12 w-full max-w-sm border-8 border-brand-yellow shadow-2xl">
@@ -1692,7 +2747,43 @@ NOTIFY pgrst, 'reload schema';`}
             <div className="space-y-5">
               <input type="number" placeholder={`Quantity (${selectedItem?.unit})`} value={qty} onChange={e => setQty(e.target.value)} className={inputClasses} />
               <input type="number" placeholder="Total Bill (₹)" value={cost} onChange={e => setCost(e.target.value)} className={inputClasses} />
-              <input type="text" placeholder="Vendor" value={vendor} onChange={e => setVendor(e.target.value)} className={inputClasses} />
+              
+              <div>
+                {vendors.length > 0 ? (
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 block">Vendor / Supplier</label>
+                    <select 
+                      value={vendors.some(v => v.name === vendor) ? vendor : vendor ? 'CUSTOM_VENDOR_VAL' : ''} 
+                      onChange={e => {
+                        if (e.target.value === 'CUSTOM_VENDOR_VAL') {
+                          setVendor('');
+                        } else {
+                          setVendor(e.target.value);
+                        }
+                      }} 
+                      className={inputClasses}
+                    >
+                      <option value="">Select Vendor...</option>
+                      {vendors.map(v => (
+                        <option key={v.id} value={v.name}>{v.name}</option>
+                      ))}
+                      <option value="CUSTOM_VENDOR_VAL">-- Custom / Other Vendor --</option>
+                    </select>
+                    {(!vendors.some(v => v.name === vendor) && vendor !== '') && (
+                      <input 
+                        type="text" 
+                        placeholder="Enter Vendor Name" 
+                        value={vendor} 
+                        onChange={e => setVendor(e.target.value)} 
+                        className={`${inputClasses} mt-2`} 
+                      />
+                    )}
+                  </div>
+                ) : (
+                  <input type="text" placeholder="Vendor Name" value={vendor} onChange={e => setVendor(e.target.value)} className={inputClasses} />
+                )}
+              </div>
+
               <div>
                 <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Payment Status</label>
                 <div className="grid grid-cols-2 gap-2">
@@ -1844,6 +2935,329 @@ NOTIFY pgrst, 'reload schema';`}
                 {isLoading ? 'Processing...' : 'Execute Master Reset'}
               </button>
               <button onClick={() => { setIsMasterResetModalOpen(false); setMasterResetReason(''); }} className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest text-center">Abort Operation</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isPaymentModalOpen && selectedProcurementForPayment && (
+        <div className="fixed inset-0 bg-brand-brown/80 backdrop-blur-md flex items-center justify-center z-[120] p-4 overflow-y-auto">
+          <div className="bg-brand-cream rounded-[3rem] p-8 md:p-10 w-full max-w-xl border-8 border-brand-brown shadow-2xl my-8">
+            <h3 className="text-2xl md:text-3xl font-black mb-2 italic text-brand-brown uppercase">
+              {paymentMode === 'PAY' ? '💸 Process' : '✏️ Edit'} <span className="text-brand-red">Payment</span>
+            </h3>
+            <p className="text-[10px] font-black text-brand-brown/40 uppercase mb-6 tracking-widest">
+              Manage financial transactions for this procurement
+            </p>
+
+            {/* Quick summary of the item */}
+            <div className="bg-white p-5 rounded-2xl border border-brand-stone mb-6">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <span className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest block">Item & Vendor</span>
+                  <p className="text-sm font-black text-brand-brown">{selectedProcurementForPayment.item_name}</p>
+                  <p className="text-xs font-bold text-brand-red uppercase">{selectedProcurementForPayment.vendor || 'Local Market'}</p>
+                </div>
+                <div className="text-right">
+                  <span className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest block">Total Cost & Qty</span>
+                  <p className="text-lg font-black text-brand-brown">₹{(selectedProcurementForPayment.total_cost ?? 0).toLocaleString()}</p>
+                  <p className="text-xs font-bold text-brand-brown/60">{selectedProcurementForPayment.quantity} {selectedProcurementForPayment.unit}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Mode selection if already Paid */}
+            {selectedProcurementForPayment.is_paid && (
+              <div className="grid grid-cols-2 gap-2 mb-6 bg-brand-brown/5 p-1 rounded-2xl border border-brand-brown/10">
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('EDIT')}
+                  className={`py-2 px-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                    paymentMode === 'EDIT'
+                      ? 'bg-brand-brown text-brand-yellow shadow'
+                      : 'text-brand-brown/60 hover:bg-brand-brown/5'
+                  }`}
+                >
+                  ✏️ Edit Payment Info
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentMode('UNPAY')}
+                  className={`py-2 px-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                    paymentMode === 'UNPAY'
+                      ? 'bg-brand-red text-white shadow'
+                      : 'text-brand-red/60 hover:bg-brand-red/5'
+                  }`}
+                >
+                  ⚠️ Mark as Unpaid
+                </button>
+              </div>
+            )}
+
+            {/* Form inputs */}
+            <div className="space-y-4">
+              {paymentMode !== 'UNPAY' ? (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Paid At (Date & Time)</label>
+                      <input 
+                        type="datetime-local" 
+                        value={paymentDate} 
+                        onChange={e => setPaymentDate(e.target.value)} 
+                        className={inputClasses} 
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Amount Paid (₹)</label>
+                      <input 
+                        type="number" 
+                        step="0.01"
+                        placeholder="Amount" 
+                        value={paymentAmount} 
+                        onChange={e => setPaymentAmount(e.target.value)} 
+                        className={inputClasses} 
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Payment Mode</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {['CASH', 'CARD', 'UPI'].map((method) => (
+                        <button
+                          key={method}
+                          type="button"
+                          onClick={() => setPaymentMethod(method)}
+                          className={`py-3 px-2 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${
+                            paymentMethod === method
+                              ? 'bg-brand-brown text-brand-yellow border-brand-brown shadow-sm scale-[1.02]'
+                              : 'bg-white text-brand-brown/60 border-brand-stone hover:bg-brand-stone/10'
+                          }`}
+                        >
+                          {method === 'CASH' ? '💵 Cash' : method === 'CARD' ? '💳 Card' : '📱 UPI'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Registered / Paid By</label>
+                    <input 
+                      type="text" 
+                      placeholder="Username / Staff Name" 
+                      value={paidByInput} 
+                      onChange={e => setPaidByInput(e.target.value)} 
+                      className={inputClasses} 
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Payment notes / Reference</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. GPay, Cash, Bank Transfer, Txn ID..." 
+                      value={paymentNotesInput} 
+                      onChange={e => setPaymentNotesInput(e.target.value)} 
+                      className={inputClasses} 
+                    />
+                  </div>
+
+                  {paymentMode === 'EDIT' && (
+                    <div>
+                      <label className="text-[9px] font-black text-brand-red uppercase ml-2 mb-1 block">Reason for Editing (Required for History)</label>
+                      <input 
+                        type="text" 
+                        placeholder="Why is this payment details being changed?" 
+                        value={paymentActionReason} 
+                        onChange={e => setPaymentActionReason(e.target.value)} 
+                        className={`${inputClasses} border-brand-red/30 focus:ring-brand-red`} 
+                      />
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="bg-red-50 p-5 rounded-2xl border border-brand-red/20 space-y-3">
+                  <p className="text-xs font-bold text-brand-red uppercase leading-relaxed">
+                    ⚠️ You are changing this transaction to UNPAID. All registered payment information will be removed, and a reversal entry will be logged.
+                  </p>
+                  <div>
+                    <label className="text-[9px] font-black text-brand-red uppercase ml-2 mb-1 block">Reason for Reversal (Required)</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. Bounced cheque, wrong payment registered..." 
+                      value={paymentActionReason} 
+                      onChange={e => setPaymentActionReason(e.target.value)} 
+                      className={`${inputClasses} border-brand-red focus:ring-brand-red`} 
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <button 
+                  onClick={() => { setIsPaymentModalOpen(false); setSelectedProcurementForPayment(null); }} 
+                  className="py-4 bg-white text-brand-brown rounded-2xl font-black uppercase tracking-widest text-[10px] border border-brand-stone hover:bg-brand-stone/10"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={handleSavePaymentDetails} 
+                  className={`py-4 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all ${
+                    paymentMode === 'UNPAY' ? 'bg-brand-red hover:bg-red-700' : 'bg-brand-brown text-brand-yellow hover:scale-102'
+                  }`}
+                >
+                  {paymentMode === 'PAY' ? 'Confirm Payment' : paymentMode === 'EDIT' ? 'Save Changes' : 'Confirm Reversal'}
+                </button>
+              </div>
+            </div>
+
+            {/* Audit History Timeline */}
+            <div className="mt-8 pt-6 border-t border-brand-stone">
+              <h4 className="text-[10px] font-black uppercase tracking-wider text-brand-brown/60 mb-4">📜 Payment Audit Trail & Edit History</h4>
+              
+              {(!selectedProcurementForPayment.payment_history || selectedProcurementForPayment.payment_history.length === 0) ? (
+                <div className="text-center py-4 bg-brand-stone/5 rounded-xl border border-dashed border-brand-stone/30">
+                  <p className="text-[10px] font-black text-brand-brown/30 uppercase tracking-widest">No previous payment events logged.</p>
+                </div>
+              ) : (
+                <div className="relative border-l border-brand-stone pl-4 ml-2 space-y-4 max-h-[160px] overflow-y-auto no-scrollbar">
+                  {selectedProcurementForPayment.payment_history.map((hist: any, hIdx: number) => (
+                    <div key={hIdx} className="relative">
+                      {/* Bullet */}
+                      <span className={`absolute -left-[21px] top-1 w-2.5 h-2.5 rounded-full border-2 border-brand-cream ${
+                        hist.event === 'payment' ? 'bg-emerald-500' : hist.event === 'edit' ? 'bg-amber-500' : 'bg-brand-red'
+                      }`} />
+                      
+                      <div className="bg-white p-3 rounded-xl border border-brand-stone/40 text-[11px] text-brand-brown font-medium">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="font-black uppercase text-[9px] tracking-widest text-brand-brown/50">
+                            {hist.event === 'payment' ? '🟢 Payment Logged' : hist.event === 'edit' ? '✏️ Payment Edited' : '🔴 Marked Unpaid'}
+                          </span>
+                          <span className="text-[9px] text-brand-brown/40 font-bold">
+                            {new Date(hist.date).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                          </span>
+                        </div>
+                        {hist.amount !== undefined && (
+                          <p className="font-black mb-1 text-xs text-brand-brown">Amount: ₹{(hist.amount ?? 0).toLocaleString()}</p>
+                        )}
+                        {hist.payment_mode && (
+                          <p className="text-[10px] text-brand-brown/70 font-bold">Mode: <span className="font-black text-brand-brown">{hist.payment_mode.toUpperCase()}</span></p>
+                        )}
+                        {hist.notes && (
+                          <p className="text-[10px] text-brand-brown/70 font-bold">Ref/Notes: <span className="font-black text-brand-brown">{hist.notes}</span></p>
+                        )}
+                        {hist.reason && (
+                          <p className="text-[10px] italic text-brand-red font-semibold mt-1">Reason: "{hist.reason}"</p>
+                        )}
+                        <p className="text-[8px] font-black uppercase text-brand-brown/30 mt-1.5 tracking-wider">By {hist.performed_by || 'Unknown'}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Payment Modal */}
+      {isBulkPaymentModalOpen && (
+        <div className="fixed inset-0 bg-brand-brown/80 backdrop-blur-md flex items-center justify-center z-[120] p-4 overflow-y-auto">
+          <div className="bg-brand-cream rounded-[3rem] p-8 md:p-10 w-full max-w-xl border-8 border-brand-brown shadow-2xl my-8 animate-in zoom-in-95 duration-200">
+            <h3 className="text-2xl md:text-3xl font-black mb-2 italic text-brand-brown uppercase">
+              💸 Bulk <span className="text-brand-red">Payment</span>
+            </h3>
+            <p className="text-[10px] font-black text-brand-brown/40 uppercase mb-6 tracking-widest">
+              Process combined payments for multiple procurements from this vendor
+            </p>
+
+            {/* Quick summary of the items */}
+            <div className="bg-white p-5 rounded-2xl border border-brand-stone mb-6">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <span className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest block">Supplier / Vendor</span>
+                  <p className="text-lg font-black text-brand-brown">{bulkPaymentVendorName}</p>
+                </div>
+                <div className="text-right">
+                  <span className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest block">Total Pending Amount</span>
+                  <p className="text-2xl font-black text-brand-red">₹{bulkPaymentTotal.toLocaleString()}</p>
+                  <p className="text-xs font-bold text-brand-brown/60">{bulkPaymentIds.length} procurements combined</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Form inputs */}
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Paid At (Date & Time)</label>
+                  <input 
+                    type="datetime-local" 
+                    value={bulkPaymentDate} 
+                    onChange={e => setBulkPaymentDate(e.target.value)} 
+                    className={inputClasses} 
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Registered / Paid By</label>
+                  <input 
+                    type="text" 
+                    placeholder="Username / Staff Name" 
+                    value={bulkPaidBy} 
+                    onChange={e => setBulkPaidBy(e.target.value)} 
+                    className={inputClasses} 
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Payment Mode</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {['CASH', 'CARD', 'UPI'].map((method) => (
+                    <button
+                      key={method}
+                      type="button"
+                      onClick={() => setBulkPaymentMethod(method)}
+                      className={`py-3 px-2 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${
+                        bulkPaymentMethod === method
+                          ? 'bg-brand-brown text-brand-yellow border-brand-brown shadow-sm scale-[1.02]'
+                          : 'bg-white text-brand-brown/60 border-brand-stone hover:bg-brand-stone/10'
+                      }`}
+                    >
+                      {method === 'CASH' ? '💵 Cash' : method === 'CARD' ? '💳 Card' : '📱 UPI'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Payment notes / Reference</label>
+                <input 
+                  type="text" 
+                  placeholder="e.g. Bulk GPay, Cash, Bank Transfer, Ref ID..." 
+                  value={bulkPaymentNotes} 
+                  onChange={e => setBulkPaymentNotes(e.target.value)} 
+                  className={inputClasses} 
+                />
+              </div>
+
+              {/* Action buttons */}
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <button 
+                  onClick={() => { setIsBulkPaymentModalOpen(false); }} 
+                  className="py-4 bg-white text-brand-brown rounded-2xl font-black uppercase tracking-widest text-[10px] border border-brand-stone hover:bg-brand-stone/10 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={handleSaveBulkPayment} 
+                  className="py-4 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all bg-brand-brown text-brand-yellow hover:scale-[1.02] cursor-pointer"
+                >
+                  Confirm Bulk Payment
+                </button>
+              </div>
             </div>
           </div>
         </div>

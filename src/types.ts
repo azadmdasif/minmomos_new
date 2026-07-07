@@ -57,6 +57,23 @@ export interface StockAllocation {
   void_reason?: string;
 }
 
+export interface PaymentHistoryEntry {
+  event: 'payment' | 'edit' | 'unpay';
+  amount?: number;
+  date: string;
+  performed_by: string;
+  notes?: string;
+  reason?: string;
+  payment_mode?: string;
+  previous_details?: {
+    paid_at?: string | null;
+    paid_by?: string | null;
+    payment_notes?: string | null;
+    amount?: number | null;
+    payment_mode?: string | null;
+  };
+}
+
 export interface Procurement {
   id: string;
   item_id: string;
@@ -68,6 +85,12 @@ export interface Procurement {
   date: string;
   is_voided?: boolean;
   void_reason?: string;
+  is_paid?: boolean;
+  paid_at?: string;
+  paid_by?: string;
+  payment_notes?: string;
+  payment_mode?: string;
+  payment_history?: PaymentHistoryEntry[];
 }
 
 export interface MenuItem {
@@ -273,7 +296,20 @@ export interface DailyOperationRecord {
   closingTime?: string; // ISO String
   closingPhoto?: string;
   createdAt?: string;
+}export interface Vendor {
+  id: string;
+  name: string;
+  contact_person?: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  created_at: string;
 }
 
-
+export interface VendorMapping {
+  id: string;
+  item_id: string;
+  vendor_id: string;
+  created_at: string;
+}
 

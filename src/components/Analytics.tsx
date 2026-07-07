@@ -14,7 +14,7 @@ import CohortRetentionChart from './CohortRetentionChart';
 import CohortCompositionChart from './CohortCompositionChart';
 import { CustomerHistogram } from './CustomerHistogram';
 import { OrderIntervalChart } from './OrderIntervalChart';
-import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star, Users, TrendingUp as TrendingUpIcon, Gift, DollarSign, ShoppingBag, Download, RefreshCw } from 'lucide-react';
+import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star, Users, TrendingUp as TrendingUpIcon, Gift, DollarSign, ShoppingBag, Download, RefreshCw, GraduationCap, Copy } from 'lucide-react';
 
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
 
@@ -73,6 +73,213 @@ const getHeatmapColor = (intensity: number) => {
 
 const heatmapGradient = `linear-gradient(to right, ${colorStops.map(s => `rgb(${s.r}, ${s.g}, ${s.b}) ${s.p * 100}%`).join(', ')})`;
 
+// OKLab / OKLCH color space patch for html2canvas (Tailwind v4 compatibility)
+function oklabToRgb(l: number, a: number, bInput: number): [number, number, number] {
+  const l_ = l + 0.3963377774 * a + 0.2158037573 * bInput;
+  const m_ = l - 0.1055613458 * a - 0.0638541728 * bInput;
+  const s_ = l - 0.0894841775 * a - 1.2914855480 * bInput;
+
+  const l3 = l_ * l_ * l_;
+  const m3 = m_ * m_ * m_;
+  const s3 = s_ * s_ * s_;
+
+  const r_lin = +4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
+  const g_lin = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
+  const b_lin = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3;
+
+  const toSRGB = (c: number) => {
+    return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+  };
+
+  const r = Math.round(Math.max(0, Math.min(1, toSRGB(r_lin))) * 255);
+  const g = Math.round(Math.max(0, Math.min(1, toSRGB(g_lin))) * 255);
+  const b = Math.round(Math.max(0, Math.min(1, toSRGB(b_lin))) * 255);
+
+  return [r, g, b];
+}
+
+function oklchToRgb(l: number, c: number, h: number): [number, number, number] {
+  const hRad = (h * Math.PI) / 180;
+  const a = c * Math.cos(hRad);
+  const bChroma = c * Math.sin(hRad);
+  return oklabToRgb(l, a, bChroma);
+}
+
+function parseAndConvertOklch(str: string): string {
+  const oklchRegex = /oklch\(\s*([\d.]+%?)[,\s]+([\d.]+%?)[,\s]+([\d.]+(?:deg|rad|grad|turn)?)(?:\s*[\/,]\s*([\d.]+%?))?\s*\)/gi;
+  return str.replace(oklchRegex, (_match, lStr, cStr, hStr, aStr) => {
+    let l = parseFloat(lStr);
+    if (lStr.endsWith('%')) l /= 100;
+    let c = parseFloat(cStr);
+    if (cStr.endsWith('%')) c /= 100;
+    
+    let h = parseFloat(hStr);
+    if (hStr.endsWith('rad')) h = (h * 180) / Math.PI;
+    else if (hStr.endsWith('grad')) h = (h * 360) / 400;
+    else if (hStr.endsWith('turn')) h = h * 360;
+
+    let alpha = 1;
+    if (aStr) {
+      alpha = parseFloat(aStr);
+      if (aStr.endsWith('%')) alpha /= 100;
+    }
+
+    const [r, g, b] = oklchToRgb(l, c, h);
+    return alpha === 1 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  });
+}
+
+function parseAndConvertOklab(str: string): string {
+  const oklabRegex = /oklab\(\s*([\d.]+%?)[,\s]+([+-]?[\d.]+%?)[,\s]+([+-]?[\d.]+%?)(?:\s*[\/,]\s*([\d.]+%?))?\s*\)/gi;
+  return str.replace(oklabRegex, (_match, lStr, aStr, bStr, alphaStr) => {
+    let l = parseFloat(lStr);
+    if (lStr.endsWith('%')) l /= 100;
+    let a = parseFloat(aStr);
+    if (aStr.endsWith('%')) a /= 100;
+    let bVal = parseFloat(bStr);
+    if (bStr.endsWith('%')) bVal /= 100;
+
+    let alpha = 1;
+    if (alphaStr) {
+      alpha = parseFloat(alphaStr);
+      if (alphaStr.endsWith('%')) alpha /= 100;
+    }
+
+    const [r, g, b] = oklabToRgb(l, a, bVal);
+    return alpha === 1 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  });
+}
+
+let activePatches: (() => void)[] = [];
+
+function patchColorSpaces() {
+  activePatches = [];
+
+  // 1. Patch CSSStyleSheet.prototype.cssRules
+  const originalCssRules = Object.getOwnPropertyDescriptor(CSSStyleSheet.prototype, 'cssRules')?.get;
+  if (originalCssRules) {
+    Object.defineProperty(CSSStyleSheet.prototype, 'cssRules', {
+      get() {
+        try {
+          const rules = originalCssRules.call(this);
+          if (!rules) return rules;
+          
+          return new Proxy(rules, {
+            get(target, prop) {
+              if (prop === 'length') {
+                return target.length;
+              }
+              const index = Number(prop);
+              if (!isNaN(index) && index >= 0 && index < target.length) {
+                const rule = target[index];
+                return new Proxy(rule, {
+                  get(ruleTarget, ruleProp) {
+                    if (ruleProp === 'cssText') {
+                      let text = ruleTarget.cssText;
+                      if (text && text.includes('oklch(')) {
+                        text = parseAndConvertOklch(text);
+                      }
+                      if (text && text.includes('oklab(')) {
+                        text = parseAndConvertOklab(text);
+                      }
+                      return text;
+                    }
+                    if (ruleProp === 'style' && ruleTarget.style) {
+                      return new Proxy(ruleTarget.style, {
+                        get(styleTarget, styleProp) {
+                          if (styleProp === 'getPropertyValue') {
+                            return (property: string) => {
+                              let val = styleTarget.getPropertyValue(property);
+                              if (val && val.includes('oklch(')) {
+                                val = parseAndConvertOklch(val);
+                              }
+                              if (val && val.includes('oklab(')) {
+                                val = parseAndConvertOklab(val);
+                              }
+                              return val;
+                            };
+                          }
+                          const val = (styleTarget as any)[styleProp];
+                          if (val && typeof val === 'string') {
+                            if (val.includes('oklch(')) return parseAndConvertOklch(val);
+                            if (val.includes('oklab(')) return parseAndConvertOklab(val);
+                          }
+                          return val;
+                        }
+                      });
+                    }
+                    return (ruleTarget as any)[ruleProp];
+                  }
+                });
+              }
+              return (target as any)[prop];
+            }
+          });
+        } catch (e) {
+          return null;
+        }
+      },
+      configurable: true
+    });
+
+    activePatches.push(() => {
+      Object.defineProperty(CSSStyleSheet.prototype, 'cssRules', {
+        get: originalCssRules,
+        configurable: true
+      });
+    });
+  }
+
+  // 2. Patch window.getComputedStyle
+  const originalGetComputedStyle = window.getComputedStyle;
+  window.getComputedStyle = function(elt, pseudoElt) {
+    const style = originalGetComputedStyle.call(this, elt, pseudoElt);
+    return new Proxy(style, {
+      get(target, prop) {
+        if (prop === 'getPropertyValue') {
+          return (property: string) => {
+            let val = target.getPropertyValue(property);
+            if (val && typeof val === 'string') {
+              if (val.includes('oklch(')) {
+                val = parseAndConvertOklch(val);
+              }
+              if (val && val.includes('oklab(')) {
+                val = parseAndConvertOklab(val);
+              }
+            }
+            return val;
+          };
+        }
+        const val = (target as any)[prop];
+        if (val && typeof val === 'string') {
+          if (val.includes('oklch(')) {
+            return parseAndConvertOklch(val);
+          }
+          if (val.includes('oklab(')) {
+            return parseAndConvertOklab(val);
+          }
+        }
+        return val;
+      }
+    });
+  };
+
+  activePatches.push(() => {
+    window.getComputedStyle = originalGetComputedStyle;
+  });
+}
+
+function restoreColorSpaces() {
+  for (const restore of activePatches) {
+    try {
+      restore();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  activePatches = [];
+}
+
 interface AnalyticsProps {
   user: User;
 }
@@ -109,6 +316,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [editedProfile, setEditedProfile] = useState<Partial<Customer>>({});
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [editIsStudent, setEditIsStudent] = useState(false);
+  const [editSchool, setEditSchool] = useState('');
+  const [editHikerNo, setEditHikerNo] = useState('');
   
   const [searchTerm, setSearchTerm] = useState('');
   const [searchMode, setSearchMode] = useState<'bill' | 'item'>('bill');
@@ -127,6 +337,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [customerSortField, setCustomerSortField] = useState<'totalSpent' | 'joinedDate' | 'totalOrders' | 'lastVisit'>('totalSpent');
   const [customerSortOrder, setCustomerSortOrder] = useState<'asc' | 'desc'>('desc');
   const [customerClassFilter, setCustomerClassFilter] = useState<'ALL' | 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY' | 'UNCLASSIFIED'>('ALL');
+  const [customerTypeFilter, setCustomerTypeFilter] = useState<'ALL' | 'STUDENT' | 'REGULAR'>('ALL');
   const [customerOrderStats, setCustomerOrderStats] = useState<Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }>>({});
   const [minLtv, setMinLtv] = useState<string>('');
   const [maxLtv, setMaxLtv] = useState<string>('');
@@ -617,6 +828,21 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       birthday: customer.birthday,
       note: customer.note
     });
+
+    const noteStr = customer.note || '';
+    if (noteStr === 'STUDENT' || noteStr.startsWith('STUDENT|')) {
+      const parts = noteStr.split('|');
+      setEditIsStudent(true);
+      setEditSchool(parts[1] || '');
+      // Generate stable 8-digit hiker number from phone digits if missing
+      const digits = customer.phone.replace(/\D/g, '');
+      const stableNo = `HIKER-${digits.length >= 8 ? digits.slice(-8) : (digits + '87654321').slice(0, 8)}`;
+      setEditHikerNo(parts[2] || stableNo);
+    } else {
+      setEditIsStudent(false);
+      setEditSchool('');
+      setEditHikerNo('');
+    }
     
     // Fetch parallelly
     const [history, usual] = await Promise.all([
@@ -632,10 +858,27 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     if (!activeCustomer) return;
     setIsSavingProfile(true);
     try {
-      await updateCustomer(activeCustomer.id, editedProfile);
+      let finalNote = editedProfile.note || '';
+      if (editIsStudent) {
+        // Ensure hiker number exists
+        const digits = activeCustomer.phone.replace(/\D/g, '');
+        const stableNo = editHikerNo || `HIKER-${digits.length >= 8 ? digits.slice(-8) : (digits + '87654321').slice(0, 8)}`;
+        finalNote = `STUDENT|${editSchool.trim()}|${stableNo}`;
+      } else {
+        if (finalNote.startsWith('STUDENT')) {
+          finalNote = 'REGULAR';
+        }
+      }
+
+      const updatedProfile = {
+        ...editedProfile,
+        note: finalNote
+      };
+
+      await updateCustomer(activeCustomer.id, updatedProfile);
       
       // Update local state
-      const updatedCustomer = { ...activeCustomer, ...editedProfile };
+      const updatedCustomer = { ...activeCustomer, ...updatedProfile };
       setActiveCustomer(updatedCustomer);
       setCustomers(prev => prev.map(c => c.id === updatedCustomer.id ? updatedCustomer : c));
       setIsEditingProfile(false);
@@ -1092,6 +1335,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const filteredCustomers = useMemo(() => {
     let filtered = customers.filter(c => c.phone.includes(customerSearchTerm));
     
+    // Type Filter (Student / Regular)
+    if (customerTypeFilter === 'STUDENT') {
+      filtered = filtered.filter(c => c.note === 'STUDENT' || c.note?.startsWith('STUDENT|'));
+    } else if (customerTypeFilter === 'REGULAR') {
+      filtered = filtered.filter(c => c.note !== 'STUDENT' && !c.note?.startsWith('STUDENT|'));
+    }
+    
     // Classification Filter
     if (customerClassFilter !== 'ALL') {
       filtered = filtered.filter(c => {
@@ -1148,7 +1398,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
       return customerSortOrder === 'desc' ? valB - valA : valA - valB;
     });
-  }, [customers, customerSearchTerm, customerSortField, customerSortOrder, minLtv, maxLtv, minOrders, maxOrders, customerActivityStart, customerActivityEnd, allOrdersRaw, customerClassFilter, customerOrderStats]);
+  }, [customers, customerSearchTerm, customerSortField, customerSortOrder, minLtv, maxLtv, minOrders, maxOrders, customerActivityStart, customerActivityEnd, allOrdersRaw, customerClassFilter, customerTypeFilter, customerOrderStats]);
 
   return (
     <div className="p-4 lg:p-8 h-full bg-brand-cream overflow-y-auto no-scrollbar pb-24 lg:pb-8">
@@ -2440,6 +2690,19 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         <option value="UNCLASSIFIED">Unclassified / Mixed</option>
                       </select>
                     </div>
+
+                    <div className="space-y-1">
+                      <p className="text-[8px] font-black uppercase text-brand-brown/30 tracking-widest ml-1">Customer Type Filter</p>
+                      <select 
+                        value={customerTypeFilter}
+                        onChange={(e) => setCustomerTypeFilter(e.target.value as any)}
+                        className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none cursor-pointer"
+                      >
+                        <option value="ALL">All Customers</option>
+                        <option value="STUDENT">🎓 Students Only</option>
+                        <option value="REGULAR">👤 Regular / Non-Students</option>
+                      </select>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2589,12 +2852,62 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                               <div className="space-y-1">
                                 <label className="text-[8px] font-black uppercase text-white/40 tracking-widest ml-1">Customer Note</label>
                                 <textarea 
-                                  value={editedProfile.note || ''} 
+                                  value={editIsStudent ? '' : (editedProfile.note || '')} 
+                                  disabled={editIsStudent}
                                   onChange={e => setEditedProfile(prev => ({ ...prev, note: e.target.value }))}
-                                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-2 text-sm font-bold focus:outline-none focus:border-brand-yellow h-10 resize-none"
-                                  placeholder="e.g. VIP guest, likes extra spice..."
+                                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-2 text-sm font-bold focus:outline-none focus:border-brand-yellow h-10 resize-none disabled:opacity-50"
+                                  placeholder={editIsStudent ? "Student Profile note is auto-managed" : "e.g. VIP guest, likes extra spice..."}
                                 />
                               </div>
+                            </div>
+
+                            {/* Student Profile Toggle and Info Inputs */}
+                            <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-4">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-black uppercase text-white tracking-widest">🎓 Student Profile Mode</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const nextVal = !editIsStudent;
+                                    setEditIsStudent(nextVal);
+                                    if (nextVal) {
+                                      const digits = activeCustomer.phone.replace(/\D/g, '');
+                                      const hNo = `HIKER-${digits.length >= 8 ? digits.slice(-8) : (digits + '87654321').slice(0, 8)}`;
+                                      setEditHikerNo(hNo);
+                                    }
+                                  }}
+                                  className={`px-4 py-1.5 rounded-xl font-black text-[9px] uppercase tracking-wider border transition-all ${
+                                    editIsStudent
+                                      ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400 shadow-lg'
+                                      : 'bg-white/5 border-white/10 text-zinc-500 hover:bg-white/10'
+                                  }`}
+                                >
+                                  {editIsStudent ? '🎓 Student Active' : 'Mark as Student'}
+                                </button>
+                              </div>
+
+                              {editIsStudent && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-white/5 animate-in fade-in duration-300">
+                                  <div className="space-y-1">
+                                    <label className="text-[8px] font-black uppercase text-white/40 tracking-widest ml-1">School / College Name</label>
+                                    <input 
+                                      value={editSchool} 
+                                      onChange={e => setEditSchool(e.target.value)}
+                                      className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-sm font-bold focus:outline-none focus:border-brand-yellow"
+                                      placeholder="e.g. Delhi University"
+                                    />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <label className="text-[8px] font-black uppercase text-white/40 tracking-widest ml-1">Hiker Number (8-Digit)</label>
+                                    <input 
+                                      value={editHikerNo} 
+                                      onChange={e => setEditHikerNo(e.target.value)}
+                                      className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-2.5 text-sm font-bold focus:outline-none focus:border-brand-yellow"
+                                      placeholder="e.g. HIKER-12345678"
+                                    />
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           </div>
                         ) : (
@@ -2608,7 +2921,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                               <span className="text-[10px] uppercase font-black px-2 py-0.5 bg-brand-yellow/20 rounded border border-brand-yellow/30 text-brand-yellow">
                                 {getTierInfo(activeCustomer.totalSpent || 0).name} Stage
                               </span>
-                              {activeCustomer.note === 'STUDENT' && (
+                              {(activeCustomer.note === 'STUDENT' || activeCustomer.note?.startsWith('STUDENT|')) && (
                                 <>
                                   <span className="text-white/20">•</span>
                                   <span className="text-[10px] uppercase font-black px-2 py-0.5 bg-emerald-500/20 rounded border border-emerald-500/30 text-emerald-400">
@@ -2722,7 +3035,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                                <span className="text-[9px] font-black uppercase tracking-widest">DOB: {getISTDateString(activeCustomer.birthday)}</span>
                              </div>
                           )}
-                          {activeCustomer.note === 'STUDENT' && (
+                          {(activeCustomer.note === 'STUDENT' || activeCustomer.note?.startsWith('STUDENT|')) && (
                              <div className="flex items-center gap-2 bg-emerald-500/10 px-4 py-2 rounded-xl border border-emerald-500/20 text-emerald-400">
                                <span className="text-xs">🎓</span>
                                <span className="text-[9px] font-black uppercase tracking-widest">Student Discount (10% Off Subsequent Orders)</span>
@@ -2742,6 +3055,290 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                           )}
                         </div>
                       )}
+
+                      {/* Student Card Section */}
+                      {(() => {
+                        const noteStr = activeCustomer.note || '';
+                        const isStudent = noteStr === 'STUDENT' || noteStr.startsWith('STUDENT|');
+                        if (!isStudent) return null;
+
+                        let school = '';
+                        let hikerNo = '';
+                        if (noteStr.startsWith('STUDENT|')) {
+                          const parts = noteStr.split('|');
+                          school = parts[1] || '';
+                          hikerNo = parts[2] || '';
+                        }
+                        
+                        // Stable hiker number fallback
+                        if (!hikerNo) {
+                          const digits = activeCustomer.phone.replace(/\D/g, '');
+                          hikerNo = `HIKER-${digits.length >= 8 ? digits.slice(-8) : (digits + '87654321').slice(0, 8)}`;
+                        }
+                        if (!school && noteStr === 'STUDENT') {
+                          school = 'Registered Student';
+                        }
+
+                        const memberSince = (() => {
+                          if (!activeCustomer.joinedDate) return 'JULY, 2026';
+                          try {
+                            const d = new Date(activeCustomer.joinedDate);
+                            const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+                            return `${months[d.getMonth()]}, ${d.getFullYear()}`;
+                          } catch (e) {
+                            return 'JULY, 2026';
+                          }
+                        })();
+
+                        const handleSendCardWhatsApp = () => {
+                          const text = `*🎓 MINMOMAS STUDENT CARD 🎓*
+_Good Food. Great Discount._
+
+👤 *NAME:* ${activeCustomer.name?.toUpperCase() || 'ANONYMOUS'}
+🥾 *HIKER #:* ${hikerNo}
+🏫 *COLLEGE:* ${school ? school.toUpperCase() : 'STUDENT EXCLUSIVE'}
+📅 *MEMBER SINCE:* ${memberSince}
+
+✨ *BENEFITS:*
+• *FLAT 10% DISCOUNT* on all orders!
+
+_Show this card during checkout to avail your exclusive discount. Enjoy your treat!_`;
+
+                          const url = `https://wa.me/${activeCustomer.phone.replace(/\D/g, '')}?text=${encodeURIComponent(text)}`;
+                          window.open(url, '_blank');
+                        };
+
+                        const handleCopyCardText = () => {
+                          const text = `🎓 MINMOMAS STUDENT CARD 🎓
+Good Food. Great Discount.
+
+NAME: ${activeCustomer.name?.toUpperCase() || 'ANONYMOUS'}
+HIKER #: ${hikerNo}
+COLLEGE: ${school ? school.toUpperCase() : 'STUDENT EXCLUSIVE'}
+MEMBER SINCE: ${memberSince}
+
+BENEFITS:
+• FLAT 10% DISCOUNT on all orders!`;
+                          navigator.clipboard.writeText(text);
+                          alert('Student Card details copied to clipboard!');
+                        };
+
+                        return (
+                          <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-lg mb-8 space-y-6">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <GraduationCap className="w-5 h-5 text-emerald-400" />
+                                <h4 className="text-[10px] font-black uppercase text-white tracking-[0.2em]">Verified Student Card</h4>
+                              </div>
+                              <span className="text-[8px] font-black uppercase px-2.5 py-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-xl">
+                                Active 10% Discount
+                              </span>
+                            </div>
+
+                            {/* Scrollable Container to prevent card squishing on narrow mobile screens */}
+                            <div className="w-full overflow-x-auto no-scrollbar py-2">
+                              {/* The Actual Card Design - Always Landscape Credit Card Ratio */}
+                              <div 
+                                id="minmomas-student-card"
+                                className="w-[450px] min-w-[450px] aspect-[1.586/1] mx-auto flex rounded-[1.5rem] overflow-hidden border-2 border-brand-yellow/30 shadow-2xl relative bg-mountain-green"
+                              >
+                                {/* Left forest-green section - with beautiful vector mountains */}
+                                <div className="w-[62%] relative p-5 flex flex-col justify-between h-full bg-mountain-green overflow-hidden select-none">
+                                  {/* Multi-layered scenic mountain background with sun and pine forest */}
+                                  <svg className="absolute inset-0 w-full h-full opacity-30 pointer-events-none" viewBox="0 0 300 200" preserveAspectRatio="none" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    {/* Soft glowing sun */}
+                                    <circle cx="210" cy="70" r="35" fill="#FBBF24" opacity="0.15" />
+                                    
+                                    {/* Distant mountain peaks (darker green hues) */}
+                                    <path d="M100 200 L170 90 L240 200 Z" fill="#043A2C" />
+                                    <path d="M30 200 L100 L170 200 Z" fill="#032F24" />
+                                    
+                                    {/* Mid-ground mountain peak with snow cap */}
+                                    <path d="M140 200 L210 70 L280 200 Z" fill="#054536" />
+                                    {/* Snow cap */}
+                                    <path d="M210 70 L195 95 L202 97 L210 91 L218 97 L225 95 Z" fill="#FDFBF5" opacity="0.5" />
+                                    
+                                    {/* Left prominent peak with snow cap */}
+                                    <path d="M60 200 L130 85 L200 200 Z" fill="#033F30" />
+                                    {/* Snow cap */}
+                                    <path d="M130 85 L117 106 L123 108 L130 102 L137 108 L143 106 Z" fill="#FDFBF5" opacity="0.5" />
+
+                                    {/* Pine trees at the base */}
+                                    <g fill="#02251D" opacity="0.4">
+                                      {/* Left tree cluster */}
+                                      <polygon points="8,200 12,188 10,188 13,178 11,178 14,167 17,178 15,178 18,188 16,188 20,200" />
+                                      <polygon points="22,200 25,190 23,190 26,182 24,182 27,172 30,182 28,182 31,190 29,190 32,200" />
+                                      {/* Right tree cluster */}
+                                      <polygon points="262,200 265,190 263,190 266,182 264,182 267,172 270,182 268,182 271,190 269,190 272,200" />
+                                      <polygon points="278,200 282,188 280,188 283,178 281,178 284,167 287,178 285,178 288,188 286,188 290,200" />
+                                    </g>
+                                  </svg>
+
+                                  {/* Brand header */}
+                                  <div className="relative z-10">
+                                    <h2 className="text-sm font-black text-white tracking-widest italic lowercase">
+                                      min<span className="text-brand-yellow">momas</span>
+                                    </h2>
+                                    <p className="text-[5px] font-bold text-white/40 uppercase tracking-widest -mt-1">Mountain Goodness. Everyday.</p>
+                                  </div>
+
+                                  {/* Card Title & Slogan */}
+                                  <div className="my-1.5 relative z-10">
+                                    <p className="text-xl font-black text-white tracking-tighter uppercase leading-none italic">STUDENT</p>
+                                    <p className="text-xl font-black text-brand-yellow tracking-tighter uppercase leading-none italic">CARD</p>
+                                    <p className="text-[6px] font-black text-brand-yellow uppercase tracking-widest mt-0.5 flex items-center gap-1">
+                                      Good Food. Great Discount. <span className="text-brand-red text-[8px]">♥</span>
+                                    </p>
+                                  </div>
+
+                                  {/* Dynamic Fields */}
+                                  <div className="space-y-1 relative z-10">
+                                    <div className="bg-white/95 backdrop-blur-sm rounded-lg px-2.5 py-1 flex items-center gap-2 shadow-sm border border-brand-stone/40">
+                                      <span className="text-[5px] font-black uppercase text-stone-400 tracking-widest w-8">Name</span>
+                                      <span className="text-[9px] font-black text-brand-brown uppercase truncate flex-1">{activeCustomer.name || 'Anonymous Guest'}</span>
+                                    </div>
+                                    <div className="bg-white/95 backdrop-blur-sm rounded-lg px-2.5 py-1 flex items-center gap-2 shadow-sm border border-brand-stone/40">
+                                      <span className="text-[5px] font-black uppercase text-stone-400 tracking-widest w-8">Hiker #</span>
+                                      <span className="text-[9px] font-black text-brand-brown uppercase truncate flex-1 font-mono tracking-wider">{hikerNo}</span>
+                                    </div>
+                                    {school && (
+                                      <div className="bg-white/95 backdrop-blur-sm rounded-lg px-2.5 py-1 flex items-center gap-2 shadow-sm border border-brand-stone/40">
+                                        <span className="text-[5px] font-black uppercase text-stone-400 tracking-widest w-8">College</span>
+                                        <span className="text-[9px] font-black text-brand-brown uppercase truncate flex-1">{school}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Right cream section */}
+                                <div className="w-[38%] bg-brand-cream relative p-4 flex flex-col justify-between items-center text-center border-l-2 border-brand-stone/30 h-full select-none">
+                                  {/* Exclusive badge */}
+                                  <div className="bg-brand-brown text-white border border-brand-yellow/50 rounded-xl px-2 py-3 w-full flex flex-col items-center shadow-md my-auto">
+                                    <span className="text-[6px] font-black uppercase text-brand-yellow tracking-widest">★ EXCLUSIVE ★</span>
+                                    <span className="text-xl font-black text-brand-yellow my-0.5 tracking-tighter">10%</span>
+                                    <span className="text-[7px] font-black uppercase text-white tracking-widest leading-none">FLAT DISCOUNT</span>
+                                    <span className="text-[5px] font-bold text-white/50 uppercase tracking-widest mt-0.5">ON ALL ORDERS</span>
+                                  </div>
+
+                                  {/* Member Since tag */}
+                                  <div className="mt-2 flex flex-col items-center">
+                                    <span className="text-[6px] font-black text-brand-red uppercase tracking-widest italic mb-0.5">Member Since</span>
+                                    <div className="bg-mountain-green text-white px-3 py-0.5 rounded text-[8px] font-black uppercase tracking-wider shadow-sm">
+                                      {memberSince}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Badge footer details */}
+                            <div className="grid grid-cols-3 gap-2 pt-2 text-center text-white/40">
+                              <div className="bg-white/5 py-2.5 rounded-xl border border-white/5">
+                                <p className="text-[7px] font-black uppercase tracking-wider text-emerald-400">STUDENT ONLY</p>
+                              </div>
+                              <div className="bg-white/5 py-2.5 rounded-xl border border-white/5">
+                                <p className="text-[7px] font-black uppercase tracking-wider text-brand-yellow">DINE-IN • TAKEAWAY</p>
+                              </div>
+                              <div className="bg-white/5 py-2.5 rounded-xl border border-white/5">
+                                <p className="text-[7px] font-black uppercase tracking-wider text-white/60">SHOW PHONE CARD</p>
+                              </div>
+                            </div>
+
+                            {/* Actions bar - with modern WhatsApp, text copy, high-res Image download, and PDF export */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                              <button
+                                onClick={handleSendCardWhatsApp}
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-black uppercase text-[10px] tracking-wider py-3.5 rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-md group cursor-pointer"
+                              >
+                                <svg className="w-4 h-4 fill-current group-hover:scale-110 transition-transform" viewBox="0 0 24 24">
+                                  <path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946C.06 5.348 5.397.01 12.008.01c3.202.001 6.212 1.246 8.477 3.514 2.266 2.268 3.507 5.28 3.505 8.484-.004 6.657-5.34 11.997-11.953 11.997-2.005-.001-3.973-.502-5.724-1.455L0 24zm6.59-4.846c1.6.95 3.188 1.449 4.825 1.451 5.436 0 9.86-4.37 9.864-9.799.002-2.63-1.023-5.101-2.885-6.963C16.588 2.01 14.135 1.01 11.993 1.01c-5.452 0-9.88 4.373-9.884 9.802-.001 1.74.475 3.442 1.378 4.953l-.991 3.616 3.737-.968c1.517.865 3.011 1.3 4.754 1.3zm10.962-7.468c-.3-.15-1.77-.875-2.03-.972-.26-.096-.45-.142-.64.15-.19.29-.73.97-.89 1.16-.16.19-.32.22-.62.07-1.123-.523-1.923-.91-2.693-1.72-.18-.19-.18-.3-.33-.45-.15-.15-.3-.35-.45-.52-.15-.17-.2-.29-.3-.44-.1-.15-.05-.29.02-.44.07-.15.3-.35.45-.52.15-.17.2-.29.3-.44.1-.15.05-.29-.02-.44-.07-.15-.3-.35-.45-.52-.22-.24-.44-.75-.3-.97.11-.18.35-.35.5-.52.15-.17.22-.29.32-.44.1-.15.15-.22.25-.3.1-.08.2-.15.3-.15s.2.07.3.15c.1.08.6 1.01.65 1.11.05.1.07.22 0 .37-.07.15-.15.35-.22.45-.07.1-.15.22-.07.37.52.92 1.3 1.63 2.18 2.03.22.1.42.15.62.15.3 0 .57-.1.78-.31.2-.2.65-.75.75-.9.1-.15.2-.2.35-.2h.45c.25 0 .5.05.7.15.2.1 1.25.62 1.45.72.2.1.32.15.42.32.1.17.1.85-.2 1.15z"/>
+                                </svg>
+                                WhatsApp text Card
+                              </button>
+                              <button
+                                onClick={handleCopyCardText}
+                                className="bg-white/10 hover:bg-white/20 text-white border border-white/10 font-black uppercase text-[10px] tracking-wider py-3.5 rounded-2xl flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                                title="Copy card details to clipboard"
+                              >
+                                <Copy className="w-4 h-4" />
+                                Copy text details
+                              </button>
+                              
+                              <button
+                                onClick={async () => {
+                                  const element = document.getElementById('minmomas-student-card');
+                                  if (!element) return;
+                                  try {
+                                    patchColorSpaces();
+                                    const html2canvas = (await import('html2canvas')).default;
+                                    const canvas = await html2canvas(element, {
+                                      scale: 4, // Extremely crisp rendering!
+                                      useCORS: true,
+                                      backgroundColor: '#064E3B',
+                                      logging: false,
+                                    });
+                                    const dataUrl = canvas.toDataURL('image/png');
+                                    const link = document.createElement('a');
+                                    link.href = dataUrl;
+                                    link.download = `minmomas_student_card_${activeCustomer.name?.toLowerCase().replace(/\s+/g, '_') || 'card'}.png`;
+                                    document.body.appendChild(link);
+                                    link.click();
+                                    document.body.removeChild(link);
+                                  } catch (err) {
+                                    console.error('Error generating image:', err);
+                                    alert('Failed to generate image. Please try again.');
+                                  } finally {
+                                    restoreColorSpaces();
+                                  }
+                                }}
+                                className="bg-amber-600 hover:bg-amber-500 text-white font-black uppercase text-[10px] tracking-wider py-3.5 rounded-2xl flex items-center justify-center gap-1.5 transition-all active:scale-95 shadow-md cursor-pointer"
+                              >
+                                <Download className="w-4 h-4" />
+                                Download PNG Image
+                              </button>
+
+                              <button
+                                onClick={async () => {
+                                  const element = document.getElementById('minmomas-student-card');
+                                  if (!element) return;
+                                  try {
+                                    patchColorSpaces();
+                                    const html2canvas = (await import('html2canvas')).default;
+                                    const { jsPDF } = await import('jspdf');
+                                    const canvas = await html2canvas(element, {
+                                      scale: 4,
+                                      useCORS: true,
+                                      backgroundColor: '#064E3B',
+                                      logging: false,
+                                    });
+                                    const dataUrl = canvas.toDataURL('image/png');
+                                    
+                                    // 3.5in x 2.2in card format (88.9mm x 55.88mm)
+                                    const widthMm = 88.9;
+                                    const heightMm = 55.88;
+                                    const pdf = new jsPDF({
+                                      orientation: 'landscape',
+                                      unit: 'mm',
+                                      format: [widthMm, heightMm]
+                                    });
+                                    pdf.addImage(dataUrl, 'PNG', 0, 0, widthMm, heightMm, undefined, 'FAST');
+                                    pdf.save(`minmomas_student_card_${activeCustomer.name?.toLowerCase().replace(/\s+/g, '_') || 'card'}.pdf`);
+                                  } catch (err) {
+                                    console.error('Error generating PDF:', err);
+                                    alert('Failed to generate PDF. Please try again.');
+                                  } finally {
+                                    restoreColorSpaces();
+                                  }
+                                }}
+                                className="bg-red-600 hover:bg-red-500 text-white font-black uppercase text-[10px] tracking-wider py-3.5 rounded-2xl flex items-center justify-center gap-1.5 transition-all active:scale-95 shadow-md cursor-pointer"
+                              >
+                                <FileText className="w-4 h-4" />
+                                Download PDF Card
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {/* Messaging Widget */}
                       <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-lg">

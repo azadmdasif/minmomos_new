@@ -200,7 +200,7 @@ const Bill: React.FC<BillProps> = ({
 
   const loyaltyDiscount = React.useMemo(() => {
     if (!customer) return null;
-    if (customer.note === 'STUDENT') {
+    if (customer.note === 'STUDENT' || customer.note?.startsWith('STUDENT|')) {
       if (customer.totalOrders > 0) {
         return { percentage: 10, label: '10% Student Discount', code: `STUDENT10-${customer.phone.slice(-4)}` };
       }
@@ -290,7 +290,7 @@ const Bill: React.FC<BillProps> = ({
           }
 
           // VOIDED / RE-FIRST ORDER Logic
-          const isStudent = cust.note === 'STUDENT';
+          const isStudent = cust.note === 'STUDENT' || cust.note?.startsWith('STUDENT|');
           if (isStudent) {
             const hasMojitoInOrder = orderItems.some(item => item.id === 'student-mojito-gift' || item.name.includes('Student Promo'));
             if (cust.totalOrders === 0 && !hasMojitoInOrder) {
@@ -331,13 +331,13 @@ const Bill: React.FC<BillProps> = ({
     }
   }, [customerPhone]);
 
-  const handleRegisterCustomer = async (name: string, isStudentRegister?: boolean) => {
+  const handleRegisterCustomer = async (name: string, isStudentRegister?: boolean, schoolName?: string) => {
     try {
       if (isPromptForExisting && customer) {
         await updateCustomer(customer.id, { name });
         setCustomer({ ...customer, name });
       } else {
-        const newCust = await registerCustomer(customerPhone, name, isStudentRegister);
+        const newCust = await registerCustomer(customerPhone, name, isStudentRegister, schoolName);
         setCustomer(newCust);
         if (isStudentRegister) {
           // Add Free Virgin Mojito
@@ -369,7 +369,7 @@ const Bill: React.FC<BillProps> = ({
   // Auto-apply or update discount
   React.useEffect(() => {
     const discountItems = orderItems.filter(i => i.id === 'loyalty-discount');
-    const isStudentSubsequent = customer && customer.note === 'STUDENT' && customer.totalOrders > 0;
+    const isStudentSubsequent = customer && (customer.note === 'STUDENT' || customer.note?.startsWith('STUDENT|')) && customer.totalOrders > 0;
     
     if (isStudentSubsequent && discountItems.length === 0) {
       const subtotal = orderItems.reduce((acc, i) => acc + (i.id !== 'loyalty-discount' && i.price > 0 ? i.price * i.quantity : 0), 0);
@@ -421,7 +421,7 @@ const Bill: React.FC<BillProps> = ({
         setShowCelebration(true);
         
         // Add Campa Cola if not already added as gift
-        if (customer.note !== 'STUDENT') {
+        if (customer.note !== 'STUDENT' && !customer.note?.startsWith('STUDENT|')) {
           const hasGift = orderItems.some(item => item.id === GIFT_CAMPA_COLA.id);
           if (!hasGift) {
             onAddItem([GIFT_CAMPA_COLA]);
