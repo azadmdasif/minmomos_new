@@ -41,7 +41,8 @@ const ProcurementManager: React.FC = () => {
           unit: item.unit,
           total_cost: parseFloat(cost),
           vendor,
-          date: getISTISOString()
+          date: getISTISOString(),
+          is_paid: false
         });
         setIsModalOpen(false);
         setQty(''); setCost(''); setVendor('');

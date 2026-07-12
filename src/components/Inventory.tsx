@@ -27,6 +27,9 @@ import {
   resetAllStockToZero,
   updateProcurementPayment,
   bulkPayProcurements,
+  getItemSubcategory,
+  updateCentralItem,
+  saveItemSubcategory,
   getVendors,
   createVendor,
   deleteVendor,
@@ -60,64 +63,33 @@ type DatePreset = 'today' | 'yesterday' | 'week' | 'last-week' | 'month' | 'last
 type VendorDatePreset = 'all' | 'today' | 'yesterday' | 'week' | 'last-week' | 'month' | 'last-month' | 'custom';
 type SortBy = 'date' | 'quantity' | 'cost';
 
-export const getItemSubcategory = (name: string, id: string, category?: string): string => {
-  try {
-    const saved = localStorage.getItem('custom_subcategories');
-    if (saved) {
-      const map = JSON.parse(saved);
-      if (map[id]) return map[id];
-    }
-  } catch (e) {
-    console.error(e);
-  }
+interface SubcategoryOption {
+  id: string;
+  label: string;
+  icon: string;
+  parentCategory: MaterialCategory;
+}
 
-  const nid = id.toLowerCase();
-  const nname = name.toLowerCase();
-  
-  // Category A / MOMO subcategories
-  if (nid.includes('momo') || nname.includes('momo')) return 'momo';
-  if (nid.includes('bun') || nname.includes('bun') || nid.includes('moburg') || nname.includes('moburg')) return 'buns';
-  if (nid.includes('cola') || nname.includes('cola')) return 'cola';
-  if (nid.includes('water') || nname.includes('water') || nid.includes('soda') || nname.includes('soda') || nid.includes('drink') || nname.includes('drink')) return 'drinks';
-  
-  // Category B / PACKET subcategories
-  if (nid.includes('fries') || nname.includes('fries')) return 'fries';
-  if (nid.includes('syrup') || nname.includes('syrup') || nid.includes('lagoon') || nname.includes('lagoon') || nid.includes('mojito') || nname.includes('mojito')) return 'syrups';
-  if (nid.includes('sauce') || nname.includes('sauce') || nid.includes('mayo') || nname.includes('mayo') || nid.includes('chutney') || nname.includes('chutney') || nid.includes('spread') || nname.includes('spread')) return 'sauces';
-  
-  if (
-    nid.includes('pkg') || nname.includes('pkg') || 
-    nid.includes('box') || nname.includes('box') || 
-    nid.includes('bag') || nname.includes('bag') || 
-    nid.includes('cup') || nname.includes('cup') || 
-    nid.includes('paper') || nname.includes('paper') ||
-    nid.includes('glass') || nname.includes('glass') ||
-    nid.includes('spoon') || nname.includes('spoon') ||
-    nid.includes('fork') || nname.includes('fork') ||
-    nid.includes('straw') || nname.includes('straw') ||
-    nid.includes('container') || nname.includes('container') ||
-    nid.includes('foil') || nname.includes('foil') ||
-    nid.includes('plastic') || nname.includes('plastic')
-  ) return 'packaging';
-  
-  if (nid.includes('oil') || nname.includes('oil') || nid.includes('butter') || nname.includes('butter') || nid.includes('cheese') || nname.includes('cheese') || nid.includes('ghee') || nname.includes('ghee')) return 'oil-butter';
-  
-  if (
-    nid.includes('spice') || nname.includes('spice') || 
-    nid.includes('masala') || nname.includes('masala') || 
-    nid.includes('oregano') || nname.includes('oregano') || 
-    nid.includes('flake') || nname.includes('flake') || 
-    nid.includes('peri') || nname.includes('peri') ||
-    nid.includes('kashmiri') || nname.includes('kashmiri') ||
-    nid.includes('powder') || nname.includes('powder') ||
-    nid.includes('poweder') || nname.includes('poweder') ||
-    nid.includes('methi') || nname.includes('methi')
-  ) return 'spices';
-  
-  if (category === 'INGREDIENT' || category === 'Raw Ingredients') return 'veggies';
-  if (nid.includes('veg') || nname.includes('veg') || nid.includes('chicken') || nname.includes('chicken') || nid.includes('paneer') || nname.includes('paneer') || nid.includes('onion') || nname.includes('onion')) return 'veggies';
-
-  return 'others'; // Default fallback
+const DEFAULT_SUBCATEGORIES: Record<MaterialCategory, Array<{ id: string, label: string, icon: string }>> = {
+  MOMO: [
+    { id: 'momo', label: 'Momo', icon: '🥟' },
+    { id: 'buns', label: 'Burger Buns', icon: '🍔' },
+    { id: 'cola', label: 'Cola', icon: '🥤' },
+    { id: 'drinks', label: 'Drinks', icon: '🍹' },
+  ],
+  PACKET: [
+    { id: 'syrups', label: 'Syrups', icon: '🍹' },
+    { id: 'sauces', label: 'Sauces', icon: '🥫' },
+    { id: 'packaging', label: 'Packaging', icon: '📦' },
+    { id: 'oil-butter', label: 'Oil & Butter', icon: '🧈' },
+    { id: 'spices', label: 'Spices', icon: '🌶️' },
+    { id: 'fries', label: 'Fries', icon: '🍟' },
+    { id: 'others', label: 'Others', icon: '🏷️' },
+  ],
+  INGREDIENT: [
+    { id: 'veggies', label: 'Veggies', icon: '🥬' },
+    { id: 'others', label: 'Others', icon: '🏷️' },
+  ]
 };
 
 const Inventory: React.FC<InventoryProps> = ({ user }) => {
@@ -160,7 +132,6 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [adjustCategoryReason, setAdjustCategoryReason] = useState<'rotten stock' | 'quantity mismatch' | 'others'>('others');
   const [itemToVoid, setItemToVoid] = useState<{ id: string, type: LedgerType } | null>(null);
   const [selectedItem, setSelectedItem] = useState<any>(null);
-  const [isPaidEntry, setIsPaidEntry] = useState(true);
   const [financialPaidFilter, setFinancialPaidFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
   const [ledgerPaidFilter, setLedgerPaidFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
   const [ledgerItemFilter, setLedgerItemFilter] = useState<string>('all');
@@ -187,6 +158,20 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [bulkPaymentMethod, setBulkPaymentMethod] = useState('CASH');
   const [bulkPaymentNotes, setBulkPaymentNotes] = useState('');
   const [bulkPaidBy, setBulkPaidBy] = useState('');
+  const [bulkPaymentSubcategory, setBulkPaymentSubcategory] = useState<string>('');
+
+  // Checklist Selection for Unpaid Items per Vendor
+  const [selectedProcurementIds, setSelectedProcurementIds] = useState<Record<string, string[]>>({});
+
+  // Split Payment input states
+  const [singleSplitCash, setSingleSplitCash] = useState<string>('');
+  const [singleSplitUpi, setSingleSplitUpi] = useState<string>('');
+  const [bulkSplitCash, setBulkSplitCash] = useState<string>('');
+  const [bulkSplitUpi, setBulkSplitUpi] = useState<string>('');
+
+  // Fund Source states
+  const [singleFundSource, setSingleFundSource] = useState<string>('Revenue');
+  const [bulkFundSource, setBulkFundSource] = useState<string>('Revenue');
   
   const [qty, setQty] = useState('');
   const [cost, setCost] = useState('');
@@ -223,6 +208,116 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
 
   // Active Stock item search state
   const [activeStockSearch, setActiveStockSearch] = useState('');
+
+  // Custom Subcategories and Editing States
+  const [customSubcategories, setCustomSubcategories] = useState<SubcategoryOption[]>([]);
+  const [isCreateSubcategoryModalOpen, setIsCreateSubcategoryModalOpen] = useState(false);
+  const [newSubcatName, setNewSubcatName] = useState('');
+  const [newSubcatIcon, setNewSubcatIcon] = useState('🏷️');
+  const [newSubcatParent, setNewSubcatParent] = useState<MaterialCategory>('MOMO');
+
+  const [isEditItemModalOpen, setIsEditItemModalOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<CentralMaterial | null>(null);
+  const [editItemName, setEditItemName] = useState('');
+  const [editItemUnit, setEditItemUnit] = useState('');
+  const [editItemSubcategory, setEditItemSubcategory] = useState('');
+  const [editItemCategory, setEditItemCategory] = useState<MaterialCategory>('MOMO');
+
+  const loadCustomSubcategories = useCallback(() => {
+    try {
+      const saved = localStorage.getItem('custom_created_subcategories');
+      if (saved) {
+        setCustomSubcategories(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.error("Failed to load custom subcategories:", e);
+    }
+  }, []);
+
+  const getSubcategoriesForCategory = useCallback((cat: MaterialCategory) => {
+    const defaults = DEFAULT_SUBCATEGORIES[cat] || [];
+    const custom = customSubcategories.filter(s => s.parentCategory === cat);
+    return [...defaults, ...custom];
+  }, [customSubcategories]);
+
+  useEffect(() => {
+    loadCustomSubcategories();
+  }, [loadCustomSubcategories]);
+
+  const handleCreateSubcategory = () => {
+    if (!newSubcatName.trim()) {
+      alert("Please enter a subcategory name.");
+      return;
+    }
+    const slug = newSubcatName.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    if (!slug) {
+      alert("Please enter a valid subcategory name.");
+      return;
+    }
+
+    const existing = getSubcategoriesForCategory(newSubcatParent);
+    if (existing.some(s => s.id === slug)) {
+      alert("A subcategory with this name already exists under this category.");
+      return;
+    }
+
+    const newSubcat: SubcategoryOption = {
+      id: slug,
+      label: newSubcatName.trim(),
+      icon: newSubcatIcon.trim() || '🏷️',
+      parentCategory: newSubcatParent
+    };
+
+    try {
+      const saved = localStorage.getItem('custom_created_subcategories') || '[]';
+      const list = JSON.parse(saved);
+      list.push(newSubcat);
+      localStorage.setItem('custom_created_subcategories', JSON.stringify(list));
+      setCustomSubcategories(list);
+      setNewSubcatName('');
+      setNewSubcatIcon('🏷️');
+      setIsCreateSubcategoryModalOpen(false);
+    } catch (e) {
+      console.error("Failed to save custom subcategory:", e);
+      alert("Failed to save custom subcategory.");
+    }
+  };
+
+  const handleOpenEditModal = (item: CentralMaterial) => {
+    setEditingItem(item);
+    setEditItemName(item.name);
+    setEditItemUnit(item.unit);
+    setEditItemCategory(item.category as MaterialCategory);
+    setEditItemSubcategory(getItemSubcategory(item.name, item.id, item.category));
+    setIsEditItemModalOpen(true);
+  };
+
+  const handleSaveEditItem = async () => {
+    if (!editingItem) return;
+    if (!editItemName.trim() || !editItemUnit.trim()) {
+      alert("Name and unit cannot be empty.");
+      return;
+    }
+    if (!editItemSubcategory) {
+      alert("Please select a subcategory.");
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      await updateCentralItem(editingItem.id, editItemName.trim(), editItemUnit.trim(), editItemCategory);
+      saveItemSubcategory(editingItem.id, editItemSubcategory);
+      setIsEditItemModalOpen(false);
+      setEditingItem(null);
+      await fetchData();
+      alert("Item updated successfully!");
+    } catch (e: any) {
+      console.error("Failed to update item:", e);
+      alert(`Failed to update item: ${e.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const fetchData = useCallback(async (isSilent = false) => {
     if (!isSilent) setIsLoading(true);
@@ -572,7 +667,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
               total_cost: c,
               vendor: 'Initial Stock / Registration',
               date: getISTISOString(),
-              is_paid: isPaidEntry
+              is_paid: false
             });
           } catch (logErr: any) {
             console.error("Failed to log initial procurement:", logErr);
@@ -612,7 +707,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
             total_cost: cNum,
             vendor: vendor || 'Local Market',
             date: getISTISOString(),
-            is_paid: isPaidEntry
+            is_paid: false
           });
         } catch (logErr: any) {
           console.error("LogProcurement failed:", logErr);
@@ -763,12 +858,13 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     }
   };
 
-  const openBulkPaymentModal = (vendorName: string, unpaidProcs: any[]) => {
+  const openBulkPaymentModal = (vendorName: string, unpaidProcs: any[], subcategory?: string) => {
     setBulkPaymentVendorName(vendorName);
     const ids = unpaidProcs.map(p => p.id);
     setBulkPaymentIds(ids);
     const total = unpaidProcs.reduce((acc, p) => acc + (p.total_cost || 0), 0);
     setBulkPaymentTotal(total);
+    setBulkPaymentSubcategory(subcategory || '');
     
     let defaultDate = '';
     try {
@@ -782,19 +878,43 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     setBulkPaidBy(user.username);
     setBulkPaymentNotes('');
     setBulkPaymentMethod('CASH');
+    setBulkSplitCash((total / 2).toFixed(2));
+    setBulkSplitUpi((total / 2).toFixed(2));
+    setBulkFundSource('Revenue');
     setIsBulkPaymentModalOpen(true);
   };
 
   const handleSaveBulkPayment = async () => {
     if (bulkPaymentIds.length === 0) return;
     try {
+      let cashAmt: number | undefined;
+      let upiAmt: number | undefined;
+      let nextPaymentNotes = bulkPaymentNotes.trim() || null;
+
+      if (bulkPaymentMethod === 'SPLIT') {
+        const cVal = parseFloat(bulkSplitCash) || 0;
+        const uVal = parseFloat(bulkSplitUpi) || 0;
+        if (Math.abs((cVal + uVal) - bulkPaymentTotal) > 0.05) {
+          alert(`The sum of Cash (₹${cVal}) and UPI (₹${uVal}) must equal the total amount (₹${bulkPaymentTotal}).`);
+          return;
+        }
+        cashAmt = cVal;
+        upiAmt = uVal;
+        const splitNotes = `(Split: Cash ₹${cVal}, UPI ₹${uVal})`;
+        nextPaymentNotes = bulkPaymentNotes.trim() ? `${bulkPaymentNotes.trim()} ${splitNotes}` : splitNotes;
+      }
+
       const formattedDate = bulkPaymentDate ? new Date(bulkPaymentDate).toISOString() : getISTISOString();
       await bulkPayProcurements(
         bulkPaymentIds,
         formattedDate,
         bulkPaidBy.trim() || user.username,
-        bulkPaymentNotes.trim() || null,
-        bulkPaymentMethod
+        nextPaymentNotes,
+        bulkPaymentMethod,
+        cashAmt,
+        upiAmt,
+        bulkFundSource,
+        bulkPaymentSubcategory || undefined
       );
       
       setIsBulkPaymentModalOpen(false);
@@ -854,10 +974,14 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     }
     
     setPaymentDate(defaultDate);
-    setPaymentAmount(proc.total_cost?.toString() || '');
+    const costVal = proc.total_cost || 0;
+    setPaymentAmount(costVal.toString());
     setPaidByInput(proc.paid_by || user.username);
     setPaymentNotesInput(proc.payment_notes || '');
     setPaymentMethod(proc.payment_mode || 'CASH');
+    setSingleSplitCash((costVal / 2).toFixed(2));
+    setSingleSplitUpi((costVal / 2).toFixed(2));
+    setSingleFundSource('Revenue');
     setPaymentActionReason('');
     setIsPaymentModalOpen(true);
   };
@@ -874,16 +998,34 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
       let nextPaymentMode = p.payment_mode || null;
       let nextHistory = Array.isArray(p.payment_history) ? [...p.payment_history] : [];
 
+      let cashAmt: number | undefined;
+      let upiAmt: number | undefined;
+
       if (paymentMode === 'PAY') {
         const amt = parseFloat(paymentAmount);
         if (isNaN(amt) || amt < 0) {
           alert("Please enter a valid payment amount.");
           return;
         }
+
+        if (paymentMethod === 'SPLIT') {
+          const cVal = parseFloat(singleSplitCash) || 0;
+          const uVal = parseFloat(singleSplitUpi) || 0;
+          if (Math.abs((cVal + uVal) - amt) > 0.05) {
+            alert(`The sum of Cash (₹${cVal}) and UPI (₹${uVal}) must equal the total amount (₹${amt}).`);
+            return;
+          }
+          cashAmt = cVal;
+          upiAmt = uVal;
+          const splitNotes = `(Split: Cash ₹${cVal}, UPI ₹${uVal})`;
+          nextPaymentNotes = paymentNotesInput.trim() ? `${paymentNotesInput.trim()} ${splitNotes}` : splitNotes;
+        } else {
+          nextPaymentNotes = paymentNotesInput.trim() || null;
+        }
+
         nextIsPaid = true;
         nextPaidAt = paymentDate ? new Date(paymentDate).toISOString() : getISTISOString();
         nextPaidBy = paidByInput.trim() || user.username;
-        nextPaymentNotes = paymentNotesInput.trim() || null;
         nextPaymentMode = paymentMethod;
 
         const newHistoryEntry = {
@@ -893,7 +1035,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           performed_by: user.username,
           notes: nextPaymentNotes,
           payment_mode: nextPaymentMode,
-          reason: paymentActionReason.trim() || 'Initial Payment'
+          reason: paymentActionReason.trim() || 'Initial Payment',
+          fund_source: singleFundSource
         };
         nextHistory.push(newHistoryEntry);
       } else if (paymentMode === 'EDIT') {
@@ -906,6 +1049,21 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           alert("Please enter a valid payment amount.");
           return;
         }
+
+        if (paymentMethod === 'SPLIT') {
+          const cVal = parseFloat(singleSplitCash) || 0;
+          const uVal = parseFloat(singleSplitUpi) || 0;
+          if (Math.abs((cVal + uVal) - amt) > 0.05) {
+            alert(`The sum of Cash (₹${cVal}) and UPI (₹${uVal}) must equal the total amount (₹${amt}).`);
+            return;
+          }
+          cashAmt = cVal;
+          upiAmt = uVal;
+          const splitNotes = `(Split: Cash ₹${cVal}, UPI ₹${uVal})`;
+          nextPaymentNotes = paymentNotesInput.trim() ? `${paymentNotesInput.trim()} ${splitNotes}` : splitNotes;
+        } else {
+          nextPaymentNotes = paymentNotesInput.trim() || null;
+        }
         
         const prevDetails = {
           paid_at: p.paid_at,
@@ -917,7 +1075,6 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
 
         nextPaidAt = paymentDate ? new Date(paymentDate).toISOString() : getISTISOString();
         nextPaidBy = paidByInput.trim() || user.username;
-        nextPaymentNotes = paymentNotesInput.trim() || null;
         nextPaymentMode = paymentMethod;
 
         const newHistoryEntry = {
@@ -928,7 +1085,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           notes: nextPaymentNotes,
           payment_mode: nextPaymentMode,
           reason: paymentActionReason.trim(),
-          previous_details: prevDetails
+          previous_details: prevDetails,
+          fund_source: singleFundSource
         };
         nextHistory.push(newHistoryEntry);
       } else if (paymentMode === 'UNPAY') {
@@ -958,7 +1116,10 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
         nextPaidBy,
         nextPaymentNotes,
         nextPaymentMode,
-        nextHistory
+        nextHistory,
+        cashAmt,
+        upiAmt,
+        singleFundSource
       );
 
       setIsPaymentModalOpen(false);
@@ -1052,7 +1213,6 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     setNewItemUnit(materialCategory === 'MOMO' ? 'pcs' : materialCategory === 'PACKET' ? 'pkt' : 'kg');
     setNewItemSubcategory('');
     setSelectedItem(null);
-    setIsPaidEntry(true);
   };
 
   const financialData = useMemo(() => {
@@ -1412,60 +1572,38 @@ NOTIFY pgrst, 'reload schema';`}
               <h3 className="text-2xl font-black text-brand-brown underline decoration-brand-yellow decoration-4 underline-offset-8 uppercase tracking-tighter italic mb-8">Central Inventory: {materialCategory === 'MOMO' ? 'Category A (Auto-Deduct)' : materialCategory}</h3>
               
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
-                {materialCategory === 'MOMO' && (
-                  <div className="flex flex-wrap gap-2 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
-                    {[
-                      { id: 'all', label: 'All Items', icon: '🔍' },
-                      { id: 'momo', label: 'Momo', icon: '🥟' },
-                      { id: 'buns', label: 'Burger Buns', icon: '🍔' },
-                      { id: 'cola', label: 'Cola', icon: '🥤' },
-                      { id: 'drinks', label: 'Drinks', icon: '🍹' },
-                    ].map(sub => (
-                      <button
-                        key={sub.id}
-                        onClick={() => setActiveSubcategory(sub.id)}
-                        className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                          activeSubcategory === sub.id
-                            ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
-                            : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
-                        }`}
-                      >
-                        <span>{sub.icon}</span>
-                        <span>{sub.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {materialCategory === 'PACKET' && (
-                  <div className="flex flex-wrap gap-2 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
-                    {[
-                      { id: 'all', label: 'All Items', icon: '🔍' },
-                      { id: 'syrups', label: 'Syrups', icon: '🍹' },
-                      { id: 'sauces', label: 'Sauces', icon: '🥫' },
-                      { id: 'packaging', label: 'Packaging', icon: '📦' },
-                      { id: 'oil-butter', label: 'Oil & Butter', icon: '🧈' },
-                      { id: 'spices', label: 'Spices', icon: '🌶️' },
-                      { id: 'fries', label: 'Fries', icon: '🍟' },
-                      { id: 'others', label: 'Others', icon: '🏷️' },
-                    ].map(sub => (
-                      <button
-                        key={sub.id}
-                        onClick={() => setActiveSubcategory(sub.id)}
-                        className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                          activeSubcategory === sub.id
-                            ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
-                            : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
-                        }`}
-                      >
-                        <span>{sub.icon}</span>
-                        <span>{sub.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {materialCategory === 'INGREDIENT' && <div />}
+                <div className="flex flex-wrap gap-2 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit items-center">
+                  {[
+                    { id: 'all', label: 'All Items', icon: '🔍' },
+                    ...getSubcategoriesForCategory(materialCategory)
+                  ].map(sub => (
+                    <button
+                      key={sub.id}
+                      onClick={() => setActiveSubcategory(sub.id)}
+                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                        activeSubcategory === sub.id
+                          ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
+                          : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
+                      }`}
+                    >
+                      <span>{sub.icon}</span>
+                      <span>{sub.label}</span>
+                    </button>
+                  ))}
+                  
+                  {isAdmin && (
+                    <button
+                      onClick={() => {
+                        setNewSubcatParent(materialCategory);
+                        setIsCreateSubcategoryModalOpen(true);
+                      }}
+                      className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest bg-brand-yellow hover:bg-brand-yellow/80 text-brand-brown border border-brand-brown/10 shadow-sm transition-all"
+                    >
+                      <span>➕</span>
+                      <span>New Subcat</span>
+                    </button>
+                  )}
+                </div>
 
                 {/* Active Stock Search Bar */}
                 <div className="relative w-full md:max-w-xs flex-shrink-0">
@@ -1536,9 +1674,20 @@ NOTIFY pgrst, 'reload schema';`}
                               <h4 className="text-lg font-black text-brand-brown line-clamp-1">{item.name}</h4>
                               <p className={`text-[10px] font-black uppercase tracking-widest mt-1 ${item.is_finished ? 'text-brand-red' : 'text-brand-brown/40'}`}>HUB: {item.current_stock.toFixed(2)} {item.unit}</p>
                             </div>
-                            <button onClick={() => { setSelectedItem(item); setIsRestockModalOpen(true); }} className="p-3 bg-brand-stone/30 rounded-xl hover:bg-brand-yellow transition-colors group-hover:bg-brand-yellow shadow-sm flex-shrink-0">
-                              <svg className="w-5 h-5 text-brand-brown" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 4v16m8-8H4" /></svg>
-                            </button>
+                            <div className="flex gap-2">
+                              {isAdmin && (
+                                <button 
+                                  onClick={() => handleOpenEditModal(item)} 
+                                  className="p-3 bg-brand-stone/20 rounded-xl hover:bg-brand-yellow hover:text-brand-brown text-brand-brown/60 transition-all shadow-sm"
+                                  title="Edit Item"
+                                >
+                                  ✏️
+                                </button>
+                              )}
+                              <button onClick={() => { setSelectedItem(item); setIsRestockModalOpen(true); }} className="p-3 bg-brand-stone/30 rounded-xl hover:bg-brand-yellow transition-colors group-hover:bg-brand-yellow shadow-sm flex-shrink-0">
+                                <svg className="w-5 h-5 text-brand-brown" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 4v16m8-8H4" /></svg>
+                              </button>
+                            </div>
                           </div>
 
                           {linkedItems.length > 0 && (
@@ -1629,58 +1778,25 @@ NOTIFY pgrst, 'reload schema';`}
               </div>
 
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
-                {materialCategory === 'MOMO' && (
-                  <div className="flex flex-wrap gap-2 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
-                    {[
-                      { id: 'all', label: 'All Items', icon: '🔍' },
-                      { id: 'momo', label: 'Momo', icon: '🥟' },
-                      { id: 'buns', label: 'Burger Buns', icon: '🍔' },
-                      { id: 'cola', label: 'Cola', icon: '🥤' },
-                      { id: 'drinks', label: 'Drinks', icon: '🍹' },
-                    ].map(sub => (
-                      <button
-                        key={sub.id}
-                        onClick={() => setActiveSubcategory(sub.id)}
-                        className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                          activeSubcategory === sub.id
-                            ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
-                            : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
-                        }`}
-                      >
-                        <span>{sub.icon}</span>
-                        <span>{sub.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {materialCategory === 'PACKET' && (
-                  <div className="flex flex-wrap gap-2 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
-                    {[
-                      { id: 'all', label: 'All Items', icon: '🔍' },
-                      { id: 'syrups', label: 'Syrups', icon: '🍹' },
-                      { id: 'sauces', label: 'Sauces', icon: '🥫' },
-                      { id: 'packaging', label: 'Packaging', icon: '📦' },
-                      { id: 'oil-butter', label: 'Oil & Butter', icon: '🧈' },
-                      { id: 'spices', label: 'Spices', icon: '🌶️' },
-                      { id: 'fries', label: 'Fries', icon: '🍟' },
-                      { id: 'others', label: 'Others', icon: '🏷️' },
-                    ].map(sub => (
-                      <button
-                        key={sub.id}
-                        onClick={() => setActiveSubcategory(sub.id)}
-                        className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                          activeSubcategory === sub.id
-                            ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
-                            : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
-                        }`}
-                      >
-                        <span>{sub.icon}</span>
-                        <span>{sub.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
+                <div className="flex flex-wrap gap-2 bg-brand-stone/10 p-2 rounded-2xl border border-brand-stone/20 w-fit">
+                  {[
+                    { id: 'all', label: 'All Items', icon: '🔍' },
+                    ...getSubcategoriesForCategory(materialCategory)
+                  ].map(sub => (
+                    <button
+                      key={sub.id}
+                      onClick={() => setActiveSubcategory(sub.id)}
+                      className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                        activeSubcategory === sub.id
+                          ? 'bg-brand-brown text-brand-yellow shadow-md border-transparent'
+                          : 'bg-white hover:bg-brand-cream/50 text-brand-brown/60 border border-brand-stone'
+                      }`}
+                    >
+                      <span>{sub.icon}</span>
+                      <span>{sub.label}</span>
+                    </button>
+                  ))}
+                </div>
 
                 {/* Active Stock Search Bar (Store Stock view) */}
                 <div className="relative w-full md:max-w-xs flex-shrink-0">
@@ -2358,45 +2474,168 @@ NOTIFY pgrst, 'reload schema';`}
                                   <span className="text-[8px] font-bold">{expandedVendorUnpaidId === v.id ? '▲ Hide' : '▼ See Items'}</span>
                                 </button>
                                 
-                                {expandedVendorUnpaidId === v.id && (
-                                  <div className="mt-3 p-4 bg-brand-cream/50 rounded-2xl border border-brand-stone space-y-3 max-w-xl animate-in fade-in duration-200">
-                                    <div className="flex justify-between items-center pb-2 border-b border-brand-stone/40">
-                                      <span className="text-[9px] font-black text-brand-brown/50 uppercase tracking-widest">
-                                        Unpaid Procurements {vendorDatePreset !== 'all' && `(${vendorDatePreset.toUpperCase().replace('-', ' ')})`}
-                                      </span>
+                                {expandedVendorUnpaidId === v.id && (() => {
+                                  const selectedIds = selectedProcurementIds[v.id] ?? filteredUnpaidItemsForVendor.map(item => item.id);
+                                  
+                                  const subcatLabels: Record<string, string> = {
+                                    momo: 'Momo',
+                                    buns: 'Burger Buns',
+                                    cola: 'Cola',
+                                    drinks: 'Drinks',
+                                    syrups: 'Syrups',
+                                    sauces: 'Sauces',
+                                    packaging: 'Packaging',
+                                    'oil-butter': 'Oil & Butter',
+                                    spices: 'Spices',
+                                    fries: 'Fries',
+                                    veggies: 'Veggies',
+                                    others: 'Others'
+                                  };
+
+                                  // Group filtered unpaid items by subcategory
+                                  const groups: Record<string, typeof filteredUnpaidItemsForVendor> = {};
+                                  filteredUnpaidItemsForVendor.forEach(item => {
+                                    const subcat = getItemSubcategory(item.item_name, item.item_id);
+                                    if (!groups[subcat]) {
+                                      groups[subcat] = [];
+                                    }
+                                    groups[subcat].push(item);
+                                  });
+
+                                  const groupKeys = Object.keys(groups).sort();
+
+                                  return (
+                                    <div className="mt-3 space-y-4 max-w-xl animate-in fade-in duration-200">
                                       {filteredUnpaidItemsForVendor.length > 0 && (
-                                        <button
-                                          onClick={() => openBulkPaymentModal(v.name, filteredUnpaidItemsForVendor)}
-                                          className="px-3 py-1.5 bg-brand-brown hover:bg-brand-brown/90 text-brand-yellow rounded-xl text-[9px] font-black uppercase tracking-widest transition-transform hover:scale-102 flex items-center gap-1.5 cursor-pointer"
-                                        >
-                                          💸 Pay Filtered (₹{unpaidTotalForVendor.toLocaleString()})
-                                        </button>
+                                        <div className="flex justify-between items-center bg-brand-cream/30 p-3 rounded-2xl border border-brand-stone/50">
+                                          <div className="flex items-center gap-2">
+                                            <input 
+                                              type="checkbox"
+                                              checked={selectedIds.length === filteredUnpaidItemsForVendor.length && filteredUnpaidItemsForVendor.length > 0}
+                                              onChange={() => {
+                                                const allSelected = selectedIds.length === filteredUnpaidItemsForVendor.length;
+                                                setSelectedProcurementIds(prev => ({
+                                                  ...prev,
+                                                  [v.id]: allSelected ? [] : filteredUnpaidItemsForVendor.map(item => item.id)
+                                                }));
+                                              }}
+                                              className="w-4 h-4 rounded border-brand-stone text-brand-brown focus:ring-brand-yellow cursor-pointer"
+                                              id={`select-all-${v.id}`}
+                                            />
+                                            <label htmlFor={`select-all-${v.id}`} className="text-[10px] font-black text-brand-brown uppercase tracking-wider cursor-pointer">
+                                              Select All Unpaid ({selectedIds.length}/{filteredUnpaidItemsForVendor.length})
+                                            </label>
+                                          </div>
+                                          {selectedIds.length > 0 && (
+                                            <button
+                                              onClick={() => {
+                                                const selectedProcs = filteredUnpaidItemsForVendor.filter(item => selectedIds.includes(item.id));
+                                                // If all selected belong to a single subcategory, use it. Otherwise leave empty (considers fallback or mixed)
+                                                const uniqueSubcats = Array.from(new Set(selectedProcs.map(item => getItemSubcategory(item.item_name, item.item_id))));
+                                                const bulkSubcat = uniqueSubcats.length === 1 ? uniqueSubcats[0] : undefined;
+                                                openBulkPaymentModal(v.name, selectedProcs, bulkSubcat);
+                                              }}
+                                              className="px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest bg-brand-brown hover:bg-brand-brown/90 text-brand-yellow shadow-sm flex items-center gap-1.5 cursor-pointer"
+                                            >
+                                              💸 Pay Selected (₹{filteredUnpaidItemsForVendor.filter(item => selectedIds.includes(item.id)).reduce((sum, item) => sum + (item.total_cost || 0), 0).toLocaleString()})
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
+
+                                      {filteredUnpaidItemsForVendor.length === 0 ? (
+                                        <div className="p-8 text-center text-brand-brown/40 uppercase font-black text-[9px] tracking-wider bg-white rounded-xl border border-brand-stone/30">
+                                          No unpaid items found in this date range
+                                        </div>
+                                      ) : (
+                                        <div className="space-y-4">
+                                          {groupKeys.map((subcat) => {
+                                            const groupItems = groups[subcat];
+                                            const groupSelectedIds = groupItems.filter(item => selectedIds.includes(item.id)).map(item => item.id);
+                                            const groupTotal = groupItems.reduce((sum, item) => sum + (item.total_cost || 0), 0);
+                                            const groupSelectedTotal = groupItems.filter(item => selectedIds.includes(item.id)).reduce((sum, item) => sum + (item.total_cost || 0), 0);
+                                            const label = subcatLabels[subcat] || subcat.toUpperCase();
+
+                                            return (
+                                              <div key={subcat} className="p-4 bg-white rounded-2xl border border-brand-stone/80 shadow-sm space-y-3">
+                                                {/* Group Header as "One Bill per Subcategory" */}
+                                                <div className="flex justify-between items-center pb-2 border-b border-brand-stone/30">
+                                                  <div className="flex items-center gap-2">
+                                                    <input 
+                                                      type="checkbox"
+                                                      checked={groupSelectedIds.length === groupItems.length}
+                                                      onChange={() => {
+                                                        const allSelectedInGroup = groupSelectedIds.length === groupItems.length;
+                                                        const groupItemIds = groupItems.map(item => item.id);
+                                                        const nextSelectedIds = allSelectedInGroup
+                                                          ? selectedIds.filter(id => !groupItemIds.includes(id))
+                                                          : Array.from(new Set([...selectedIds, ...groupItemIds]));
+                                                        
+                                                        setSelectedProcurementIds(prev => ({
+                                                          ...prev,
+                                                          [v.id]: nextSelectedIds
+                                                        }));
+                                                      }}
+                                                      className="w-4 h-4 rounded border-brand-stone text-brand-brown focus:ring-brand-yellow cursor-pointer"
+                                                      id={`select-group-${v.id}-${subcat}`}
+                                                    />
+                                                    <label htmlFor={`select-group-${v.id}-${subcat}`} className="text-xs font-black text-brand-brown uppercase tracking-wider cursor-pointer">
+                                                      🧾 {label} Bill (₹{groupTotal.toLocaleString()})
+                                                    </label>
+                                                  </div>
+                                                  {groupSelectedIds.length > 0 && (
+                                                    <button
+                                                      onClick={() => {
+                                                        const selectedGroupProcs = groupItems.filter(item => selectedIds.includes(item.id));
+                                                        openBulkPaymentModal(v.name, selectedGroupProcs, subcat);
+                                                      }}
+                                                      className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-[9px] font-black uppercase tracking-wider flex items-center gap-1 shadow-sm cursor-pointer transition-all"
+                                                    >
+                                                      Pay {label} Bill (₹{groupSelectedTotal.toLocaleString()})
+                                                    </button>
+                                                  )}
+                                                </div>
+
+                                                {/* Group Unpaid Items List */}
+                                                <div className="space-y-1.5 max-h-[150px] overflow-y-auto no-scrollbar">
+                                                  {groupItems.map((item) => (
+                                                    <div key={item.id} className="flex gap-3 items-center bg-brand-cream/10 p-2 rounded-xl border border-brand-stone/20 hover:bg-brand-cream/20 transition-all">
+                                                      <input 
+                                                        type="checkbox"
+                                                        checked={selectedIds.includes(item.id)}
+                                                        onChange={() => {
+                                                          const nextSelected = selectedIds.includes(item.id)
+                                                            ? selectedIds.filter(id => id !== item.id)
+                                                            : [...selectedIds, item.id];
+                                                          setSelectedProcurementIds(prev => ({
+                                                            ...prev,
+                                                            [v.id]: nextSelected
+                                                          }));
+                                                        }}
+                                                        className="w-3.5 h-3.5 rounded border-brand-stone text-brand-brown focus:ring-brand-yellow cursor-pointer flex-shrink-0"
+                                                      />
+                                                      <div className="flex-grow flex justify-between items-center text-[11px] font-medium text-brand-brown">
+                                                        <div>
+                                                          <p className="font-bold text-[11px] text-brand-brown">{item.item_name}</p>
+                                                          <p className="text-[9px] text-brand-brown/40 font-bold uppercase mt-0.5">
+                                                            Qty: {item.quantity} {item.unit} • {new Date(item.date).toLocaleDateString([], { dateStyle: 'short' })}
+                                                          </p>
+                                                        </div>
+                                                        <div className="text-right font-black text-brand-brown text-[11px]">
+                                                          ₹{(item.total_cost ?? 0).toLocaleString()}
+                                                        </div>
+                                                      </div>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
                                       )}
                                     </div>
-                                    
-                                    {filteredUnpaidItemsForVendor.length === 0 ? (
-                                      <div className="p-8 text-center text-brand-brown/40 uppercase font-black text-[9px] tracking-wider bg-white rounded-xl border border-brand-stone/30">
-                                        No unpaid items found in this date range
-                                      </div>
-                                    ) : (
-                                      <div className="space-y-1.5 max-h-[160px] overflow-y-auto no-scrollbar">
-                                        {filteredUnpaidItemsForVendor.map((item) => (
-                                          <div key={item.id} className="flex justify-between items-center bg-white p-2.5 rounded-xl border border-brand-stone/30 text-[11px] font-medium text-brand-brown">
-                                            <div>
-                                              <p className="font-black text-xs text-brand-brown">{item.item_name}</p>
-                                              <p className="text-[9px] text-brand-brown/40 font-bold uppercase mt-0.5">
-                                                Qty: {item.quantity} {item.unit} • {new Date(item.date).toLocaleDateString([], { dateStyle: 'short' })}
-                                              </p>
-                                            </div>
-                                            <div className="text-right font-black text-brand-brown">
-                                              ₹{(item.total_cost ?? 0).toLocaleString()}
-                                            </div>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
+                                  );
+                                })()}
                               </div>
                             ) : (
                               <div className="pt-2">
@@ -2720,62 +2959,157 @@ NOTIFY pgrst, 'reload schema';`}
                   className={inputClasses}
                 >
                   <option value="">Select Subcategory...</option>
-                  {materialCategory === 'MOMO' && (
-                    <>
-                      <option value="momo">Momo</option>
-                      <option value="buns">Burger Buns</option>
-                      <option value="cola">Cola</option>
-                      <option value="drinks">Drinks</option>
-                    </>
-                  )}
-                  {materialCategory === 'PACKET' && (
-                    <>
-                      <option value="syrups">Syrups</option>
-                      <option value="sauces">Sauces</option>
-                      <option value="packaging">Packaging</option>
-                      <option value="oil-butter">Oil & Butter</option>
-                      <option value="spices">Spices</option>
-                      <option value="fries">Fries</option>
-                      <option value="others">Others</option>
-                    </>
-                  )}
-                  {materialCategory === 'INGREDIENT' && (
-                    <>
-                      <option value="veggies">Veggies / Ingredients</option>
-                      <option value="others">Others</option>
-                    </>
-                  )}
+                  {getSubcategoriesForCategory(materialCategory).map(sub => (
+                    <option key={sub.id} value={sub.id}>
+                      {sub.icon} {sub.label}
+                    </option>
+                  ))}
                 </select>
-              </div>
-              <div>
-                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Payment Status</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsPaidEntry(true)}
-                    className={`py-3 px-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${
-                      isPaidEntry
-                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-md'
-                        : 'bg-white text-zinc-500 border-zinc-200 hover:bg-zinc-50'
-                    }`}
-                  >
-                    Paid
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsPaidEntry(false)}
-                    className={`py-3 px-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${
-                      !isPaidEntry
-                        ? 'bg-amber-600 text-white border-amber-600 shadow-md'
-                        : 'bg-white text-zinc-500 border-zinc-200 hover:bg-zinc-50'
-                    }`}
-                  >
-                    Not Paid
-                  </button>
-                </div>
               </div>
               <button onClick={handleAddNewItem} className="w-full py-5 bg-brand-brown text-brand-yellow rounded-3xl font-black uppercase tracking-widest shadow-2xl hover:scale-105 transition-transform">Add to Hub Database</button>
               <button onClick={() => setIsAddItemModalOpen(false)} className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest">Dismiss</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isCreateSubcategoryModalOpen && (
+        <div className="fixed inset-0 bg-brand-brown/80 backdrop-blur-md flex items-center justify-center z-[110] p-4 animate-in fade-in duration-200">
+          <div className="bg-brand-cream rounded-[4rem] p-12 w-full max-w-md border-8 border-brand-yellow shadow-2xl">
+            <h3 className="text-3xl font-black mb-8 italic text-brand-brown uppercase">
+              Create Subcategory
+            </h3>
+            <p className="text-[10px] font-bold text-brand-brown/60 uppercase tracking-wider mb-6">
+              Parent Category: {newSubcatParent}
+            </p>
+            <div className="space-y-5">
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Subcategory Name *</label>
+                <input 
+                  type="text" 
+                  placeholder="e.g. Garlic & Cheese" 
+                  value={newSubcatName} 
+                  onChange={e => setNewSubcatName(e.target.value)} 
+                  className={inputClasses} 
+                />
+              </div>
+
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Emoji Icon</label>
+                <input 
+                  type="text" 
+                  placeholder="e.g. 🥟" 
+                  value={newSubcatIcon} 
+                  onChange={e => setNewSubcatIcon(e.target.value)} 
+                  className={inputClasses} 
+                />
+              </div>
+
+              <button 
+                onClick={handleCreateSubcategory} 
+                className="w-full py-5 bg-brand-brown text-brand-yellow rounded-3xl font-black uppercase tracking-widest shadow-2xl hover:scale-105 transition-transform mt-2"
+              >
+                Create Subcategory
+              </button>
+              
+              <button 
+                onClick={() => setIsCreateSubcategoryModalOpen(false)} 
+                className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isEditItemModalOpen && (
+        <div className="fixed inset-0 bg-brand-brown/80 backdrop-blur-md flex items-center justify-center z-[110] p-4 animate-in fade-in duration-200">
+          <div className="bg-brand-cream rounded-[4rem] p-12 w-full max-w-md border-8 border-brand-yellow shadow-2xl">
+            <h3 className="text-3xl font-black mb-8 italic text-brand-brown uppercase">
+              Edit Stock Item
+            </h3>
+            <div className="space-y-5">
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Item Name *</label>
+                <input 
+                  type="text" 
+                  placeholder="Item Name" 
+                  value={editItemName} 
+                  onChange={e => setEditItemName(e.target.value)} 
+                  className={inputClasses} 
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Unit *</label>
+                  <select 
+                    value={editItemUnit} 
+                    onChange={e => setEditItemUnit(e.target.value)} 
+                    className={inputClasses}
+                  >
+                    <option value="pcs">Pieces</option>
+                    <option value="kg">KG</option>
+                    <option value="ltr">LTR</option>
+                    <option value="pkt">Packets</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Parent Category</label>
+                  <select 
+                    value={editItemCategory} 
+                    onChange={e => {
+                      const cat = e.target.value as MaterialCategory;
+                      setEditItemCategory(cat);
+                      // Auto-select first subcategory of new category
+                      const subcats = getSubcategoriesForCategory(cat);
+                      if (subcats.length > 0) {
+                        setEditItemSubcategory(subcats[0].id);
+                      } else {
+                        setEditItemSubcategory('');
+                      }
+                    }} 
+                    className={inputClasses}
+                  >
+                    <option value="MOMO">Category A (MOMO)</option>
+                    <option value="PACKET">Category B (PACKET)</option>
+                    <option value="INGREDIENT">Category C (INGREDIENT)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Subcategory *</label>
+                <select 
+                  value={editItemSubcategory} 
+                  onChange={e => setEditItemSubcategory(e.target.value)} 
+                  className={inputClasses}
+                >
+                  <option value="">Select Subcategory...</option>
+                  {getSubcategoriesForCategory(editItemCategory).map(sub => (
+                    <option key={sub.id} value={sub.id}>
+                      {sub.icon} {sub.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <button 
+                onClick={handleSaveEditItem} 
+                className="w-full py-5 bg-brand-brown text-brand-yellow rounded-3xl font-black uppercase tracking-widest shadow-2xl hover:scale-105 transition-transform mt-2"
+                disabled={isLoading}
+              >
+                {isLoading ? "Saving..." : "Save Changes"}
+              </button>
+              
+              <button 
+                onClick={() => { setIsEditItemModalOpen(false); setEditingItem(null); }} 
+                className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest"
+                disabled={isLoading}
+              >
+                Dismiss
+              </button>
             </div>
           </div>
         </div>
@@ -2904,34 +3238,6 @@ NOTIFY pgrst, 'reload schema';`}
                 ) : (
                   <input type="text" placeholder="Vendor Name" value={vendor} onChange={e => setVendor(e.target.value)} className={inputClasses} />
                 )}
-              </div>
-
-              <div>
-                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Payment Status</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsPaidEntry(true)}
-                    className={`py-3 px-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${
-                      isPaidEntry
-                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-md'
-                        : 'bg-white text-zinc-500 border-zinc-200 hover:bg-zinc-50'
-                    }`}
-                  >
-                    Paid
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsPaidEntry(false)}
-                    className={`py-3 px-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${
-                      !isPaidEntry
-                        ? 'bg-amber-600 text-white border-amber-600 shadow-md'
-                        : 'bg-white text-zinc-500 border-zinc-200 hover:bg-zinc-50'
-                    }`}
-                  >
-                    Not Paid
-                  </button>
-                </div>
               </div>
               <button onClick={handleCentralPurchase} className="w-full py-5 bg-brand-brown text-brand-yellow rounded-3xl font-black uppercase tracking-widest shadow-2xl">Log Transaction</button>
               <button onClick={() => setIsRestockModalOpen(false)} className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest">Cancel</button>
@@ -3145,23 +3451,72 @@ NOTIFY pgrst, 'reload schema';`}
 
                   <div>
                     <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Payment Mode</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {['CASH', 'CARD', 'UPI'].map((method) => (
+                    <div className="grid grid-cols-4 gap-2">
+                      {['CASH', 'CARD', 'UPI', 'SPLIT'].map((method) => (
                         <button
                           key={method}
                           type="button"
                           onClick={() => setPaymentMethod(method)}
-                          className={`py-3 px-2 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${
+                          className={`py-3 px-1 rounded-2xl text-[9px] font-black uppercase tracking-widest transition-all border ${
                             paymentMethod === method
                               ? 'bg-brand-brown text-brand-yellow border-brand-brown shadow-sm scale-[1.02]'
                               : 'bg-white text-brand-brown/60 border-brand-stone hover:bg-brand-stone/10'
                           }`}
                         >
-                          {method === 'CASH' ? '💵 Cash' : method === 'CARD' ? '💳 Card' : '📱 UPI'}
+                          {method === 'CASH' ? '💵 Cash' : method === 'CARD' ? '💳 Card' : method === 'UPI' ? '📱 UPI' : '🥞 Split'}
                         </button>
                       ))}
                     </div>
                   </div>
+
+                  {paymentMethod === 'SPLIT' && (
+                    <div className="bg-white p-4 rounded-2xl border border-brand-stone space-y-3 mt-3 animate-in fade-in duration-200">
+                      <p className="text-[9px] font-black uppercase text-brand-brown/50 tracking-wider">Split Payment Details</p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-[8px] font-black text-brand-brown/60 uppercase ml-1 mb-1 block">Cash Amount (₹)</label>
+                          <input 
+                            type="number" 
+                            step="0.01"
+                            placeholder="Cash Portion" 
+                            value={singleSplitCash} 
+                            onChange={e => {
+                              const cash = e.target.value;
+                              setSingleSplitCash(cash);
+                              const total = parseFloat(paymentAmount) || 0;
+                              const cashVal = parseFloat(cash) || 0;
+                              if (total >= cashVal) {
+                                setSingleSplitUpi((total - cashVal).toFixed(2));
+                              }
+                            }} 
+                            className={inputClasses} 
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[8px] font-black text-brand-brown/60 uppercase ml-1 mb-1 block">UPI Amount (₹)</label>
+                          <input 
+                            type="number" 
+                            step="0.01"
+                            placeholder="UPI Portion" 
+                            value={singleSplitUpi} 
+                            onChange={e => {
+                              const upi = e.target.value;
+                              setSingleSplitUpi(upi);
+                              const total = parseFloat(paymentAmount) || 0;
+                              const upiVal = parseFloat(upi) || 0;
+                              if (total >= upiVal) {
+                                setSingleSplitCash((total - upiVal).toFixed(2));
+                              }
+                            }} 
+                            className={inputClasses} 
+                          />
+                        </div>
+                      </div>
+                      <p className="text-[9px] font-bold text-brand-brown/40 italic">
+                        The sum must equal the total amount ₹{(parseFloat(paymentAmount) || 0).toLocaleString()}
+                      </p>
+                    </div>
+                  )}
 
                   <div>
                     <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Registered / Paid By</label>
@@ -3183,6 +3538,18 @@ NOTIFY pgrst, 'reload schema';`}
                       onChange={e => setPaymentNotesInput(e.target.value)} 
                       className={inputClasses} 
                     />
+                  </div>
+
+                  <div>
+                    <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Paid From (Fund Source)</label>
+                    <select 
+                      value={singleFundSource} 
+                      onChange={e => setSingleFundSource(e.target.value)} 
+                      className={inputClasses}
+                    >
+                      <option value="Revenue">Revenue</option>
+                      <option value="Investment Fund">Investment Fund</option>
+                    </select>
                   </div>
 
                   {paymentMode === 'EDIT' && (
@@ -3336,23 +3703,72 @@ NOTIFY pgrst, 'reload schema';`}
 
               <div>
                 <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Payment Mode</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {['CASH', 'CARD', 'UPI'].map((method) => (
+                <div className="grid grid-cols-4 gap-2">
+                  {['CASH', 'CARD', 'UPI', 'SPLIT'].map((method) => (
                     <button
                       key={method}
                       type="button"
                       onClick={() => setBulkPaymentMethod(method)}
-                      className={`py-3 px-2 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${
+                      className={`py-3 px-1 rounded-2xl text-[9px] font-black uppercase tracking-widest transition-all border ${
                         bulkPaymentMethod === method
                           ? 'bg-brand-brown text-brand-yellow border-brand-brown shadow-sm scale-[1.02]'
                           : 'bg-white text-brand-brown/60 border-brand-stone hover:bg-brand-stone/10'
                       }`}
                     >
-                      {method === 'CASH' ? '💵 Cash' : method === 'CARD' ? '💳 Card' : '📱 UPI'}
+                      {method === 'CASH' ? '💵 Cash' : method === 'CARD' ? '💳 Card' : method === 'UPI' ? '📱 UPI' : '🥞 Split'}
                     </button>
                   ))}
                 </div>
               </div>
+
+              {bulkPaymentMethod === 'SPLIT' && (
+                <div className="bg-white p-4 rounded-2xl border border-brand-stone space-y-3 mt-3 animate-in fade-in duration-200">
+                  <p className="text-[9px] font-black uppercase text-brand-brown/50 tracking-wider">Split Payment Details</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[8px] font-black text-brand-brown/60 uppercase ml-1 mb-1 block">Cash Amount (₹)</label>
+                      <input 
+                        type="number" 
+                        step="0.01"
+                        placeholder="Cash Portion" 
+                        value={bulkSplitCash} 
+                        onChange={e => {
+                          const cash = e.target.value;
+                          setBulkSplitCash(cash);
+                          const total = bulkPaymentTotal;
+                          const cashVal = parseFloat(cash) || 0;
+                          if (total >= cashVal) {
+                            setBulkSplitUpi((total - cashVal).toFixed(2));
+                          }
+                        }} 
+                        className={inputClasses} 
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[8px] font-black text-brand-brown/60 uppercase ml-1 mb-1 block">UPI Amount (₹)</label>
+                      <input 
+                        type="number" 
+                        step="0.01"
+                        placeholder="UPI Portion" 
+                        value={bulkSplitUpi} 
+                        onChange={e => {
+                          const upi = e.target.value;
+                          setBulkSplitUpi(upi);
+                          const total = bulkPaymentTotal;
+                          const upiVal = parseFloat(upi) || 0;
+                          if (total >= upiVal) {
+                            setBulkSplitCash((total - upiVal).toFixed(2));
+                          }
+                        }} 
+                        className={inputClasses} 
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[9px] font-bold text-brand-brown/40 italic">
+                    The sum must equal the total amount ₹{bulkPaymentTotal.toLocaleString()}
+                  </p>
+                </div>
+              )}
 
               <div>
                 <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Payment notes / Reference</label>
@@ -3363,6 +3779,18 @@ NOTIFY pgrst, 'reload schema';`}
                   onChange={e => setBulkPaymentNotes(e.target.value)} 
                   className={inputClasses} 
                 />
+              </div>
+
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Paid From (Fund Source)</label>
+                <select 
+                  value={bulkFundSource} 
+                  onChange={e => setBulkFundSource(e.target.value)} 
+                  className={inputClasses}
+                >
+                  <option value="Revenue">Revenue</option>
+                  <option value="Investment Fund">Investment Fund</option>
+                </select>
               </div>
 
               {/* Action buttons */}

@@ -193,6 +193,191 @@ export async function toggleProcurementPaidStatus(id: string, isPaid: boolean): 
   if (error) throw error;
 }
 
+export const getItemSubcategory = (name: string, id: string, category?: string): string => {
+  try {
+    const saved = localStorage.getItem('custom_subcategories');
+    if (saved) {
+      const map = JSON.parse(saved);
+      if (map[id]) return map[id];
+    }
+  } catch (e) {
+    console.error(e);
+  }
+
+  const nid = id.toLowerCase();
+  const nname = name.toLowerCase();
+  
+  // Category A / MOMO subcategories
+  if (nid.includes('momo') || nname.includes('momo')) return 'momo';
+  if (nid.includes('bun') || nname.includes('bun') || nid.includes('moburg') || nname.includes('moburg')) return 'buns';
+  if (nid.includes('cola') || nname.includes('cola')) return 'cola';
+  if (nid.includes('water') || nname.includes('water') || nid.includes('soda') || nname.includes('soda') || nid.includes('drink') || nname.includes('drink')) return 'drinks';
+  
+  // Category B / PACKET subcategories
+  if (nid.includes('fries') || nname.includes('fries')) return 'fries';
+  if (nid.includes('syrup') || nname.includes('syrup') || nid.includes('lagoon') || nname.includes('lagoon') || nid.includes('mojito') || nname.includes('mojito')) return 'syrups';
+  if (nid.includes('sauce') || nname.includes('sauce') || nid.includes('mayo') || nname.includes('mayo') || nid.includes('chutney') || nname.includes('chutney') || nid.includes('spread') || nname.includes('spread')) return 'sauces';
+  
+  if (
+    nid.includes('pkg') || nname.includes('pkg') || 
+    nid.includes('box') || nname.includes('box') || 
+    nid.includes('bag') || nname.includes('bag') || 
+    nid.includes('cup') || nname.includes('cup') || 
+    nid.includes('paper') || nname.includes('paper') ||
+    nid.includes('glass') || nname.includes('glass') ||
+    nid.includes('spoon') || nname.includes('spoon') ||
+    nid.includes('fork') || nname.includes('fork') ||
+    nid.includes('straw') || nname.includes('straw') ||
+    nid.includes('container') || nname.includes('container') ||
+    nid.includes('foil') || nname.includes('foil') ||
+    nid.includes('plastic') || nname.includes('plastic')
+  ) return 'packaging';
+  
+  if (nid.includes('oil') || nname.includes('oil') || nid.includes('butter') || nname.includes('butter') || nid.includes('cheese') || nname.includes('cheese') || nid.includes('ghee') || nname.includes('ghee')) return 'oil-butter';
+  
+  if (
+    nid.includes('spice') || nname.includes('spice') || 
+    nid.includes('masala') || nname.includes('masala') || 
+    nid.includes('oregano') || nname.includes('oregano') || 
+    nid.includes('flake') || nname.includes('flake') || 
+    nid.includes('peri') || nname.includes('peri') ||
+    nid.includes('kashmiri') || nname.includes('kashmiri') ||
+    nid.includes('powder') || nname.includes('powder') ||
+    nid.includes('poweder') || nname.includes('poweder') ||
+    nid.includes('methi') || nname.includes('methi')
+  ) return 'spices';
+  
+  if (category === 'INGREDIENT' || category === 'Raw Ingredients') return 'veggies';
+  if (nid.includes('veg') || nname.includes('veg') || nid.includes('chicken') || nname.includes('chicken') || nid.includes('paneer') || nname.includes('paneer') || nid.includes('onion') || nname.includes('onion')) return 'veggies';
+
+  return 'others'; // Default fallback
+};
+
+export function mapSubcategoryToDebitCategory(subcat: string): string {
+  const s = subcat.toLowerCase().trim();
+  if (s === 'momo') return 'momo';
+  if (s === 'buns') return 'burger buns';
+  if (s === 'cola' || s === 'drinks' || s === 'syrups') return 'soft drinks';
+  if (s === 'packaging') return 'packaginf'; // exact name in global ledger categories list
+  if (s === 'veggies') return 'veggies';
+  if (s === 'spices') return 'grocery';
+  if (s === 'oil-butter') return 'grocery';
+  if (s === 'fries') return 'grocery';
+  if (s === 'sauces') return 'grocery';
+  return 'others';
+}
+
+export async function logCombinedVendorPaymentToFinance(
+  vendorName: string,
+  subcategory: string,
+  totalCost: number,
+  paidAt: string,
+  paymentMode: string,
+  splitCashAmount?: number,
+  splitUpiAmount?: number,
+  fundSource?: string,
+  notes?: string | null,
+  procIds?: string[]
+): Promise<void> {
+  const MONTHS = [
+    "January", "February", "March", "April", "May", "June", 
+    "July", "August", "September", "October", "November", "December"
+  ];
+  const dateObj = paidAt ? new Date(paidAt) : new Date();
+  const monthName = MONTHS[isNaN(dateObj.getTime()) ? new Date().getMonth() : dateObj.getMonth()];
+  const yearVal = isNaN(dateObj.getTime()) ? new Date().getFullYear() : dateObj.getFullYear();
+  const tabName = `${monthName} ${yearVal}`;
+  const dateString = isNaN(dateObj.getTime()) 
+    ? new Date().toISOString().split('T')[0] 
+    : dateObj.toISOString().split('T')[0];
+
+  const rec: any = {
+    tab_name: tabName,
+    date: dateString,
+    is_opening: false,
+    bill_url: null
+  };
+
+  const debitCategory = mapSubcategoryToDebitCategory(subcategory);
+  const fundSuffix = fundSource ? ` - Paid from ${fundSource}` : '';
+  const notesStr = notes ? ` (${notes})` : '';
+  const idsStr = procIds && procIds.length > 0 ? ` [ProcIDs: ${procIds.join(',')}]` : '';
+  
+  const desc = `${debitCategory}: Vendor Payment: ${vendorName} - ${subcategory.toUpperCase()} Bill${notesStr}${fundSuffix}${idsStr}`;
+
+  if (paymentMode === 'SPLIT' && splitCashAmount !== undefined && splitUpiAmount !== undefined) {
+    rec.debit_cash = splitCashAmount;
+    rec.debit_cash_details = `${desc} (Cash Portion)`;
+    rec.debit_bank = splitUpiAmount;
+    rec.debit_bank_details = `${desc} (UPI Portion)`;
+  } else if (paymentMode === 'CASH') {
+    rec.debit_cash = totalCost;
+    rec.debit_cash_details = desc;
+  } else {
+    rec.debit_bank = totalCost;
+    rec.debit_bank_details = `${desc} (${paymentMode})`;
+  }
+
+  const { error } = await supabase.from('finance_ledger').insert(rec);
+  if (error) console.error("Failed to insert combined bill into finance_ledger:", error);
+}
+
+export async function logLedgerDebitForProcurement(
+  proc: any,
+  paidAt: string,
+  paymentMode: string,
+  splitCashAmount?: number,
+  splitUpiAmount?: number,
+  totalSelectedAmount?: number,
+  fundSource?: string
+): Promise<void> {
+  const MONTHS = [
+    "January", "February", "March", "April", "May", "June", 
+    "July", "August", "September", "October", "November", "December"
+  ];
+  const dateObj = paidAt ? new Date(paidAt) : new Date();
+  const monthName = MONTHS[isNaN(dateObj.getTime()) ? new Date().getMonth() : dateObj.getMonth()];
+  const yearVal = isNaN(dateObj.getTime()) ? new Date().getFullYear() : dateObj.getFullYear();
+  const tabName = `${monthName} ${yearVal}`;
+  const dateString = isNaN(dateObj.getTime()) 
+    ? new Date().toISOString().split('T')[0] 
+    : dateObj.toISOString().split('T')[0];
+
+  const rec: any = {
+    tab_name: tabName,
+    date: dateString,
+    is_opening: false,
+    bill_url: null
+  };
+
+  const subcat = getItemSubcategory(proc.item_name, proc.item_id);
+  const debitCategory = mapSubcategoryToDebitCategory(subcat);
+  const fundSuffix = fundSource ? ` - Paid from ${fundSource}` : '';
+  const desc = `${debitCategory}: Vendor Payment: ${proc.vendor || 'Local Market'} - ${proc.item_name} (Qty: ${proc.quantity || 0} ${proc.unit || 'pcs'}) [ProcID: ${proc.id}]${fundSuffix}`;
+
+  if (paymentMode === 'SPLIT' && splitCashAmount !== undefined && splitUpiAmount !== undefined && totalSelectedAmount) {
+    // Proportional split
+    const ratio = (proc.total_cost || 0) / totalSelectedAmount;
+    const procCash = Math.round((splitCashAmount * ratio) * 100) / 100;
+    const procUpi = Math.round((splitUpiAmount * ratio) * 100) / 100;
+
+    rec.debit_cash = procCash;
+    rec.debit_cash_details = `${desc} (Cash Portion)`;
+    rec.debit_bank = procUpi;
+    rec.debit_bank_details = `${desc} (UPI Portion)`;
+  } else if (paymentMode === 'CASH') {
+    rec.debit_cash = proc.total_cost || 0;
+    rec.debit_cash_details = desc;
+  } else {
+    // UPI or CARD or BANK
+    rec.debit_bank = proc.total_cost || 0;
+    rec.debit_bank_details = `${desc} (${paymentMode})`;
+  }
+
+  const { error } = await supabase.from('finance_ledger').insert(rec);
+  if (error) console.error("Failed to insert into finance_ledger:", error);
+}
+
 export async function updateProcurementPayment(
   id: string,
   isPaid: boolean,
@@ -200,7 +385,10 @@ export async function updateProcurementPayment(
   paidBy: string | null,
   paymentNotes: string | null,
   paymentMode: string | null,
-  paymentHistory: any[]
+  paymentHistory: any[],
+  splitCashAmount?: number,
+  splitUpiAmount?: number,
+  fundSource?: string
 ): Promise<void> {
   try {
     const { error } = await supabase
@@ -214,6 +402,7 @@ export async function updateProcurementPayment(
         payment_history: paymentHistory
       })
       .eq('id', id);
+
     if (error) {
       if (error.code === '42703') {
         const { error: fallbackError } = await supabase
@@ -224,6 +413,43 @@ export async function updateProcurementPayment(
         throw new Error("COLUMN_MISSING");
       }
       throw error;
+    }
+
+    // Handle Global Ledger Sync
+    if (isPaid && paidAt && paymentMode) {
+      // First, delete any pre-existing ledger items for this procurement to avoid duplicates on re-save
+      await supabase
+        .from('finance_ledger')
+        .update({
+          is_deleted: true,
+          deleted_at: new Date().toISOString(),
+          delete_reason: 'Payment Updated/Replaced'
+        })
+        .or(`debit_cash_details.like.%[ProcID: ${id}]%,debit_bank_details.like.%[ProcID: ${id}]%`);
+
+      // Fetch procurement details to log to ledger
+      const { data: proc } = await supabase.from('procurements').select('*').eq('id', id).single();
+      if (proc) {
+        await logLedgerDebitForProcurement(
+          proc,
+          paidAt,
+          paymentMode,
+          splitCashAmount,
+          splitUpiAmount,
+          proc.total_cost || 1,
+          fundSource
+        );
+      }
+    } else if (!isPaid) {
+      // Reversal: mark as deleted in ledger
+      await supabase
+        .from('finance_ledger')
+        .update({
+          is_deleted: true,
+          deleted_at: new Date().toISOString(),
+          delete_reason: 'Procurement marked unpaid/reversed'
+        })
+        .or(`debit_cash_details.like.%[ProcID: ${id}]%,debit_bank_details.like.%[ProcID: ${id}]%`);
     }
   } catch (err: any) {
     if (err.message === "COLUMN_MISSING") {
@@ -238,16 +464,23 @@ export async function bulkPayProcurements(
   paidAt: string,
   paidBy: string,
   paymentNotes: string | null,
-  paymentMode: string
+  paymentMode: string,
+  splitCashAmount?: number,
+  splitUpiAmount?: number,
+  fundSource?: string,
+  subcategory?: string
 ): Promise<void> {
   try {
     const { data: procs, error: fetchErr } = await supabase
       .from('procurements')
-      .select('id, payment_history, total_cost')
+      .select('id, item_id, payment_history, total_cost, item_name, quantity, unit, vendor')
       .in('id', ids);
 
     if (fetchErr) throw fetchErr;
     if (!procs || procs.length === 0) return;
+
+    const totalSelectedAmount = procs.reduce((sum, p) => sum + (p.total_cost || 0), 0);
+    const vendorName = procs[0].vendor || 'Local Market';
 
     for (const proc of procs) {
       const nextHistory = Array.isArray(proc.payment_history) ? [...proc.payment_history] : [];
@@ -258,7 +491,9 @@ export async function bulkPayProcurements(
         performed_by: paidBy,
         notes: paymentNotes,
         payment_mode: paymentMode,
-        reason: 'Bulk Vendor Payment'
+        reason: 'Bulk Vendor Payment',
+        fund_source: fundSource,
+        subcategory: subcategory
       });
 
       const { error: updateErr } = await supabase
@@ -274,7 +509,35 @@ export async function bulkPayProcurements(
         .eq('id', proc.id);
 
       if (updateErr) throw updateErr;
+
+      // First, delete any pre-existing ledger items for this procurement to avoid duplicates on re-save
+      await supabase
+        .from('finance_ledger')
+        .update({
+          is_deleted: true,
+          deleted_at: new Date().toISOString(),
+          delete_reason: 'Payment Updated/Replaced'
+        })
+        .or(`debit_cash_details.like.%[ProcID: ${proc.id}]%,debit_bank_details.like.%[ProcID: ${proc.id}]%,debit_cash_details.like.%${proc.id}%,debit_bank_details.like.%${proc.id}%`);
     }
+
+    // Determine the consolidated subcategory
+    const finalSubcat = subcategory || getItemSubcategory(procs[0].item_name, procs[0].item_id);
+
+    // Log ONE combined vendor payment debit to the global ledger!
+    await logCombinedVendorPaymentToFinance(
+      vendorName,
+      finalSubcat,
+      totalSelectedAmount,
+      paidAt,
+      paymentMode,
+      splitCashAmount,
+      splitUpiAmount,
+      fundSource,
+      paymentNotes,
+      ids
+    );
+
   } catch (err: any) {
     throw err;
   }
@@ -704,6 +967,33 @@ export async function createCentralItem(
     last_purchase_date: getISTISOString(), is_finished: false
   });
   if (error) throw error;
+}
+
+export async function updateCentralItem(id: string, name: string, unit: string, category: MaterialCategory): Promise<void> {
+  const { error: centralErr } = await supabase
+    .from('central_inventory')
+    .update({ name, unit, category })
+    .eq('id', id);
+  if (centralErr) throw centralErr;
+
+  const { error: branchErr } = await supabase
+    .from('inventory')
+    .update({ name, unit, category })
+    .eq('id', id);
+  if (branchErr) {
+    console.warn("Failed to update branch inventory items (might not exist yet):", branchErr);
+  }
+}
+
+export function saveItemSubcategory(id: string, subcategory: string): void {
+  try {
+    const saved = localStorage.getItem('custom_subcategories') || '{}';
+    const map = JSON.parse(saved);
+    map[id] = subcategory;
+    localStorage.setItem('custom_subcategories', JSON.stringify(map));
+  } catch (e) {
+    console.error("Failed to save item subcategory:", e);
+  }
 }
 
 export async function seedStandardInventory(): Promise<void> {

@@ -62,6 +62,22 @@ const CREDIT_CATEGORIES = [
   'revenue', 'zomato payout', 'investment', 'debt', 'previous balance', 'other'
 ];
 
+const DEFAULT_STOCK_SUBCATEGORIES = [
+  { id: 'momo', label: 'Momo', icon: '🥟', category: 'MOMO' },
+  { id: 'buns', label: 'Burger Buns', icon: '🍔', category: 'MOMO' },
+  { id: 'cola', label: 'Cola', icon: '🥤', category: 'MOMO' },
+  { id: 'drinks', label: 'Drinks', icon: '🍹', category: 'MOMO' },
+  { id: 'syrups', label: 'Syrups', icon: '🍹', category: 'PACKET' },
+  { id: 'sauces', label: 'Sauces', icon: '🥫', category: 'PACKET' },
+  { id: 'packaging', label: 'Packaging', icon: '📦', category: 'PACKET' },
+  { id: 'oil-butter', label: 'Oil & Butter', icon: '🧈', category: 'PACKET' },
+  { id: 'spices', label: 'Spices', icon: '🌶️', category: 'PACKET' },
+  { id: 'fries', label: 'Fries', icon: '🍟', category: 'PACKET' },
+  { id: 'others', label: 'Others', icon: '🏷️', category: 'PACKET' },
+  { id: 'veggies', label: 'Veggies', icon: '🥬', category: 'INGREDIENT' },
+  { id: 'others-ingredient', label: 'Others (Ingredient)', icon: '🏷️', category: 'INGREDIENT' },
+];
+
 const HEADERS = [
   "Date",
   "Credit cash",
@@ -83,6 +99,186 @@ const MONTHS = [
 ];
 
 export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
+  // Dynamic categories and mappings
+  const [debitCategories, setDebitCategories] = useState<string[]>(DEBIT_CATEGORIES);
+  const [creditCategories, setCreditCategories] = useState<string[]>(CREDIT_CATEGORIES);
+  const [categoryMappings, setCategoryMappings] = useState<Record<string, string[]>>({});
+  
+  // Category management UI states
+  const [isManageCategoriesOpen, setIsManageCategoriesOpen] = useState(false);
+  const [newLedgerCatName, setNewLedgerCatName] = useState('');
+  const [newLedgerCatType, setNewLedgerCatType] = useState<'credit' | 'debit'>('debit');
+  const [newLedgerCatMappings, setNewLedgerCatMappings] = useState<string[]>([]);
+  const [isSavingCategory, setIsSavingCategory] = useState(false);
+
+  const getStockSubcategoriesList = React.useCallback(() => {
+    const list = [...DEFAULT_STOCK_SUBCATEGORIES];
+    try {
+      const saved = localStorage.getItem('custom_created_subcategories');
+      if (saved) {
+        const custom = JSON.parse(saved);
+        custom.forEach((s: any) => {
+          if (!list.some(item => item.id === s.id && item.category === s.parentCategory)) {
+            list.push({
+              id: s.id,
+              label: s.label,
+              icon: s.icon,
+              category: s.parentCategory
+            });
+          }
+        });
+      }
+    } catch (e) {
+      console.error("Error reading custom subcategories:", e);
+    }
+    return list;
+  }, []);
+
+  const fetchLedgerCategories = React.useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('ledger_categories')
+        .select('*')
+        .order('name');
+      
+      if (error) {
+        console.warn("Could not fetch custom ledger categories from Supabase, loading fallback:", error);
+        const savedCustom = localStorage.getItem('custom_ledger_categories');
+        if (savedCustom) {
+          const { debit, credit, mappings } = JSON.parse(savedCustom);
+          if (debit) setDebitCategories(debit);
+          if (credit) setCreditCategories(credit);
+          if (mappings) setCategoryMappings(mappings);
+        }
+        return;
+      }
+
+      if (data && data.length > 0) {
+        const debit = data.filter(c => c.type === 'debit').map(c => c.name);
+        const credit = data.filter(c => c.type === 'credit').map(c => c.name);
+        const mappings: Record<string, string[]> = {};
+        data.forEach(c => {
+          mappings[c.name] = c.mapped_stock_subcategories || [];
+        });
+
+        // Ensure defaults are included
+        const finalDebit = Array.from(new Set([...DEBIT_CATEGORIES, ...debit]));
+        const finalCredit = Array.from(new Set([...CREDIT_CATEGORIES, ...credit]));
+
+        setDebitCategories(finalDebit);
+        setCreditCategories(finalCredit);
+        setCategoryMappings(mappings);
+      } else {
+        // Fallback to defaults
+        setDebitCategories(DEBIT_CATEGORIES);
+        setCreditCategories(CREDIT_CATEGORIES);
+        setCategoryMappings({});
+      }
+    } catch (e) {
+      console.error("Error in fetchLedgerCategories:", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchLedgerCategories();
+  }, [fetchLedgerCategories]);
+
+  const handleSaveLedgerCategory = async () => {
+    const nameClean = newLedgerCatName.trim().toLowerCase();
+    if (!nameClean) {
+      alert("Category name cannot be empty.");
+      return;
+    }
+
+    setIsSavingCategory(true);
+    try {
+      const { error } = await supabase
+        .from('ledger_categories')
+        .upsert({
+          name: nameClean,
+          type: newLedgerCatType,
+          mapped_stock_subcategories: newLedgerCatMappings
+        }, { onConflict: 'name' });
+
+      if (error) {
+        console.warn("Supabase upsert failed, saving to LocalStorage fallback:", error);
+        
+        // Fallback to local storage
+        const currentDebit = [...debitCategories];
+        const currentCredit = [...creditCategories];
+        const currentMappings = { ...categoryMappings };
+
+        if (newLedgerCatType === 'debit') {
+          if (!currentDebit.includes(nameClean)) currentDebit.push(nameClean);
+        } else {
+          if (!currentCredit.includes(nameClean)) currentCredit.push(nameClean);
+        }
+        currentMappings[nameClean] = newLedgerCatMappings;
+
+        const payload = {
+          debit: currentDebit,
+          credit: currentCredit,
+          mappings: currentMappings
+        };
+        localStorage.setItem('custom_ledger_categories', JSON.stringify(payload));
+        
+        setDebitCategories(currentDebit);
+        setCreditCategories(currentCredit);
+        setCategoryMappings(currentMappings);
+      } else {
+        // Reload from db
+        await fetchLedgerCategories();
+      }
+
+      setNewLedgerCatName('');
+      setNewLedgerCatMappings([]);
+      alert(`Ledger category "${nameClean}" saved successfully!`);
+    } catch (e: any) {
+      console.error("Failed to save ledger category:", e);
+      alert(`Error saving: ${e.message}`);
+    } finally {
+      setIsSavingCategory(false);
+    }
+  };
+
+  const handleDeleteLedgerCategory = async (name: string) => {
+    if (!window.confirm(`Are you sure you want to delete ledger category "${name}"?`)) return;
+
+    try {
+      const { error } = await supabase
+        .from('ledger_categories')
+        .delete()
+        .eq('name', name);
+
+      if (error) {
+        console.warn("Supabase delete failed, removing from LocalStorage fallback:", error);
+        
+        // Fallback removal
+        const finalDebit = debitCategories.filter(c => c !== name);
+        const finalCredit = creditCategories.filter(c => c !== name);
+        const finalMappings = { ...categoryMappings };
+        delete finalMappings[name];
+
+        const payload = {
+          debit: finalDebit,
+          credit: finalCredit,
+          mappings: finalMappings
+        };
+        localStorage.setItem('custom_ledger_categories', JSON.stringify(payload));
+
+        setDebitCategories(finalDebit);
+        setCreditCategories(finalCredit);
+        setCategoryMappings(finalMappings);
+      } else {
+        await fetchLedgerCategories();
+      }
+      alert(`Ledger category "${name}" deleted.`);
+    } catch (e: any) {
+      console.error(e);
+      alert(`Failed to delete: ${e.message}`);
+    }
+  };
+
   // Database configuration state
   const [availableTabs, setAvailableTabs] = useState<TabInfo[]>([]);
 
@@ -193,14 +389,14 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
     loadSheetRows();
   }, [selectedMonth, selectedYear, availableTabs]);
 
-  // Re-sync categories when active transaction type changes
+  // Re-sync categories when active transaction type changes or creditCategories/debitCategories updates
   useEffect(() => {
     if (txType === 'credit') {
-      setTxCategory(CREDIT_CATEGORIES[0]);
+      setTxCategory(creditCategories[0] || 'revenue');
     } else {
-      setTxCategory(DEBIT_CATEGORIES[0]);
+      setTxCategory(debitCategories[0] || 'others');
     }
-  }, [txType]);
+  }, [txType, creditCategories, debitCategories]);
 
   // Reactive camera media lifecycle hook
   useEffect(() => {
@@ -859,7 +1055,7 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
     const idx = detailsTxt.indexOf(':');
     if (idx !== -1) {
       const cat = detailsTxt.substring(0, idx).trim().toLowerCase();
-      const validCategories = type === 'credit' ? CREDIT_CATEGORIES : DEBIT_CATEGORIES;
+      const validCategories = type === 'credit' ? creditCategories : debitCategories;
       if (validCategories.includes(cat)) {
         const rest = detailsTxt.substring(idx + 1).trim();
         return { category: cat, notes: rest };
@@ -867,7 +1063,7 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
     }
     // Search words fallback
     const lowerTxt = detailsTxt.toLowerCase();
-    const validCategories = type === 'credit' ? CREDIT_CATEGORIES : DEBIT_CATEGORIES;
+    const validCategories = type === 'credit' ? creditCategories : debitCategories;
     for (const cat of validCategories) {
       if (lowerTxt.includes(cat)) {
         return { category: cat, notes: detailsTxt };
@@ -1704,19 +1900,32 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
 
                       {/* Category field */}
                       <div className="space-y-1">
-                        <label className="text-[10px] font-black uppercase tracking-wide text-brand-brown/60">Category Type</label>
+                        <div className="flex justify-between items-center">
+                          <label className="text-[10px] font-black uppercase tracking-wide text-brand-brown/60">Category Type</label>
+                          <button
+                            type="button"
+                            onClick={() => setIsManageCategoriesOpen(true)}
+                            className="text-[9px] font-black text-brand-brown/50 hover:text-emerald-700 hover:underline uppercase tracking-wider flex items-center gap-1 transition-colors"
+                          >
+                            ⚙️ Manage List
+                          </button>
+                        </div>
                         <select
                           value={txCategory}
                           onChange={e => setTxCategory(e.target.value)}
                           className="w-full p-3 bg-brand-stone/20 border border-brand-brown/10 rounded-xl text-xs font-bold ring-0 outline-none"
                         >
                           {txType === 'credit' ? (
-                            CREDIT_CATEGORIES.map(c => (
-                              <option key={c} value={c}>{c}</option>
+                            creditCategories.map(c => (
+                              <option key={c} value={c}>
+                                {c} {categoryMappings[c] && categoryMappings[c].length > 0 ? `(🔗 Mapped)` : ''}
+                              </option>
                             ))
                           ) : (
-                            DEBIT_CATEGORIES.map(c => (
-                              <option key={c} value={c}>{c}</option>
+                            debitCategories.map(c => (
+                              <option key={c} value={c}>
+                                {c} {categoryMappings[c] && categoryMappings[c].length > 0 ? `(🔗 Mapped)` : ''}
+                              </option>
                             ))
                           )}
                         </select>
@@ -3190,6 +3399,253 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manage Categories Modal */}
+      {isManageCategoriesOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[140] p-4 animate-in fade-in duration-200">
+          <div className="bg-brand-cream border border-brand-brown/15 rounded-[2.5rem] shadow-2xl w-full max-w-2xl text-brand-brown flex flex-col overflow-hidden max-h-[90vh] animate-in zoom-in-95 duration-150 border-8 border-brand-yellow">
+            {/* Header */}
+            <div className="p-6 border-b border-brand-brown/10 flex justify-between items-center bg-white">
+              <div>
+                <h3 className="text-lg font-black uppercase tracking-tight flex items-center gap-2 italic">
+                  <span>📁</span>
+                  Manage Ledger Categories & Mappings
+                </h3>
+                <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider mt-0.5">
+                  Add, edit, or map financial ledger categories directly to stock subcategories.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsManageCategoriesOpen(false);
+                  setNewLedgerCatName('');
+                  setNewLedgerCatMappings([]);
+                }}
+                className="text-xs font-black text-brand-brown hover:text-brand-brown/70 bg-brand-yellow rounded-xl p-2 px-3.5 transition-all uppercase tracking-wider shadow-sm"
+              >
+                Close
+              </button>
+            </div>
+
+            {/* Content Container (Scrollable) */}
+            <div className="p-6 overflow-y-auto space-y-6 flex-1 bg-brand-cream/30">
+              
+              {/* Form to Create/Upsert Category */}
+              <div className="bg-white p-5 rounded-2xl border border-brand-brown/10 space-y-4 shadow-sm">
+                <h4 className="text-xs font-black uppercase tracking-widest text-brand-brown/60 pb-2 border-b border-brand-brown/10">Add / Edit Category Map</h4>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Category Name */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black uppercase tracking-wider text-brand-brown/50 block">Category Name</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. kitchen gas, delivery-charges"
+                      value={newLedgerCatName}
+                      onChange={e => setNewLedgerCatName(e.target.value)}
+                      className="w-full p-2.5 bg-brand-stone/10 border border-brand-brown/10 rounded-xl text-xs font-bold outline-none text-brand-brown"
+                    />
+                  </div>
+
+                  {/* Category Type */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black uppercase tracking-wider text-brand-brown/50 block">Transaction Type</label>
+                    <select
+                      value={newLedgerCatType}
+                      onChange={e => setNewLedgerCatType(e.target.value as 'credit' | 'debit')}
+                      className="w-full p-2.5 bg-brand-stone/10 border border-brand-brown/10 rounded-xl text-xs font-bold outline-none text-brand-brown"
+                    >
+                      <option value="debit">Debit (Outward Expense / Purchase)</option>
+                      <option value="credit">Credit (Inward Revenue / Capital)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Stock Subcategory Mappings */}
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-wider text-brand-brown/50 block">
+                    Map to Stock Subcategories (Optional)
+                  </label>
+                  <p className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider">
+                    Link this category to one or more warehouse stock subcategories to bridge purchases with dynamic stock levels.
+                  </p>
+                  
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 bg-brand-stone/5 p-3 rounded-xl border border-brand-brown/5 max-h-[150px] overflow-y-auto">
+                    {getStockSubcategoriesList().map(sub => {
+                      const isChecked = newLedgerCatMappings.includes(sub.id);
+                      return (
+                        <label 
+                          key={`${sub.category}-${sub.id}`}
+                          className={`flex items-center gap-2 p-2 rounded-lg border text-[10px] font-bold cursor-pointer select-none transition-all ${
+                            isChecked 
+                              ? 'bg-brand-yellow/30 border-brand-brown/40 text-brand-brown' 
+                              : 'bg-white border-zinc-200 text-zinc-600 hover:bg-zinc-50'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => {
+                              if (isChecked) {
+                                setNewLedgerCatMappings(prev => prev.filter(id => id !== sub.id));
+                              } else {
+                                setNewLedgerCatMappings(prev => [...prev, sub.id]);
+                              }
+                            }}
+                            className="rounded border-zinc-300 text-brand-brown focus:ring-brand-brown w-3 h-3"
+                          />
+                          <span>{sub.icon} {sub.label}</span>
+                          <span className="text-[7px] bg-zinc-100 text-zinc-400 px-1 py-0.5 rounded uppercase font-black ml-auto">
+                            {sub.category}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex justify-end pt-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveLedgerCategory}
+                    disabled={isSavingCategory}
+                    className="bg-brand-brown hover:bg-brand-brown/90 text-brand-yellow text-xs font-black uppercase tracking-widest px-5 py-2.5 rounded-xl shadow-md transition-all flex items-center gap-2"
+                  >
+                    {isSavingCategory ? 'Saving...' : '💾 Save Category Mapping'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Lists of Current Categories */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                
+                {/* Debit Categories */}
+                <div className="space-y-3">
+                  <h4 className="text-xs font-black uppercase tracking-widest text-brand-red flex items-center gap-1.5 italic">
+                    <span>🛑</span>
+                    Debit Expense Categories
+                  </h4>
+                  <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-3">
+                    {debitCategories.map(cat => {
+                      const isDefault = DEBIT_CATEGORIES.includes(cat);
+                      const mappings = categoryMappings[cat] || [];
+                      return (
+                        <div key={cat} className="flex items-center justify-between p-2.5 bg-white rounded-xl border border-brand-brown/5 shadow-sm hover:border-brand-brown/15 transition-all">
+                          <div className="space-y-0.5">
+                            <span className="text-xs font-extrabold text-brand-brown">{cat}</span>
+                            {mappings.length > 0 ? (
+                              <div className="flex flex-wrap gap-1 mt-0.5">
+                                {mappings.map(subId => {
+                                  const s = getStockSubcategoriesList().find(item => item.id === subId);
+                                  return (
+                                    <span key={subId} className="text-[7.5px] font-black uppercase tracking-wider bg-brand-yellow/30 text-brand-brown px-1.5 py-0.5 rounded-md">
+                                      {s ? `${s.icon} ${s.label}` : subId}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <p className="text-[8px] text-zinc-400 font-bold uppercase tracking-wider">Unmapped</p>
+                            )}
+                          </div>
+                          
+                          <div className="flex items-center gap-2 relative z-10">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setNewLedgerCatName(cat);
+                                setNewLedgerCatType('debit');
+                                setNewLedgerCatMappings(mappings);
+                              }}
+                              className="p-2 bg-brand-stone/10 hover:bg-brand-yellow/30 text-brand-brown hover:text-brand-brown rounded-lg transition-all flex items-center justify-center min-w-[28px] min-h-[28px] relative z-20 cursor-pointer shadow-sm"
+                              title="Edit Mapping"
+                            >
+                              <span className="pointer-events-none text-xs">✏️</span>
+                            </button>
+                            {!isDefault && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteLedgerCategory(cat)}
+                                className="p-2 bg-rose-50 hover:bg-rose-100 text-rose-500 hover:text-rose-700 rounded-lg transition-all flex items-center justify-center min-w-[28px] min-h-[28px] cursor-pointer shadow-sm"
+                                title="Delete Category"
+                              >
+                                <span className="pointer-events-none text-xs">🗑️</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Credit Categories */}
+                <div className="space-y-3">
+                  <h4 className="text-xs font-black uppercase tracking-widest text-emerald-600 flex items-center gap-1.5 italic">
+                    <span>🟢</span>
+                    Credit Revenue Categories
+                  </h4>
+                  <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-3">
+                    {creditCategories.map(cat => {
+                      const isDefault = CREDIT_CATEGORIES.includes(cat);
+                      const mappings = categoryMappings[cat] || [];
+                      return (
+                        <div key={cat} className="flex items-center justify-between p-2.5 bg-white rounded-xl border border-brand-brown/5 shadow-sm hover:border-brand-brown/15 transition-all">
+                          <div className="space-y-0.5">
+                            <span className="text-xs font-extrabold text-brand-brown">{cat}</span>
+                            {mappings.length > 0 ? (
+                              <div className="flex flex-wrap gap-1 mt-0.5">
+                                {mappings.map(subId => {
+                                  const s = getStockSubcategoriesList().find(item => item.id === subId);
+                                  return (
+                                    <span key={subId} className="text-[7.5px] font-black uppercase tracking-wider bg-brand-yellow/30 text-brand-brown px-1.5 py-0.5 rounded-md">
+                                      {s ? `${s.icon} ${s.label}` : subId}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <p className="text-[8px] text-zinc-400 font-bold uppercase tracking-wider">Unmapped</p>
+                            )}
+                          </div>
+                          
+                          <div className="flex items-center gap-2 relative z-10">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setNewLedgerCatName(cat);
+                                setNewLedgerCatType('credit');
+                                setNewLedgerCatMappings(mappings);
+                              }}
+                              className="p-2 bg-brand-stone/10 hover:bg-brand-yellow/30 text-brand-brown hover:text-brand-brown rounded-lg transition-all flex items-center justify-center min-w-[28px] min-h-[28px] relative z-20 cursor-pointer shadow-sm"
+                              title="Edit Mapping"
+                            >
+                              <span className="pointer-events-none text-xs">✏️</span>
+                            </button>
+                            {!isDefault && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteLedgerCategory(cat)}
+                                className="p-2 bg-rose-50 hover:bg-rose-100 text-rose-500 hover:text-rose-700 rounded-lg transition-all flex items-center justify-center min-w-[28px] min-h-[28px] cursor-pointer shadow-sm"
+                                title="Delete Category"
+                              >
+                                <span className="pointer-events-none text-xs">🗑️</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+              </div>
+
             </div>
           </div>
         </div>
