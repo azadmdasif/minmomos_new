@@ -1,8 +1,10 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { RawMaterial, User, CentralMaterial, Station, MaterialCategory, StockAllocation, Vendor, VendorMapping } from '../types';
 import { 
   getInventory, 
+  getAllInventories,
   getCentralInventory, 
   recordCentralPurchase, 
   allocateStock, 
@@ -13,6 +15,7 @@ import {
   raiseRestockRequest, 
   seedStandardInventory,
   fetchProcurements,
+  fetchAllNonVoidedProcurements,
   logProcurement,
   fetchAllocations,
   voidProcurement,
@@ -51,13 +54,14 @@ import {
   Tooltip, 
   Legend 
 } from 'recharts';
+import { ConsumptionReport } from './ConsumptionReport';
 
 interface InventoryProps {
   user: User;
   currentBranch: string | null;
 }
 
-type InventoryTab = 'HUB' | 'LEDGER' | 'FINANCE' | 'VENDORS';
+type InventoryTab = 'HUB' | 'LEDGER' | 'FINANCE' | 'VENDORS' | 'CONSUMPTION';
 type LedgerType = 'BUYING' | 'ALLOCATION' | 'ADJUSTMENT';
 type DatePreset = 'today' | 'yesterday' | 'week' | 'last-week' | 'month' | 'last-month' | 'custom';
 type VendorDatePreset = 'all' | 'today' | 'yesterday' | 'week' | 'last-week' | 'month' | 'last-month' | 'custom';
@@ -92,6 +96,8 @@ const DEFAULT_SUBCATEGORIES: Record<MaterialCategory, Array<{ id: string, label:
   ]
 };
 
+const VALUATION_COLORS = ['#5D4037', '#D84315', '#FF8F00', '#2E7D32', '#1565C0', '#4527A0', '#C62828'];
+
 const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const isAdmin = user.role === 'ADMIN';
   const [activeTab, setActiveTab] = useState<InventoryTab>('HUB');
@@ -110,6 +116,9 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [centralStock, setCentralStock] = useState<CentralMaterial[]>([]);
   const [menuItems, setMenuItems] = useState<any[]>([]);
   const [storeStock, setStoreStock] = useState<RawMaterial[]>([]);
+  const [allInventories, setAllInventories] = useState<RawMaterial[]>([]);
+  const [allNonVoidedProcurements, setAllNonVoidedProcurements] = useState<any[]>([]);
+  const [isValuationExpanded, setIsValuationExpanded] = useState<boolean>(true);
   const [procurements, setProcurements] = useState<any[]>([]);
   const [allocations, setAllocations] = useState<StockAllocation[]>([]);
   const [adjustments, setAdjustments] = useState<any[]>([]);
@@ -209,6 +218,10 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   // Active Stock item search state
   const [activeStockSearch, setActiveStockSearch] = useState('');
 
+  // Active Stock item sorting state
+  const [stockSortField, setStockSortField] = useState<'none' | 'stock' | 'value'>('none');
+  const [stockSortOrder, setStockSortOrder] = useState<'asc' | 'desc'>('desc');
+
   // Custom Subcategories and Editing States
   const [customSubcategories, setCustomSubcategories] = useState<SubcategoryOption[]>([]);
   const [isCreateSubcategoryModalOpen, setIsCreateSubcategoryModalOpen] = useState(false);
@@ -239,6 +252,169 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     const custom = customSubcategories.filter(s => s.parentCategory === cat);
     return [...defaults, ...custom];
   }, [customSubcategories]);
+
+  const getSubcategoryMeta = useCallback((subId: string) => {
+    for (const cat of Object.keys(DEFAULT_SUBCATEGORIES) as MaterialCategory[]) {
+      const found = DEFAULT_SUBCATEGORIES[cat].find(s => s.id === subId);
+      if (found) return found;
+    }
+    const foundCustom = customSubcategories.find(s => s.id === subId);
+    if (foundCustom) return { id: foundCustom.id, label: foundCustom.label, icon: foundCustom.icon };
+    return { id: subId, label: subId.toUpperCase(), icon: '🏷️' };
+  }, [customSubcategories]);
+
+  const estimatedUnitCostMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    
+    // Process procurements in chronological order (or reverse and keep the first one seen)
+    // allNonVoidedProcurements are ordered by date descending, so the first entry per item_id we see is the most recent purchase.
+    allNonVoidedProcurements.forEach(proc => {
+      const itemId = proc.item_id;
+      if (!itemId) return;
+      if (map[itemId] !== undefined) return;
+      
+      const qty = parseFloat(proc.quantity) || 0;
+      const totalCost = parseFloat(proc.total_cost) || 0;
+      if (qty > 0 && totalCost > 0) {
+        map[itemId] = totalCost / qty;
+      }
+    });
+
+    // Fallback to centralStock last_purchase_cost
+    centralStock.forEach(item => {
+      if (map[item.id] === undefined) {
+        map[item.id] = item.last_purchase_cost || 0;
+      }
+    });
+
+    return map;
+  }, [allNonVoidedProcurements, centralStock]);
+
+  const hubStockValuation = useMemo(() => {
+    return centralStock.reduce((acc, item) => {
+      const cost = estimatedUnitCostMap[item.id] || 0;
+      const isActive = (item.current_stock || 0) > 0 && !item.is_finished;
+      const value = isActive ? (item.current_stock * cost) : 0;
+      return acc + value;
+    }, 0);
+  }, [centralStock, estimatedUnitCostMap]);
+
+  const storeWiseValuation = useMemo(() => {
+    const valuations: Record<string, number> = {
+      'Supply Hub (Central)': hubStockValuation
+    };
+    const targetInventories = isAdmin ? allInventories : storeStock;
+    targetInventories.forEach(item => {
+      const cost = estimatedUnitCostMap[item.id] || 0;
+      const isActive = (item.current_stock || 0) > 0 && !item.is_finished;
+      const value = isActive ? (item.current_stock * cost) : 0;
+      if (value <= 0) return;
+      const storeName = item.branch_name || 'Unknown Store';
+      valuations[storeName] = (valuations[storeName] || 0) + value;
+    });
+    return Object.entries(valuations)
+      .map(([store, value]) => ({ store, value }))
+      .sort((a, b) => b.value - a.value);
+  }, [hubStockValuation, allInventories, storeStock, isAdmin, estimatedUnitCostMap]);
+
+  const subcategoryWiseValuation = useMemo(() => {
+    const subcatValues: Record<string, number> = {};
+    
+    // Central Hub items
+    centralStock.forEach(item => {
+      const cost = estimatedUnitCostMap[item.id] || 0;
+      const isActive = (item.current_stock || 0) > 0 && !item.is_finished;
+      const value = isActive ? (item.current_stock * cost) : 0;
+      if (value <= 0) return;
+      const subId = getItemSubcategory(item.name, item.id, item.category);
+      subcatValues[subId] = (subcatValues[subId] || 0) + value;
+    });
+    
+    // Store items
+    const targetInventories = isAdmin ? allInventories : storeStock;
+    targetInventories.forEach(item => {
+      const cost = estimatedUnitCostMap[item.id] || 0;
+      const isActive = (item.current_stock || 0) > 0 && !item.is_finished;
+      const value = isActive ? (item.current_stock * cost) : 0;
+      if (value <= 0) return;
+      const subId = getItemSubcategory(item.name, item.id, item.category);
+      subcatValues[subId] = (subcatValues[subId] || 0) + value;
+    });
+    
+    return Object.entries(subcatValues)
+      .map(([subId, value]) => {
+        const meta = getSubcategoryMeta(subId);
+        return {
+          id: subId,
+          label: meta.label,
+          icon: meta.icon,
+          value
+        };
+      })
+      .sort((a, b) => b.value - a.value);
+  }, [centralStock, allInventories, storeStock, isAdmin, estimatedUnitCostMap, getSubcategoryMeta]);
+
+  const totalStockValuation = useMemo(() => {
+    const hubTotal = hubStockValuation;
+    const targetInventories = isAdmin ? allInventories : storeStock;
+    const storeTotal = targetInventories.reduce((acc, item) => {
+      const cost = estimatedUnitCostMap[item.id] || 0;
+      const isActive = (item.current_stock || 0) > 0 && !item.is_finished;
+      const value = isActive ? (item.current_stock * cost) : 0;
+      return acc + value;
+    }, 0);
+    return hubTotal + storeTotal;
+  }, [hubStockValuation, allInventories, storeStock, isAdmin, estimatedUnitCostMap]);
+
+  const filteredStoreStock = useMemo(() => {
+    const baseList = storeStock.filter(i => {
+      if (i.category !== materialCategory) return false;
+      if (activeSubcategory !== 'all') {
+        if (getItemSubcategory(i.name, i.id, i.category) !== activeSubcategory) return false;
+      }
+      if (activeStockSearch.trim() !== '') {
+        const terms = activeStockSearch.toLowerCase().split(/\s+/).filter(Boolean);
+        const nameLower = i.name.toLowerCase();
+        const matchesAll = terms.every(term => nameLower.includes(term));
+        if (!matchesAll) return false;
+      }
+      return true;
+    });
+
+    if (stockSortField === 'none') {
+      return baseList;
+    }
+
+    return [...baseList].sort((a, b) => {
+      let valA = 0;
+      let valB = 0;
+
+      if (stockSortField === 'stock') {
+        valA = a.is_finished ? 0 : a.current_stock;
+        valB = b.is_finished ? 0 : b.current_stock;
+      } else if (stockSortField === 'value') {
+        const costA = estimatedUnitCostMap[a.id] || 0;
+        const costB = estimatedUnitCostMap[b.id] || 0;
+        valA = (!a.is_finished && a.current_stock > 0) ? (a.current_stock * costA) : 0;
+        valB = (!b.is_finished && b.current_stock > 0) ? (b.current_stock * costB) : 0;
+      }
+
+      if (valA === valB) {
+        return a.name.localeCompare(b.name);
+      }
+
+      return stockSortOrder === 'asc' ? valA - valB : valB - valA;
+    });
+  }, [storeStock, materialCategory, activeSubcategory, activeStockSearch, stockSortField, stockSortOrder, estimatedUnitCostMap]);
+
+  const selectedBranchValuation = useMemo(() => {
+    return filteredStoreStock.reduce((acc, item) => {
+      const cost = estimatedUnitCostMap[item.id] || 0;
+      const isActive = (item.current_stock || 0) > 0 && !item.is_finished;
+      const value = isActive ? (item.current_stock * cost) : 0;
+      return acc + value;
+    }, 0);
+  }, [filteredStoreStock, estimatedUnitCostMap]);
 
   useEffect(() => {
     loadCustomSubcategories();
@@ -305,8 +481,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
 
     try {
       setIsLoading(true);
-      await updateCentralItem(editingItem.id, editItemName.trim(), editItemUnit.trim(), editItemCategory);
-      saveItemSubcategory(editingItem.id, editItemSubcategory);
+      await updateCentralItem(editingItem.id, editItemName.trim(), editItemUnit.trim(), editItemCategory, editItemSubcategory);
+      await saveItemSubcategory(editingItem.id, editItemSubcategory);
       setIsEditItemModalOpen(false);
       setEditingItem(null);
       await fetchData();
@@ -324,12 +500,14 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     try {
       // Fetch central inventory and menu items for ALL users
       try {
-        const [c, m] = await Promise.all([
+        const [c, m, nvp] = await Promise.all([
           getCentralInventory(),
-          fetchMenuItems()
+          fetchMenuItems(),
+          fetchAllNonVoidedProcurements()
         ]);
         setCentralStock(c);
         if (m.data) setMenuItems(m.data);
+        setAllNonVoidedProcurements(nvp || []);
       } catch (e: any) {
         if (e.code === '42P01') setIsTableMissing(true);
         else console.error("Error fetching central inventory/menu items:", e);
@@ -393,6 +571,14 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           setAdjustments(adjRes.data || []);
         } catch (e: any) {
           console.error("Adjustments error", e);
+        }
+
+        // Fetch All Branch Inventories (for valuation)
+        try {
+          const allInv = await getAllInventories();
+          setAllInventories(allInv || []);
+        } catch (e) {
+          console.error("All inventories fetch failed:", e);
         }
 
         if (selectedStation) {
@@ -640,17 +826,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
         
         // 1. Create the central item first so it exists in central_inventory
         try {
-          await createCentralItem(newItemName, newItemUnit, q, c, materialCategory, id);
-          
-          // Save custom subcategory mapping in localStorage
-          try {
-            const saved = localStorage.getItem('custom_subcategories') || '{}';
-            const map = JSON.parse(saved);
-            map[id] = newItemSubcategory;
-            localStorage.setItem('custom_subcategories', JSON.stringify(map));
-          } catch (storageErr) {
-            console.error("Failed to save custom subcategory:", storageErr);
-          }
+          await createCentralItem(newItemName, newItemUnit, q, c, materialCategory, id, newItemSubcategory);
+          await saveItemSubcategory(id, newItemSubcategory);
         } catch (createErr: any) {
           console.error("Failed to create central item:", createErr);
           throw new Error(`Database Entry Failed: ${createErr.message}`);
@@ -1525,21 +1702,30 @@ NOTIFY pgrst, 'reload schema';`}
         </div>
         
         <div className="flex flex-wrap gap-4">
-          {isAdmin && (
+          {(isAdmin || user.role === 'STORE_MANAGER') && (
             <div className="bg-white p-1 rounded-2xl border border-brand-stone flex shadow-sm flex-wrap items-center">
               <button onClick={() => setActiveTab('HUB')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'HUB' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Active Stock</button>
-              <button onClick={() => setActiveTab('LEDGER')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'LEDGER' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Transaction Ledger</button>
-              <button onClick={() => setActiveTab('FINANCE')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'FINANCE' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Financial View</button>
-              <button onClick={() => setActiveTab('VENDORS')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'VENDORS' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Vendors</button>
+              {isAdmin && (
+                <>
+                  <button onClick={() => setActiveTab('LEDGER')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'LEDGER' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Transaction Ledger</button>
+                  <button onClick={() => setActiveTab('FINANCE')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'FINANCE' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Financial View</button>
+                  <button onClick={() => setActiveTab('VENDORS')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'VENDORS' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Vendors</button>
+                </>
+              )}
+              <button onClick={() => setActiveTab('CONSUMPTION')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'CONSUMPTION' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Consumption Speed</button>
               
-              <div className="h-6 w-[2px] bg-brand-stone mx-2 hidden md:block"></div>
-              
-              <button 
-                onClick={() => { setMasterResetType('HUB'); setIsMasterResetModalOpen(true); }}
-                className="px-6 py-3 text-brand-red hover:bg-red-50 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all"
-              >
-                Reset Hub to Zero
-              </button>
+              {isAdmin && (
+                <>
+                  <div className="h-6 w-[2px] bg-brand-stone mx-2 hidden md:block"></div>
+                  
+                  <button 
+                    onClick={() => { setMasterResetType('HUB'); setIsMasterResetModalOpen(true); }}
+                    className="px-6 py-3 text-brand-red hover:bg-red-50 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all"
+                  >
+                    Reset Hub to Zero
+                  </button>
+                </>
+              )}
             </div>
           )}
           {isAdmin && (activeTab === 'HUB' || activeTab === 'FINANCE') && (
@@ -1553,6 +1739,159 @@ NOTIFY pgrst, 'reload schema';`}
 
       {activeTab === 'HUB' ? (
         <>
+          {/* Stock Valuation Summary Panel */}
+          <div className="bg-white rounded-[3rem] border-4 border-brand-brown p-8 shadow-xl mb-12 animate-in fade-in slide-in-from-top duration-500">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+              <div>
+                <h3 className="text-3xl font-black text-brand-brown uppercase italic tracking-tighter flex items-center gap-3">
+                  <span>💰</span> Stock Valuation Dashboard
+                </h3>
+                <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">
+                  Real-time monetary worth of existing stocks based on last purchase costs
+                </p>
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="bg-brand-cream border border-brand-stone/30 rounded-2xl px-6 py-3 flex flex-col items-end">
+                  <span className="text-[9px] font-black uppercase text-brand-brown/40 tracking-wider">Total Existing Stock Value</span>
+                  <span className="text-2xl font-black text-brand-red">
+                    ₹{totalStockValuation.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setIsValuationExpanded(!isValuationExpanded)}
+                  className="px-6 py-3 bg-brand-stone/30 text-brand-brown hover:bg-brand-yellow rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
+                >
+                  {isValuationExpanded ? 'Collapse Details ▲' : 'Expand Details ▼'}
+                </button>
+              </div>
+            </div>
+
+            {isValuationExpanded && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 pt-4 border-t border-brand-stone animate-in fade-in duration-300">
+                {/* Store Wise Valuation */}
+                <div className="bg-brand-cream/30 border border-brand-stone rounded-[2.5rem] p-6 flex flex-col">
+                  <h4 className="text-sm font-black text-brand-brown uppercase tracking-widest mb-4 flex items-center gap-2">
+                    <span>🏪</span> Store-Wise Valuation
+                  </h4>
+                  <div className="flex flex-col sm:flex-row items-center justify-center gap-6 mt-2">
+                    <div className="w-[180px] h-[180px] flex-shrink-0 relative flex items-center justify-center">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={storeWiseValuation}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={45}
+                            outerRadius={70}
+                            paddingAngle={3}
+                            dataKey="value"
+                            nameKey="store"
+                          >
+                            {storeWiseValuation.map((_, index) => (
+                              <Cell key={`cell-${index}`} fill={VALUATION_COLORS[index % VALUATION_COLORS.length]} />
+                            ))}
+                          </Pie>
+                          <Tooltip
+                            contentStyle={{ borderRadius: '1rem', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)', fontSize: '10px', textTransform: 'uppercase' }}
+                            formatter={(value: any) => `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                          />
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                        <span className="text-[9px] font-black uppercase text-brand-brown/40">Stores</span>
+                        <span className="text-sm font-black text-brand-brown">{storeWiseValuation.filter(s => s.value > 0).length}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex-1 space-y-3 w-full max-h-[180px] overflow-y-auto no-scrollbar pr-2">
+                      {storeWiseValuation.map((store, index) => {
+                        const pct = totalStockValuation > 0 ? (store.value / totalStockValuation) * 100 : 0;
+                        const color = VALUATION_COLORS[index % VALUATION_COLORS.length];
+                        return (
+                          <div key={store.store} className="flex justify-between items-center text-xs font-black uppercase text-brand-brown">
+                            <div className="flex items-center gap-2 truncate max-w-[200px]">
+                              <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+                              <span className="truncate">{store.store}</span>
+                            </div>
+                            <div className="text-right flex flex-col items-end flex-shrink-0">
+                              <span>₹{store.value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                              <span className="text-[9px] text-brand-brown/40">({pct.toFixed(1)}%)</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {storeWiseValuation.length === 0 && (
+                        <p className="text-center text-[10px] font-black uppercase text-brand-brown/30 py-8">No stock value found</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Subcategory Wise Valuation */}
+                <div className="bg-brand-cream/30 border border-brand-stone rounded-[2.5rem] p-6 flex flex-col">
+                  <h4 className="text-sm font-black text-brand-brown uppercase tracking-widest mb-4 flex items-center gap-2">
+                    <span>📁</span> Subcategory-Wise Valuation
+                  </h4>
+                  <div className="flex flex-col sm:flex-row items-center justify-center gap-6 mt-2">
+                    <div className="w-[180px] h-[180px] flex-shrink-0 relative flex items-center justify-center">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={subcategoryWiseValuation}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={45}
+                            outerRadius={70}
+                            paddingAngle={3}
+                            dataKey="value"
+                            nameKey="label"
+                          >
+                            {subcategoryWiseValuation.map((_, index) => (
+                              <Cell key={`cell-${index}`} fill={VALUATION_COLORS[index % VALUATION_COLORS.length]} />
+                            ))}
+                          </Pie>
+                          <Tooltip
+                            contentStyle={{ borderRadius: '1rem', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)', fontSize: '10px', textTransform: 'uppercase' }}
+                            formatter={(value: any) => `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                          />
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                        <span className="text-[9px] font-black uppercase text-brand-brown/40">Categories</span>
+                        <span className="text-sm font-black text-brand-brown">{subcategoryWiseValuation.filter(s => s.value > 0).length}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex-1 space-y-3 w-full max-h-[180px] overflow-y-auto no-scrollbar pr-2">
+                      {subcategoryWiseValuation.map((sub, index) => {
+                        const pct = totalStockValuation > 0 ? (sub.value / totalStockValuation) * 100 : 0;
+                        const color = VALUATION_COLORS[index % VALUATION_COLORS.length];
+                        return (
+                          <div key={sub.id} className="flex justify-between items-center text-xs font-black uppercase text-brand-brown">
+                            <div className="flex items-center gap-2 truncate max-w-[200px]">
+                              <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+                              <span className="truncate flex items-center gap-1.5">
+                                <span>{sub.icon}</span>
+                                <span>{sub.label}</span>
+                              </span>
+                            </div>
+                            <div className="text-right flex flex-col items-end flex-shrink-0">
+                              <span>₹{sub.value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                              <span className="text-[9px] text-brand-brown/40">({pct.toFixed(1)}%)</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {subcategoryWiseValuation.length === 0 && (
+                        <p className="text-center text-[10px] font-black uppercase text-brand-brown/30 py-8">No subcategory value found</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
             {[
               { id: 'MOMO' as MaterialCategory, title: 'Category A: Auto Deduct', desc: 'Auto-deducts per bill.', icon: '🥟', color: 'bg-brand-brown' },
@@ -1753,8 +2092,16 @@ NOTIFY pgrst, 'reload schema';`}
 
           {materialCategory !== 'INGREDIENT' && (
             <section className="animate-in fade-in duration-500 delay-150">
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-2xl font-black text-brand-brown italic uppercase">{isAdmin ? `Branch Monitor: ${selectedStation?.name || '...'}` : `Store Stock: ${user.stationName}`}</h3>
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+                <div>
+                  <h3 className="text-2xl font-black text-brand-brown italic uppercase">{isAdmin ? `Branch Monitor: ${selectedStation?.name || '...'}` : `Store Stock: ${user.stationName}`}</h3>
+                  <div className="flex items-center gap-2 mt-2 bg-brand-cream border border-brand-stone rounded-2xl px-5 py-2 w-fit shadow-sm">
+                    <span className="text-[9px] font-black uppercase text-brand-brown/50 tracking-wider">Total Branch Stock Value:</span>
+                    <span className="text-sm font-black text-brand-red">
+                      ₹{selectedBranchValuation.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                </div>
                 <div className="flex items-center gap-4">
                   {isAdmin && (
                     <>
@@ -1826,67 +2173,136 @@ NOTIFY pgrst, 'reload schema';`}
               <div className="bg-white rounded-[3rem] shadow-2xl border-4 border-brand-brown overflow-hidden">
                 <table className="w-full">
                   <thead className="bg-brand-brown text-brand-yellow">
-                    <tr><th className="px-10 py-6 text-[11px] font-black uppercase text-left tracking-widest">Item</th><th className="px-10 py-6 text-[11px] font-black uppercase text-center tracking-widest">Stock Level</th><th className="px-10 py-6 text-[11px] font-black uppercase text-right tracking-widest">Actions</th></tr>
+                    <tr>
+                      <th className="px-10 py-6 text-[11px] font-black uppercase text-left tracking-widest">Item</th>
+                      <th className="px-10 py-6 text-[11px] font-black uppercase text-center tracking-widest select-none">
+                        <button
+                          onClick={() => {
+                            if (stockSortField === 'stock') {
+                              if (stockSortOrder === 'desc') {
+                                setStockSortOrder('asc');
+                              } else {
+                                setStockSortField('none');
+                              }
+                            } else {
+                              setStockSortField('stock');
+                              setStockSortOrder('desc');
+                            }
+                          }}
+                          className="mx-auto flex items-center justify-center gap-1.5 hover:text-white transition-colors focus:outline-none"
+                        >
+                          <span>Stock Level</span>
+                          {stockSortField === 'stock' ? (
+                            stockSortOrder === 'desc' ? (
+                              <ArrowDown className="w-3.5 h-3.5 text-brand-yellow flex-shrink-0" />
+                            ) : (
+                              <ArrowUp className="w-3.5 h-3.5 text-brand-yellow flex-shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="w-3.5 h-3.5 opacity-40 hover:opacity-100 flex-shrink-0" />
+                          )}
+                        </button>
+                      </th>
+                      <th className="px-10 py-6 text-[11px] font-black uppercase text-center tracking-widest select-none">
+                        <button
+                          onClick={() => {
+                            if (stockSortField === 'value') {
+                              if (stockSortOrder === 'desc') {
+                                setStockSortOrder('asc');
+                              } else {
+                                setStockSortField('none');
+                              }
+                            } else {
+                              setStockSortField('value');
+                              setStockSortOrder('desc');
+                            }
+                          }}
+                          className="mx-auto flex items-center justify-center gap-1.5 hover:text-white transition-colors focus:outline-none"
+                        >
+                          <span>Live Value</span>
+                          {stockSortField === 'value' ? (
+                            stockSortOrder === 'desc' ? (
+                              <ArrowDown className="w-3.5 h-3.5 text-brand-yellow flex-shrink-0" />
+                            ) : (
+                              <ArrowUp className="w-3.5 h-3.5 text-brand-yellow flex-shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="w-3.5 h-3.5 opacity-40 hover:opacity-100 flex-shrink-0" />
+                          )}
+                        </button>
+                      </th>
+                      <th className="px-10 py-6 text-[11px] font-black uppercase text-right tracking-widest">Actions</th>
+                    </tr>
                   </thead>
                   <tbody className="divide-y divide-brand-stone">
                     {(() => {
-                      const filteredStoreStock = storeStock.filter(i => {
-                        if (i.category !== materialCategory) return false;
-                        if (activeSubcategory !== 'all') {
-                          if (getItemSubcategory(i.name, i.id, i.category) !== activeSubcategory) return false;
-                        }
-                        if (activeStockSearch.trim() !== '') {
-                          const terms = activeStockSearch.toLowerCase().split(/\s+/).filter(Boolean);
-                          const nameLower = i.name.toLowerCase();
-                          const matchesAll = terms.every(term => nameLower.includes(term));
-                          if (!matchesAll) return false;
-                        }
-                        return true;
-                      });
-
                       if (filteredStoreStock.length === 0) {
                         return (
                           <tr>
-                            <td colSpan={3} className="px-10 py-12 text-center text-brand-brown/20 uppercase font-black text-[10px] tracking-widest">
+                            <td colSpan={4} className="px-10 py-12 text-center text-brand-brown/20 uppercase font-black text-[10px] tracking-widest">
                               {activeStockSearch ? "No materials match your search" : "No materials found in this subcategory"}
                             </td>
                           </tr>
                         );
                       }
 
-                      return filteredStoreStock.map(item => (
-                        <tr key={item.id} className={`${item.is_finished ? 'bg-red-50' : 'bg-white'} transition-colors`}>
-                          <td className="px-10 py-8"><p className="text-xl font-black text-brand-brown">{item.name}</p>{item.request_pending && <span className="text-[9px] font-black text-brand-red uppercase bg-brand-red/10 px-3 py-1 rounded-full inline-block mt-2 animate-pulse">Low Stock Alert</span>}</td>
-                          <td className="px-10 py-8 text-center"><span className={`px-6 py-2 rounded-full text-[10px] font-black uppercase tracking-widest ${item.is_finished ? 'bg-brand-red text-white' : 'bg-brand-brown/5 text-brand-brown'}`}>{item.is_finished ? 'FINISHED' : `${item.current_stock.toFixed(2)} ${item.unit}`}</span></td>
-                          <td className="px-10 py-8 text-right">
-                            <div className="flex justify-end gap-2">
-                              {(isAdmin || user.role === 'STORE_MANAGER') && (
-                                <button 
-                                  onClick={() => { setSelectedItem(item); setAdjustValue(item.current_stock.toString()); setIsAdjustModalOpen(true); }}
-                                  className="px-4 py-2 bg-brand-brown text-brand-yellow rounded-xl text-[10px] font-black uppercase tracking-widest hover:scale-105 transition-all shadow-sm"
-                                >
-                                  Set Stock
-                                </button>
-                              )}
-                              {!isAdmin && materialCategory === 'PACKET' && (
-                                <>
-                                  {!item.is_finished ? (
-                                    <button 
-                                      onClick={() => handleStoreAction(item.id, 'finish')} 
-                                      className="px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-md transition-all bg-brand-red/10 text-brand-red hover:bg-brand-red hover:text-white"
-                                    >
-                                      Mark as Empty
-                                    </button>
-                                  ) : (
-                                    <span className="text-[10px] font-black text-brand-red uppercase tracking-widest animate-pulse italic">Awaiting Hub Supply</span>
-                                  )}
-                                </>
-                              )}
-                              {materialCategory === 'MOMO' && !isAdmin && user.role !== 'STORE_MANAGER' && <span className="text-[10px] font-black text-brand-brown/20 italic tracking-widest">DEDUCTED PER SALE</span>}
-                            </div>
-                          </td>
-                        </tr>
-                      ));
+                      return filteredStoreStock.map(item => {
+                        const itemCost = estimatedUnitCostMap[item.id] || 0;
+                        const itemActiveValuation = (!item.is_finished && item.current_stock > 0) ? (item.current_stock * itemCost) : 0;
+                        
+                        return (
+                          <tr key={item.id} className={`${item.is_finished ? 'bg-red-50' : 'bg-white'} transition-colors`}>
+                            <td className="px-10 py-8">
+                              <p className="text-xl font-black text-brand-brown">{item.name}</p>
+                              {item.request_pending && <span className="text-[9px] font-black text-brand-red uppercase bg-brand-red/10 px-3 py-1 rounded-full inline-block mt-2 animate-pulse">Low Stock Alert</span>}
+                            </td>
+                            <td className="px-10 py-8 text-center">
+                              <span className={`px-6 py-2 rounded-full text-[10px] font-black uppercase tracking-widest ${item.is_finished ? 'bg-brand-red text-white' : 'bg-brand-brown/5 text-brand-brown'}`}>
+                                {item.is_finished ? 'FINISHED' : `${item.current_stock.toFixed(2)} ${item.unit}`}
+                              </span>
+                            </td>
+                            <td className="px-10 py-8 text-center">
+                              <div className="flex flex-col items-center">
+                                <span className="text-sm font-black text-brand-red">
+                                  ₹{itemActiveValuation.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </span>
+                                {itemCost > 0 && (
+                                  <span className="text-[9px] font-bold text-brand-brown/40 uppercase tracking-wider mt-0.5">
+                                    ₹{itemCost.toFixed(2)} / {item.unit}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-10 py-8 text-right">
+                              <div className="flex justify-end gap-2">
+                                {(isAdmin || user.role === 'STORE_MANAGER') && (
+                                  <button 
+                                    onClick={() => { setSelectedItem(item); setAdjustValue(item.current_stock.toString()); setIsAdjustModalOpen(true); }}
+                                    className="px-4 py-2 bg-brand-brown text-brand-yellow rounded-xl text-[10px] font-black uppercase tracking-widest hover:scale-105 transition-all shadow-sm"
+                                  >
+                                    Set Stock
+                                  </button>
+                                )}
+                                {!isAdmin && materialCategory === 'PACKET' && (
+                                  <>
+                                    {!item.is_finished ? (
+                                      <button 
+                                        onClick={() => handleStoreAction(item.id, 'finish')} 
+                                        className="px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-md transition-all bg-brand-red/10 text-brand-red hover:bg-brand-red hover:text-white"
+                                      >
+                                        Mark as Empty
+                                      </button>
+                                    ) : (
+                                      <span className="text-[10px] font-black text-brand-red uppercase tracking-widest animate-pulse italic">Awaiting Hub Supply</span>
+                                    )}
+                                  </>
+                                )}
+                                {materialCategory === 'MOMO' && !isAdmin && user.role !== 'STORE_MANAGER' && <span className="text-[10px] font-black text-brand-brown/20 italic tracking-widest">DEDUCTED PER SALE</span>}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      });
                     })()}
                   </tbody>
                 </table>
@@ -2937,6 +3353,12 @@ NOTIFY pgrst, 'reload schema';`}
 
           </div>
         </section>
+      ) : activeTab === 'CONSUMPTION' ? (
+        <ConsumptionReport 
+          startDate={startDate}
+          endDate={endDate}
+          selectedStore={isAdmin ? (selectedStation?.name || 'All') : (user.stationName || 'All')}
+        />
       ) : null}
 
       {/* Modals */}

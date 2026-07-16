@@ -32,6 +32,7 @@ export interface RawMaterial {
   branch_name: string;
   is_finished?: boolean;
   request_pending?: boolean;
+  subcategory?: string;
 }
 
 export interface CentralMaterial {
@@ -43,6 +44,7 @@ export interface CentralMaterial {
   last_purchase_cost?: number;
   last_purchase_date?: string;
   is_finished?: boolean;
+  subcategory?: string;
 }
 
 export interface StockAllocation {

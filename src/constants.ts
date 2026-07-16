@@ -89,7 +89,12 @@ export const MENU_ITEMS: MenuItem[] = [
       // Fixed: Typo 'Hyde' replaced with 'large'
       'pan-fried': { small: 19, medium: 27, large: 35 },
     },
-    recipe: [{ materialId: 'momo-chicken', quantity: 1 }]
+    recipe: [{ materialId: 'momo-chicken', quantity: 1 }],
+    sizeRecipes: {
+      small: [{ materialId: 'momo-chicken', quantity: 4 }],
+      medium: [{ materialId: 'momo-chicken', quantity: 6 }],
+      large: [{ materialId: 'momo-chicken', quantity: 8 }]
+    }
   },
   {
     id: 'paneer-momo',
@@ -106,7 +111,12 @@ export const MENU_ITEMS: MenuItem[] = [
       fried: { small: 20, medium: 30, large: 40 },
       'pan-fried': { small: 19, medium: 27, large: 35 },
     },
-    recipe: [{ materialId: 'momo-paneer', quantity: 1 }]
+    recipe: [{ materialId: 'momo-paneer', quantity: 1 }],
+    sizeRecipes: {
+      small: [{ materialId: 'momo-paneer', quantity: 4 }],
+      medium: [{ materialId: 'momo-paneer', quantity: 6 }],
+      large: [{ materialId: 'momo-paneer', quantity: 8 }]
+    }
   },
   {
     id: 'veg-momo',
@@ -123,7 +133,12 @@ export const MENU_ITEMS: MenuItem[] = [
       fried: { small: 16, medium: 24, large: 32 },
       'pan-fried': { small: 15, medium: 21, large: 27 },
     },
-    recipe: [{ materialId: 'momo-veg', quantity: 1 }]
+    recipe: [{ materialId: 'momo-veg', quantity: 1 }],
+    sizeRecipes: {
+      small: [{ materialId: 'momo-veg', quantity: 4 }],
+      medium: [{ materialId: 'momo-veg', quantity: 6 }],
+      large: [{ materialId: 'momo-veg', quantity: 8 }]
+    }
   },
   {
     id: 'chicken-tandoori',
@@ -138,7 +153,12 @@ export const MENU_ITEMS: MenuItem[] = [
       normal: { small: 22, medium: 33, large: 44 },
       'pan-fried': { small: 25, medium: 36, large: 47 },
     },
-    recipe: [{ materialId: 'momo-tandoori', quantity: 1 }]
+    recipe: [{ materialId: 'momo-tandoori', quantity: 1 }],
+    sizeRecipes: {
+      small: [{ materialId: 'momo-tandoori', quantity: 4 }],
+      medium: [{ materialId: 'momo-tandoori', quantity: 6 }],
+      large: [{ materialId: 'momo-tandoori', quantity: 8 }]
+    }
   },
   {
     id: 'kurkure-chicken',
@@ -153,7 +173,12 @@ export const MENU_ITEMS: MenuItem[] = [
       normal: { small: 22, medium: 33, large: 44 },
       'pan-fried': { small: 25, medium: 36, large: 47 },
     },
-    recipe: [{ materialId: 'momo-kurkure', quantity: 1 }]
+    recipe: [{ materialId: 'momo-kurkure', quantity: 1 }],
+    sizeRecipes: {
+      small: [{ materialId: 'momo-kurkure', quantity: 4 }],
+      medium: [{ materialId: 'momo-kurkure', quantity: 6 }],
+      large: [{ materialId: 'momo-kurkure', quantity: 8 }]
+    }
   },
   {
     id: 'cheese-lovers-combo',
@@ -183,7 +208,12 @@ export const MENU_ITEMS: MenuItem[] = [
       normal: { small: 30, medium: 45, large: 60 },
       'pan-fried': { small: 33, medium: 48, large: 63 },
     },
-    recipe: [{ materialId: 'momo-chicken-cheese', quantity: 1 }]
+    recipe: [{ materialId: 'momo-chicken-cheese', quantity: 1 }],
+    sizeRecipes: {
+      small: [{ materialId: 'momo-chicken-cheese', quantity: 4 }],
+      medium: [{ materialId: 'momo-chicken-cheese', quantity: 6 }],
+      large: [{ materialId: 'momo-chicken-cheese', quantity: 8 }]
+    }
   },
   {
     id: 'premium-corn-cheese-lava',
@@ -198,7 +228,12 @@ export const MENU_ITEMS: MenuItem[] = [
       normal: { small: 30, medium: 45, large: 60 },
       'pan-fried': { small: 33, medium: 48, large: 63 },
     },
-    recipe: [{ materialId: 'momo-corn-cheese', quantity: 1 }]
+    recipe: [{ materialId: 'momo-corn-cheese', quantity: 1 }],
+    sizeRecipes: {
+      small: [{ materialId: 'momo-corn-cheese', quantity: 4 }],
+      medium: [{ materialId: 'momo-corn-cheese', quantity: 6 }],
+      large: [{ materialId: 'momo-corn-cheese', quantity: 8 }]
+    }
   },
   {
     id: 'fries',
@@ -239,7 +274,12 @@ export const MENU_ITEMS: MenuItem[] = [
     costs: {
       normal: { small: 8, medium: 12, large: 18 },
     },
-    recipe: [{ materialId: 'campa-cola-small', quantity: 1 }]
+    recipe: [{ materialId: 'campa-cola-small', quantity: 1 }],
+    sizeRecipes: {
+      small: [{ materialId: 'campa-cola-small', quantity: 1 }],
+      medium: [{ materialId: 'campa-cola-medium', quantity: 1 }],
+      large: [{ materialId: 'campa-cola-large', quantity: 1 }]
+    }
   },
   {
     id: 'mineral-water',

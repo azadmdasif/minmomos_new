@@ -1,6 +1,18 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats, updateOrderStatus } from '../utils/storage';
+import {
+  generateItemNormalizationMap,
+  getFilteredOrders,
+  generateOrdersCsv,
+  generateOrderItemsCsv,
+  generateOffersCsv,
+  generateCustomersRawCsv,
+  buildCustomerFeatures,
+  generateFeaturesCsv,
+  ItemNormalization
+} from '../utils/mlExportHelper';
+import { getMarketingCoupons } from '../utils/marketingStorage';
 import { CompletedOrder, PaymentMethod, Station, User, Customer } from '../types';
 import PrintReceipt from './PrintReceipt';
 import DeleteBillModal from './DeleteBillModal';
@@ -319,6 +331,16 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [editIsStudent, setEditIsStudent] = useState(false);
   const [editSchool, setEditSchool] = useState('');
   const [editHikerNo, setEditHikerNo] = useState('');
+
+  // ML Export & Item Normalization states
+  const [isMlDropdownOpen, setIsMlDropdownOpen] = useState(false);
+  const [isSnapshotModalOpen, setIsSnapshotModalOpen] = useState(false);
+  const [snapshotDateState, setSnapshotDateState] = useState<string>(getTodaysDateString());
+  const [labelWindowDays, setLabelWindowDays] = useState<number>(30);
+  const [isNormModalOpen, setIsNormModalOpen] = useState(false);
+  const [isApproved, setIsApproved] = useState<boolean>(false);
+  const [normMap, setNormMap] = useState<Record<string, ItemNormalization>>({});
+  const [normSearchTerm, setNormSearchTerm] = useState('');
   
   const [searchTerm, setSearchTerm] = useState('');
   const [searchMode, setSearchMode] = useState<'bill' | 'item'>('bill');
@@ -797,6 +819,114 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     document.body.removeChild(link);
   };
 
+  const downloadCsv = (csvContent: string, fileName: string) => {
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', fileName);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleExportMlOrders = async () => {
+    try {
+      const filteredOrders = getFilteredOrders(allOrdersRaw, startDate, endDate, selectedStore, isAdmin, user.stationName || 'All');
+      const { csv, emptyCols } = await generateOrdersCsv(filteredOrders);
+      downloadCsv(csv, 'orders.csv');
+      if (emptyCols.length > 0) {
+        alert(`Export completed successfully!\n\nThe following empty columns were added (not found in data store):\n- ${emptyCols.join('\n- ')}`);
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Failed to export Orders CSV');
+    }
+  };
+
+  const handleExportMlOrderItems = async () => {
+    try {
+      const filteredOrders = getFilteredOrders(allOrdersRaw, startDate, endDate, selectedStore, isAdmin, user.stationName || 'All');
+      const { csv, emptyCols } = await generateOrderItemsCsv(filteredOrders, normMap);
+      downloadCsv(csv, 'order_items.csv');
+      if (emptyCols.length > 0) {
+        alert(`Export completed successfully!\n\nThe following empty columns were added (not found in data store):\n- ${emptyCols.join('\n- ')}`);
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Failed to export Order Items CSV');
+    }
+  };
+
+  const handleExportMlOffers = async () => {
+    try {
+      const localCoupons = getMarketingCoupons();
+      const { csv, emptyCols } = await generateOffersCsv(customers, localCoupons);
+      downloadCsv(csv, 'offers.csv');
+      if (emptyCols.length > 0) {
+        alert(`Export completed successfully!\n\nThe following empty columns were added (not found in data store):\n- ${emptyCols.join('\n- ')}`);
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Failed to export Offers CSV');
+    }
+  };
+
+  const handleExportMlCustomersRaw = async () => {
+    try {
+      const filteredOrders = getFilteredOrders(allOrdersRaw, startDate, endDate, selectedStore, isAdmin, user.stationName || 'All');
+      const { csv, emptyCols } = await generateCustomersRawCsv(customers, filteredOrders, normMap);
+      downloadCsv(csv, 'customers_raw.csv');
+      if (emptyCols.length > 0) {
+        alert(`Export completed successfully!\n\nThe following empty columns were added (not found in data store):\n- ${emptyCols.join('\n- ')}`);
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Failed to export Customers Raw CSV');
+    }
+  };
+
+  const handleExportMlFeatureSnapshot = async () => {
+    try {
+      const localCoupons = getMarketingCoupons();
+      const featureRows = await buildCustomerFeatures(
+        customers,
+        allOrdersRaw,
+        localCoupons,
+        normMap,
+        snapshotDateState,
+        labelWindowDays
+      );
+      
+      const { csv, emptyCols } = generateFeaturesCsv(featureRows);
+      downloadCsv(csv, 'customer_features.csv');
+      
+      // Leakage guard check
+      const snapTime = new Date(snapshotDateState).getTime();
+      const latestOrderTime = allOrdersRaw.length > 0 
+        ? Math.max(...allOrdersRaw.map(o => new Date(o.date).getTime())) 
+        : 0;
+      const labelWindowEndTime = snapTime + labelWindowDays * 24 * 3600 * 1000;
+      const labelsEmpty = labelWindowEndTime > latestOrderTime;
+      
+      let labelNotice = '';
+      if (labelsEmpty) {
+        labelNotice = '\n\n⚠️ NOTE: Label columns were left empty for these rows because the label window exceeded the latest available order date in the database (leakage prevention rule).';
+      }
+      
+      if (emptyCols.length > 0) {
+        alert(`Export completed successfully!\n\nThe following empty columns were added (not found in data store):\n- ${emptyCols.join('\n- ')}${labelNotice}`);
+      } else if (labelNotice) {
+        alert(`Export completed successfully!${labelNotice}`);
+      }
+      setIsSnapshotModalOpen(false);
+    } catch (err) {
+      console.error(err);
+      alert('Failed to generate Feature Snapshot CSV');
+    }
+  };
+
   const [isSyncingStats, setIsSyncingStats] = useState(false);
   const handleSyncAllStats = async () => {
     if (isSyncingStats || !filteredCustomers.length) return;
@@ -900,6 +1030,45 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     fetchFinanceData();
     fetchAdjustments();
   }, [fetchOrders, fetchDeletedOrders, fetchFinanceData, fetchAdjustments]);
+
+  // Synchronize item normalization map with orders
+  useEffect(() => {
+    if (allOrdersRaw.length === 0) return;
+    
+    const savedMap = localStorage.getItem('MOMOMAYA_ITEM_NORMALIZATION_MAP');
+    const approvedState = localStorage.getItem('MOMOMAYA_ITEM_NORMALIZATION_APPROVED') === 'true';
+    
+    setIsApproved(approvedState);
+    
+    let finalMap: Record<string, ItemNormalization> = {};
+    if (savedMap) {
+      try {
+        finalMap = JSON.parse(savedMap);
+      } catch (e) {
+        console.error("Failed to parse saved normalization map:", e);
+      }
+    }
+    
+    const generated = generateItemNormalizationMap(allOrdersRaw);
+    let merged = false;
+    
+    Object.keys(generated).forEach(key => {
+      if (!finalMap[key]) {
+        finalMap[key] = generated[key];
+        merged = true;
+      }
+    });
+    
+    setNormMap(finalMap);
+    if (merged || !savedMap) {
+      localStorage.setItem('MOMOMAYA_ITEM_NORMALIZATION_MAP', JSON.stringify(finalMap));
+    }
+  }, [allOrdersRaw]);
+  
+  // Keep snapshot date state in sync with date range end date
+  useEffect(() => {
+    setSnapshotDateState(endDate);
+  }, [endDate]);
 
   const handlePresetChange = (preset: DatePreset) => {
     setActivePreset(preset);
@@ -2547,30 +2716,120 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                </div>
             </div>
 
+            {!isApproved && (
+              <div className="bg-brand-red/10 border-2 border-brand-red rounded-[2rem] p-6 flex flex-col md:flex-row items-center justify-between gap-4 animate-in slide-in-from-top duration-300">
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-brand-red flex items-center justify-center text-white shrink-0 shadow-lg shadow-brand-red/20">
+                    <GraduationCap className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-brand-brown uppercase">Item Normalization Approval Required</h4>
+                    <p className="text-[11px] font-medium text-brand-brown/70 mt-1 max-w-2xl leading-relaxed">
+                      Item names embed sizes and redemption flags in raw text. To enable consistent, accurate ML exports and snapshot computations, please review and approve the base item mapping lookup table.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsNormModalOpen(true)}
+                  className="px-6 py-3 bg-brand-red text-white text-xs font-black uppercase tracking-widest rounded-xl hover:bg-brand-red/90 transition-all shadow-md active:scale-95 whitespace-nowrap shrink-0"
+                >
+                  Review & Approve Map
+                </button>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Customer List */}
             <div className="lg:col-span-1 bg-white rounded-[2.5rem] p-6 shadow-xl border border-brand-stone flex flex-col h-[700px]">
               <div className="mb-6 space-y-4">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-xl font-black text-brand-brown uppercase italic">Customer <span className="text-brand-red">Base</span></h3>
-                  <div className="flex items-center gap-4">
+                  <h3 className="text-xl font-black text-brand-brown uppercase italic shrink-0">Customer <span className="text-brand-red">Base</span></h3>
+                  <div className="flex flex-wrap items-center gap-2 justify-end">
                     <button 
                       onClick={handleSyncAllStats}
                       disabled={isSyncingStats}
-                      className="flex items-center gap-2 px-3 py-1.5 bg-blue-500 text-white rounded-xl text-[8px] font-black uppercase tracking-widest hover:bg-blue-600 transition-all shadow-md active:scale-95 disabled:opacity-50"
+                      className="flex items-center gap-1.5 px-2 py-1.5 bg-blue-500 text-white rounded-xl text-[8px] font-black uppercase tracking-widest hover:bg-blue-600 transition-all shadow-md active:scale-95 disabled:opacity-50"
                       title="Recalculate LTV/Orders for all listed customers"
                     >
-                      <RefreshCw className={`w-3 h-3 ${isSyncingStats ? 'animate-spin' : ''}`} />
-                      {isSyncingStats ? 'Syncing...' : 'Sync Stats'}
+                      <RefreshCw className={`w-2.5 h-2.5 ${isSyncingStats ? 'animate-spin' : ''}`} />
+                      {isSyncingStats ? 'Syncing...' : 'Sync'}
                     </button>
+                    
+                    <button 
+                      onClick={() => setIsNormModalOpen(true)}
+                      className={`flex items-center gap-1.5 px-2 py-1.5 rounded-xl text-[8px] font-black uppercase tracking-widest transition-all shadow-md active:scale-95 ${isApproved ? 'bg-brand-brown text-brand-yellow hover:bg-brand-brown/90' : 'bg-brand-red/10 border border-brand-red text-brand-red hover:bg-brand-red/20'}`}
+                      title="Manage Item Normalization Map"
+                    >
+                      <GraduationCap className="w-2.5 h-2.5" />
+                      {isApproved ? 'Norm Map' : 'Review Map'}
+                    </button>
+
                     <button 
                       onClick={handleExportCustomers}
-                      className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500 text-white rounded-xl text-[8px] font-black uppercase tracking-widest hover:bg-emerald-600 transition-all shadow-md active:scale-95"
+                      className="flex items-center gap-1.5 px-2 py-1.5 bg-emerald-500 text-white rounded-xl text-[8px] font-black uppercase tracking-widest hover:bg-emerald-600 transition-all shadow-md active:scale-95"
                     >
-                      <Download className="w-3 h-3" />
+                      <Download className="w-2.5 h-2.5" />
                       Export CSV
                     </button>
-                    <span className="text-[10px] font-black text-brand-brown/40 uppercase tracking-widest">{filteredCustomers.length} Found</span>
+
+                    <div className="relative">
+                      <button 
+                        onClick={() => setIsMlDropdownOpen(!isMlDropdownOpen)}
+                        className="flex items-center gap-1.5 px-2 py-1.5 bg-indigo-600 text-white rounded-xl text-[8px] font-black uppercase tracking-widest hover:bg-indigo-700 transition-all shadow-md active:scale-95"
+                      >
+                        <FileText className="w-2.5 h-2.5" />
+                        Export ML Data
+                      </button>
+                      
+                      {isMlDropdownOpen && (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setIsMlDropdownOpen(false)} />
+                          <div className="absolute right-0 mt-2 w-56 bg-white border border-brand-stone rounded-2xl shadow-2xl z-50 overflow-hidden py-2 animate-in fade-in slide-in-from-top-2 duration-150">
+                            <div className="px-4 py-2 border-b border-brand-stone">
+                              <p className="text-[9px] font-black uppercase text-brand-brown/40 tracking-wider">Select ML Format</p>
+                            </div>
+                            <button 
+                              onClick={() => { setIsMlDropdownOpen(false); handleExportMlOrders(); }}
+                              className="w-full px-4 py-2.5 text-left text-[10px] font-black uppercase text-brand-brown hover:bg-brand-brown/5 flex items-center gap-2"
+                            >
+                              <div className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                              orders.csv (Raw Orders)
+                            </button>
+                            <button 
+                              onClick={() => { setIsMlDropdownOpen(false); handleExportMlOrderItems(); }}
+                              className="w-full px-4 py-2.5 text-left text-[10px] font-black uppercase text-brand-brown hover:bg-brand-brown/5 flex items-center gap-2"
+                            >
+                              <div className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                              order_items.csv (Normalized)
+                            </button>
+                            <button 
+                              onClick={() => { setIsMlDropdownOpen(false); handleExportMlOffers(); }}
+                              className="w-full px-4 py-2.5 text-left text-[10px] font-black uppercase text-brand-brown hover:bg-brand-brown/5 flex items-center gap-2"
+                            >
+                              <div className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                              offers.csv (Offers Sent)
+                            </button>
+                            <button 
+                              onClick={() => { setIsMlDropdownOpen(false); handleExportMlCustomersRaw(); }}
+                              className="w-full px-4 py-2.5 text-left text-[10px] font-black uppercase text-brand-brown hover:bg-brand-brown/5 flex items-center gap-2"
+                            >
+                              <div className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                              customers_raw.csv (Raw)
+                            </button>
+                            <div className="border-t border-brand-stone my-1" />
+                            <button 
+                              onClick={() => { setIsMlDropdownOpen(false); setIsSnapshotModalOpen(true); }}
+                              className="w-full px-4 py-2.5 text-left text-[10px] font-black uppercase text-brand-red hover:bg-brand-red/5 flex items-center gap-2"
+                            >
+                              <div className="w-1.5 h-1.5 rounded-full bg-brand-red animate-pulse" />
+                              ML Feature Snapshot
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    <span className="text-[10px] font-black text-brand-brown/40 uppercase tracking-widest shrink-0">{filteredCustomers.length} Found</span>
                   </div>
                 </div>
 
@@ -3602,6 +3861,252 @@ BENEFITS:
                   </div>
                 ))
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isNormModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 lg:p-10 animate-in fade-in duration-300">
+          <div className="absolute inset-0 bg-brand-brown/80 backdrop-blur-md" onClick={() => setIsNormModalOpen(false)}></div>
+          <div className="bg-white rounded-[2rem] lg:rounded-[3rem] p-8 border-4 border-brand-brown shadow-2xl relative z-10 w-full max-w-6xl max-h-[90vh] flex flex-col">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6 shrink-0">
+              <div>
+                <h3 className="text-2xl font-black text-brand-brown uppercase tracking-tighter flex items-center gap-3">
+                  <GraduationCap className="w-7 h-7 text-brand-red" />
+                  Item Normalization Map
+                </h3>
+                <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">
+                  Configure raw item names into base IDs, sizes, categories, and redemption rules for ML feature snap-shooting.
+                </p>
+              </div>
+              <div className="flex items-center gap-3 w-full md:w-auto">
+                <div className="relative flex-1 md:w-64">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-brand-brown/30" />
+                  <input 
+                    type="text"
+                    placeholder="Filter raw items..."
+                    value={normSearchTerm}
+                    onChange={e => setNormSearchTerm(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 bg-brand-brown/5 rounded-xl text-xs font-black uppercase outline-none focus:ring-2 ring-brand-yellow/50 transition-all"
+                  />
+                </div>
+                <button onClick={() => setIsNormModalOpen(false)} className="p-2 hover:bg-brand-stone/20 rounded-full transition-colors">
+                  <X className="w-6 h-6 text-brand-brown" />
+                </button>
+              </div>
+            </div>
+
+            {/* Normalization list */}
+            <div className="flex-1 overflow-y-auto border border-brand-stone rounded-2xl no-scrollbar">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-brand-stone/30 border-b border-brand-stone sticky top-0 z-10">
+                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-brand-brown/60">Raw Item Name</th>
+                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-brand-brown/60">Base Item ID</th>
+                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-brand-brown/60">Base Item Name</th>
+                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-brand-brown/60">Category</th>
+                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-brand-brown/60">Size</th>
+                    <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-brand-brown/60 text-center">Redeem?</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-brand-stone">
+                  {Object.values(normMap)
+                    .filter(item => item.raw_item_name.toLowerCase().includes(normSearchTerm.toLowerCase()))
+                    .map((item) => (
+                      <tr key={item.raw_item_name} className="hover:bg-brand-brown/5 transition-colors">
+                        <td className="px-6 py-3 text-xs font-bold text-brand-brown max-w-[200px] truncate" title={item.raw_item_name}>
+                          {item.raw_item_name}
+                        </td>
+                        <td className="px-6 py-3">
+                          <input 
+                            type="text"
+                            value={item.base_item_id}
+                            onChange={e => {
+                              const updated = { ...normMap, [item.raw_item_name]: { ...item, base_item_id: e.target.value } };
+                              setNormMap(updated);
+                              localStorage.setItem('MOMOMAYA_ITEM_NORMALIZATION_MAP', JSON.stringify(updated));
+                            }}
+                            className="w-full px-3 py-1.5 bg-brand-brown/5 border border-brand-stone rounded-lg text-xs font-bold font-mono outline-none focus:ring-2 ring-brand-yellow/50 transition-all"
+                          />
+                        </td>
+                        <td className="px-6 py-3">
+                          <input 
+                            type="text"
+                            value={item.base_item_name}
+                            onChange={e => {
+                              const updated = { ...normMap, [item.raw_item_name]: { ...item, base_item_name: e.target.value } };
+                              setNormMap(updated);
+                              localStorage.setItem('MOMOMAYA_ITEM_NORMALIZATION_MAP', JSON.stringify(updated));
+                            }}
+                            className="w-full px-3 py-1.5 bg-brand-brown/5 border border-brand-stone rounded-lg text-xs font-bold outline-none focus:ring-2 ring-brand-yellow/50 transition-all"
+                          />
+                        </td>
+                        <td className="px-6 py-3">
+                          <select
+                            value={item.category}
+                            onChange={e => {
+                              const updated = { ...normMap, [item.raw_item_name]: { ...item, category: e.target.value as any } };
+                              setNormMap(updated);
+                              localStorage.setItem('MOMOMAYA_ITEM_NORMALIZATION_MAP', JSON.stringify(updated));
+                            }}
+                            className="px-2 py-1.5 bg-brand-brown/5 border border-brand-stone rounded-lg text-xs font-bold text-brand-brown outline-none"
+                          >
+                            <option value="chicken">Chicken</option>
+                            <option value="veg">Veg</option>
+                            <option value="paneer">Paneer</option>
+                            <option value="beverage">Beverage</option>
+                            <option value="other">Other</option>
+                          </select>
+                        </td>
+                        <td className="px-6 py-3">
+                          <select
+                            value={item.size}
+                            onChange={e => {
+                              const updated = { ...normMap, [item.raw_item_name]: { ...item, size: e.target.value as any } };
+                              setNormMap(updated);
+                              localStorage.setItem('MOMOMAYA_ITEM_NORMALIZATION_MAP', JSON.stringify(updated));
+                            }}
+                            className="px-2 py-1.5 bg-brand-brown/5 border border-brand-stone rounded-lg text-xs font-bold text-brand-brown outline-none"
+                          >
+                            <option value="">(None)</option>
+                            <option value="small">Small</option>
+                            <option value="medium">Medium</option>
+                            <option value="large">Large</option>
+                          </select>
+                        </td>
+                        <td className="px-6 py-3 text-center">
+                          <input 
+                            type="checkbox"
+                            checked={item.is_redemption}
+                            onChange={e => {
+                              const updated = { ...normMap, [item.raw_item_name]: { ...item, is_redemption: e.target.checked } };
+                              setNormMap(updated);
+                              localStorage.setItem('MOMOMAYA_ITEM_NORMALIZATION_MAP', JSON.stringify(updated));
+                            }}
+                            className="w-4 h-4 rounded border-brand-stone text-brand-red focus:ring-brand-red focus:ring-offset-0 focus:ring-2"
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Bottom Actions */}
+            <div className="flex items-center justify-between mt-6 shrink-0 pt-4 border-t border-brand-stone">
+              <span className="text-[10px] font-black uppercase text-brand-brown/40 tracking-wider">
+                {Object.keys(normMap).length} Items Registered
+              </span>
+              <div className="flex items-center gap-4">
+                <button 
+                  onClick={() => setIsNormModalOpen(false)}
+                  className="px-6 py-3 bg-brand-brown/5 text-brand-brown hover:bg-brand-brown/10 text-xs font-black uppercase tracking-widest rounded-xl transition-all"
+                >
+                  Close
+                </button>
+                <button 
+                  onClick={() => {
+                    localStorage.setItem('MOMOMAYA_ITEM_NORMALIZATION_APPROVED', 'true');
+                    setIsApproved(true);
+                    setIsNormModalOpen(false);
+                    alert("Item Normalization Map has been saved and approved successfully!");
+                  }}
+                  className="px-8 py-3 bg-emerald-500 text-white text-xs font-black uppercase tracking-widest rounded-xl hover:bg-emerald-600 transition-all shadow-md active:scale-95"
+                >
+                  Approve Map Table
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isSnapshotModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-brand-brown/80 backdrop-blur-md" onClick={() => setIsSnapshotModalOpen(false)} />
+          <div className="relative bg-white w-full max-w-lg rounded-[2.5rem] p-8 border-4 border-brand-brown shadow-2xl flex flex-col animate-in zoom-in-95 duration-300">
+            <div className="flex justify-between items-center mb-6">
+              <div>
+                <h3 className="text-xl font-black text-brand-brown uppercase italic">ML Feature <span className="text-brand-red">Snapshot</span></h3>
+                <p className="text-[9px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">Generate a leakage-guarded customer behavior timeline</p>
+              </div>
+              <button onClick={() => setIsSnapshotModalOpen(false)} className="p-2 hover:bg-brand-stone/10 rounded-full transition-colors text-brand-brown">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              <div>
+                <label className="block text-[10px] font-black uppercase tracking-wider text-brand-brown/60 mb-2">Snapshot Cutoff Date</label>
+                <div className="relative">
+                  <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-brand-brown/30" />
+                  <input 
+                    type="date"
+                    value={snapshotDateState}
+                    onChange={e => setSnapshotDateState(e.target.value)}
+                    className="w-full pl-10 pr-4 py-3 bg-brand-brown/5 rounded-xl text-xs font-black outline-none focus:ring-2 ring-brand-yellow/50 transition-all"
+                  />
+                </div>
+                <p className="text-[8px] font-bold text-brand-brown/40 uppercase tracking-wide mt-1.5 ml-1">
+                  Feature columns will be strictly calculated using orders BEFORE this date (leakage prevention).
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black uppercase tracking-wider text-brand-brown/60 mb-2">Label Prediction Window (Days)</label>
+                <div className="relative">
+                  <input 
+                    type="number"
+                    min="1"
+                    max="365"
+                    value={labelWindowDays}
+                    onChange={e => setLabelWindowDays(Math.max(1, parseInt(e.target.value, 10) || 30))}
+                    className="w-full px-4 py-3 bg-brand-brown/5 rounded-xl text-xs font-black outline-none focus:ring-2 ring-brand-yellow/50 transition-all"
+                  />
+                </div>
+                <p className="text-[8px] font-bold text-brand-brown/40 uppercase tracking-wide mt-1.5 ml-1">
+                  Target labels calculate order activity within [Cutoff Date, Cutoff Date + Window].
+                </p>
+              </div>
+
+              {/* Dynamic Leakage Guard Warning */}
+              {(() => {
+                const snapTime = new Date(snapshotDateState).getTime();
+                const latestOrderTime = allOrdersRaw.length > 0 
+                  ? Math.max(...allOrdersRaw.map(o => new Date(o.date).getTime())) 
+                  : 0;
+                const labelWindowEndTime = snapTime + labelWindowDays * 24 * 3600 * 1000;
+                const isOutOfRange = labelWindowEndTime > latestOrderTime;
+                
+                if (isOutOfRange) {
+                  return (
+                    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-[10px] font-medium text-amber-800 leading-relaxed">
+                      ⚠️ <strong>Leakage Warning:</strong> The prediction window ends after the last order in your database ({getISTDateString(latestOrderTime)}). Label columns will remain blank for these records to prevent training on partial future data.
+                    </div>
+                  );
+                }
+                return (
+                  <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 text-[10px] font-medium text-emerald-800 leading-relaxed">
+                    ✅ <strong>Leakage Safe:</strong> Full forward target window is available. Label columns will be populated using actual order outcomes.
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 mt-8">
+              <button 
+                onClick={() => setIsSnapshotModalOpen(false)}
+                className="px-5 py-2.5 bg-brand-brown/5 text-brand-brown hover:bg-brand-brown/10 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleExportMlFeatureSnapshot}
+                className="px-6 py-2.5 bg-brand-red text-white hover:bg-brand-red/90 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95"
+              >
+                Generate Snapshot
+              </button>
             </div>
           </div>
         </div>

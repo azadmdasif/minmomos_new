@@ -23,7 +23,8 @@ import {
   Filter,
   RefreshCw,
   Sparkles,
-  Download
+  Download,
+  AlertTriangle
 } from 'lucide-react';
 import { DailyOperationRecord, DailyOpStatus, DailyOpInventoryItem, DailyOpEvent, User } from '../types';
 import jsPDF from 'jspdf';
@@ -167,6 +168,7 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
   const [employees, setEmployees] = useState<any[]>([]);
   const [posSales, setPosSales] = useState<{ cash: number; upi: number }>({ cash: 0, upi: 0 });
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'failed' | 'idle'>('idle');
   const [prevClosingRecord, setPrevClosingRecord] = useState<DailyOperationRecord | null>(null);
 
   // Modal/Details View state
@@ -188,11 +190,27 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
   // Attendance edits
   const [openAttendanceModal, setOpenAttendanceModal] = useState<boolean>(false);
 
-  // Load basic details
+  // Load basic details & add window focus/visibility listeners for real-time sync across devices
   useEffect(() => {
     loadAllRecords();
     loadEmployees();
     fetchTodaySales();
+
+    const handleSyncOnVisible = () => {
+      if (document.visibilityState === 'visible') {
+        loadAllRecords();
+        loadEmployees();
+        fetchTodaySales();
+      }
+    };
+
+    window.addEventListener('focus', handleSyncOnVisible);
+    document.addEventListener('visibilitychange', handleSyncOnVisible);
+
+    return () => {
+      window.removeEventListener('focus', handleSyncOnVisible);
+      document.removeEventListener('visibilitychange', handleSyncOnVisible);
+    };
   }, [todayDate, currentBranch]);
 
   // Sync viewStage when activeRecord is loaded or when its status advances
@@ -374,6 +392,7 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
     setAllRecords(updatedAll);
     localStorage.setItem('minmomos-daily-operations', serializeRecordsForLocalStorage(updatedAll));
 
+    setSyncStatus('syncing');
     // Upsert to Supabase
     try {
       const payload = {
@@ -420,8 +439,10 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
         .upsert(existingId ? { id: existingId, ...payload } : payload);
 
       if (error) throw error;
+      setSyncStatus('synced');
     } catch (e) {
       console.warn("Could not sync to Supabase. Stored locally.", e);
+      setSyncStatus('failed');
     }
   };
 
@@ -1342,8 +1363,47 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
             </button>
           </div>
 
+          {/* Cloud Synchronization Status Indicator */}
+          {syncStatus !== 'idle' && (
+            <div className={`flex items-center justify-between px-5 py-3 rounded-2xl border-2 transition-all ${
+              syncStatus === 'syncing' ? 'bg-brand-yellow/10 border-brand-yellow/30 text-brand-brown' :
+              syncStatus === 'synced' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' :
+              'bg-rose-50 border-rose-200 text-rose-800'
+            }`}>
+              <div className="flex items-center gap-2">
+                {syncStatus === 'syncing' && <RefreshCw className="w-4 h-4 animate-spin text-brand-brown" />}
+                {syncStatus === 'synced' && <Check className="w-4 h-4 text-emerald-600" />}
+                {syncStatus === 'failed' && <AlertTriangle className="w-4 h-4 text-rose-600" />}
+                <span className="text-[11px] font-bold uppercase tracking-wider">
+                  {syncStatus === 'syncing' ? 'Syncing day state with Cloud...' :
+                   syncStatus === 'synced' ? 'All changes saved & synced to Cloud' :
+                   'Sync failed. Saved offline. Tap Refresh to retry.'}
+                </span>
+              </div>
+              {syncStatus === 'failed' && (
+                <button 
+                  onClick={() => activeRecord && saveRecord(activeRecord)}
+                  className="text-[10px] font-black uppercase text-rose-800 hover:underline"
+                >
+                  Retry Now
+                </button>
+              )}
+            </div>
+          )}
+
           {/* DYNAMIC WORKFLOW STAGES CONTAINER */}
-          {!activeRecord ? (
+          {isSyncing && !activeRecord ? (
+            /* Elegant, themed Loading Spinner / Skeleton */
+            <div className="bg-white rounded-[3rem] p-12 border-4 border-brand-brown shadow-2xl text-center space-y-6 flex flex-col items-center justify-center min-h-[300px]">
+              <RefreshCw className="w-12 h-12 text-brand-yellow animate-spin" />
+              <p className="text-xs font-black uppercase text-brand-brown tracking-widest mt-4">
+                Fetching latest Operational Status...
+              </p>
+              <p className="text-[10px] text-brand-brown/40">
+                Checking cloud sync with Supabase
+              </p>
+            </div>
+          ) : !activeRecord ? (
             /* STAGE 1 – Store Arrival (1:00 PM) */
             <div className="bg-white rounded-[3rem] p-8 border-4 border-brand-brown shadow-2xl text-center space-y-6">
               <div className="w-20 h-20 bg-brand-yellow/20 rounded-full flex items-center justify-center mx-auto text-brand-yellow border-4 border-brand-brown">

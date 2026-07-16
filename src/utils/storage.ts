@@ -145,6 +145,19 @@ export async function fetchProcurements(startDate: string, endDate: string): Pro
   return { data: data || [], error };
 }
 
+export async function fetchAllNonVoidedProcurements(): Promise<any[]> {
+  const { data, error } = await supabase
+    .from('procurements')
+    .select('*')
+    .eq('is_voided', false)
+    .order('date', { ascending: false });
+  if (error) {
+    console.error("Error fetching all non-voided procurements:", error);
+    return [];
+  }
+  return data || [];
+}
+
 export async function getFinancialSpending(startDate: string, endDate: string): Promise<any[]> {
   const { data, error } = await supabase
     .from('procurements')
@@ -193,7 +206,48 @@ export async function toggleProcurementPaidStatus(id: string, isPaid: boolean): 
   if (error) throw error;
 }
 
-export const getItemSubcategory = (name: string, id: string, category?: string): string => {
+export function syncSubcategoriesToLocal(items: any[]): void {
+  try {
+    const saved = localStorage.getItem('custom_subcategories') || '{}';
+    const map = JSON.parse(saved);
+    let changed = false;
+    items.forEach(item => {
+      if (item && item.id) {
+        if (item.subcategory) {
+          if (map[item.id] !== item.subcategory) {
+            map[item.id] = item.subcategory;
+            changed = true;
+          }
+        } else if (map[item.id]) {
+          // Local storage has it but Supabase is NULL. Sync it to Supabase asynchronously.
+          const subcat = map[item.id];
+          (async () => {
+            try {
+              await supabase
+                .from('central_inventory')
+                .update({ subcategory: subcat })
+                .eq('id', item.id);
+              await supabase
+                .from('inventory')
+                .update({ subcategory: subcat })
+                .eq('id', item.id);
+            } catch (err) {
+              // Safe to ignore if table/column does not exist yet
+            }
+          })();
+        }
+      }
+    });
+    if (changed) {
+      localStorage.setItem('custom_subcategories', JSON.stringify(map));
+    }
+  } catch (e) {
+    console.error("Failed to sync subcategories:", e);
+  }
+}
+
+export const getItemSubcategory = (name: string, id: string, category?: string, subcategory?: string): string => {
+  if (subcategory) return subcategory;
   try {
     const saved = localStorage.getItem('custom_subcategories');
     if (saved) {
@@ -775,7 +829,7 @@ export async function saveOrder(
       let menuDetail = menuItems?.find(m => m.id === item.menuItemId);
       if (!menuDetail) {
         // Robust Fallback: Try matching by name if item.menuItemId doesn't map directly
-        const baseName = item.name.replace(/^(Steamed|Fried|Pan Fried|Pan-Fried|Peri-Peri|Peri peri)\s+/i, '').split(' (')[0].trim();
+        const baseName = item.name.replace(/^(Steamed|Fried|Pan Fried|Pan-Fried|Peri-Peri|Peri peri|Normal)\s+/i, '').split(' (')[0].trim();
         menuDetail = menuItems?.find(m => m.name.toLowerCase() === baseName.toLowerCase() || m.name.toLowerCase() === item.name.toLowerCase());
       }
 
@@ -834,7 +888,7 @@ export async function saveOrder(
               .maybeSingle();
             
             if (centralInfo) {
-              await supabase.from('inventory').insert({
+              const insertPayload: any = {
                 id: requirement.materialId,
                 branch_name: branchName,
                 name: centralInfo.name,
@@ -843,7 +897,20 @@ export async function saveOrder(
                 current_stock: -totalConsumption,
                 is_finished: false,
                 request_pending: false
-              });
+              };
+              if (centralInfo.subcategory) {
+                insertPayload.subcategory = centralInfo.subcategory;
+              }
+
+              const { error: insertErr } = await supabase.from('inventory').insert(insertPayload);
+              if (insertErr) {
+                if (centralInfo.subcategory && insertErr.message && insertErr.message.includes("subcategory")) {
+                  delete insertPayload.subcategory;
+                  await supabase.from('inventory').insert(insertPayload);
+                } else {
+                  console.error("Failed to insert branch inventory:", insertErr);
+                }
+              }
 
               await supabase.from('inventory_logs').insert({
                 inventory_id: requirement.materialId,
@@ -949,7 +1016,9 @@ export async function updateAppUser(userId: string, user: { username: string, pa
 export async function getCentralInventory(): Promise<CentralMaterial[]> {
   const { data, error } = await supabase.from('central_inventory').select('*').order('name');
   if (error) throw error;
-  return data || [];
+  const items = data || [];
+  syncSubcategoriesToLocal(items);
+  return items;
 }
 
 export async function createCentralItem(
@@ -958,41 +1027,103 @@ export async function createCentralItem(
   initialQty: number, 
   costPerUnit: number, 
   category: MaterialCategory,
-  manualId?: string
+  manualId?: string,
+  subcategory?: string
 ): Promise<void> {
   const id = manualId || name.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-  const { error } = await supabase.from('central_inventory').upsert({
+  const payload: any = {
     id, name, unit, category, current_stock: initialQty, 
     last_purchase_cost: costPerUnit,
     last_purchase_date: getISTISOString(), is_finished: false
-  });
-  if (error) throw error;
-}
+  };
+  const finalSubcategory = subcategory || getItemSubcategory(name, id, category);
+  if (finalSubcategory) {
+    payload.subcategory = finalSubcategory;
+  }
 
-export async function updateCentralItem(id: string, name: string, unit: string, category: MaterialCategory): Promise<void> {
-  const { error: centralErr } = await supabase
-    .from('central_inventory')
-    .update({ name, unit, category })
-    .eq('id', id);
-  if (centralErr) throw centralErr;
-
-  const { error: branchErr } = await supabase
-    .from('inventory')
-    .update({ name, unit, category })
-    .eq('id', id);
-  if (branchErr) {
-    console.warn("Failed to update branch inventory items (might not exist yet):", branchErr);
+  const { error } = await supabase.from('central_inventory').upsert(payload);
+  if (error) {
+    if (finalSubcategory && error.message && error.message.includes("subcategory")) {
+      delete payload.subcategory;
+      const { error: retryError } = await supabase.from('central_inventory').upsert(payload);
+      if (retryError) throw retryError;
+    } else {
+      throw error;
+    }
   }
 }
 
-export function saveItemSubcategory(id: string, subcategory: string): void {
+export async function updateCentralItem(id: string, name: string, unit: string, category: MaterialCategory, subcategory?: string): Promise<void> {
+  const payloadCentral: any = { name, unit, category };
+  const finalSub = subcategory || getItemSubcategory(name, id, category);
+  if (finalSub) payloadCentral.subcategory = finalSub;
+
+  const { error: centralErr } = await supabase
+    .from('central_inventory')
+    .update(payloadCentral)
+    .eq('id', id);
+
+  if (centralErr) {
+    if (finalSub && centralErr.message && centralErr.message.includes("subcategory")) {
+      delete payloadCentral.subcategory;
+      const { error: retryErr } = await supabase
+        .from('central_inventory')
+        .update(payloadCentral)
+        .eq('id', id);
+      if (retryErr) throw retryErr;
+    } else {
+      throw centralErr;
+    }
+  }
+
+  const payloadBranch: any = { name, unit, category };
+  if (finalSub) payloadBranch.subcategory = finalSub;
+
+  const { error: branchErr } = await supabase
+    .from('inventory')
+    .update(payloadBranch)
+    .eq('id', id);
+  if (branchErr) {
+    if (finalSub && branchErr.message && branchErr.message.includes("subcategory")) {
+      delete payloadBranch.subcategory;
+      await supabase
+        .from('inventory')
+        .update(payloadBranch)
+        .eq('id', id);
+    } else {
+      console.warn("Failed to update branch inventory items (might not exist yet):", branchErr);
+    }
+  }
+}
+
+export async function saveItemSubcategory(id: string, subcategory: string): Promise<void> {
   try {
     const saved = localStorage.getItem('custom_subcategories') || '{}';
     const map = JSON.parse(saved);
     map[id] = subcategory;
     localStorage.setItem('custom_subcategories', JSON.stringify(map));
   } catch (e) {
-    console.error("Failed to save item subcategory:", e);
+    console.error("Failed to save item subcategory locally:", e);
+  }
+
+  try {
+    const { error: err1 } = await supabase
+      .from('central_inventory')
+      .update({ subcategory })
+      .eq('id', id);
+    if (err1 && !err1.message.includes("subcategory")) {
+      console.warn("Failed to update central_inventory subcategory:", err1.message);
+    }
+
+    const { error: err2 } = await supabase
+      .from('inventory')
+      .update({ subcategory })
+      .eq('id', id);
+    if (err2 && !err2.message.includes("subcategory")) {
+      console.warn("Failed to update inventory subcategory:", err2.message);
+    }
+  } catch (dbErr) {
+    console.error("Failed to save item subcategory to Supabase:", dbErr);
   }
 }
 
@@ -1039,10 +1170,31 @@ export async function allocateStock(materialId: string, stationName: string, qty
   const { data: existing } = await supabase.from('inventory').select('current_stock').eq('id', materialId).eq('branch_name', stationName).maybeSingle();
   const newStationStock = (existing?.current_stock || 0) + qty;
   
-  const { error: storeError } = await supabase.from('inventory').upsert({
-    id: materialId, branch_name: stationName, name: central.name, unit: central.unit, category: central.category, current_stock: newStationStock, is_finished: false, request_pending: false
-  }, { onConflict: 'id,branch_name' });
-  if (storeError) throw storeError;
+  const payload: any = {
+    id: materialId, 
+    branch_name: stationName, 
+    name: central.name, 
+    unit: central.unit, 
+    category: central.category, 
+    current_stock: newStationStock, 
+    is_finished: false, 
+    request_pending: false
+  };
+  const finalSub = central.subcategory || getItemSubcategory(central.name, materialId, central.category);
+  if (finalSub) {
+    payload.subcategory = finalSub;
+  }
+
+  const { error: storeError } = await supabase.from('inventory').upsert(payload, { onConflict: 'id,branch_name' });
+  if (storeError) {
+    if (finalSub && storeError.message && storeError.message.includes("subcategory")) {
+      delete payload.subcategory;
+      const { error: retryError } = await supabase.from('inventory').upsert(payload, { onConflict: 'id,branch_name' });
+      if (retryError) throw retryError;
+    } else {
+      throw storeError;
+    }
+  }
 
   // 3. Log Movement (THE LEDGER ENTRY)
   const { error: logError } = await supabase.from('stock_allocations').insert({
@@ -1058,10 +1210,42 @@ export async function allocateStock(materialId: string, stationName: string, qty
 
 export async function markStoreItemFinished(id: string, branchName: string, finished: boolean): Promise<void> {
   await supabase.from('inventory').update({ is_finished: finished, current_stock: finished ? 0 : 1 }).eq('id', id).eq('branch_name', branchName);
+  
+  if (finished) {
+    try {
+      const { data: itemData } = await supabase.from('inventory').select('name').eq('id', id).eq('branch_name', branchName).maybeSingle();
+      await supabase.from('inventory_logs').insert({
+        inventory_id: id,
+        item_name: itemData?.name || id,
+        branch_name: branchName,
+        quantity_change: 0,
+        reason: 'STOCK_OVER',
+        date: getISTISOString()
+      });
+    } catch (e) {
+      console.warn("Could not insert STOCK_OVER historical log", e);
+    }
+  }
 }
 
 export async function markCentralFinished(id: string, finished: boolean): Promise<void> {
   await supabase.from('central_inventory').update({ is_finished: finished, current_stock: finished ? 0 : 1 }).eq('id', id);
+  
+  if (finished) {
+    try {
+      const { data: itemData } = await supabase.from('central_inventory').select('name').eq('id', id).maybeSingle();
+      await supabase.from('inventory_logs').insert({
+        inventory_id: id,
+        item_name: itemData?.name || id,
+        branch_name: 'CENTRAL_HUB',
+        quantity_change: 0,
+        reason: 'STOCK_OVER',
+        date: getISTISOString()
+      });
+    } catch (e) {
+      console.warn("Could not insert central STOCK_OVER historical log", e);
+    }
+  }
 }
 
 export async function raiseRestockRequest(id: string, branchName: string): Promise<void> {
@@ -1075,12 +1259,16 @@ export async function peekNextBillNumber(): Promise<number> {
 
 export async function getInventory(branchName: string): Promise<RawMaterial[]> {
   const { data } = await supabase.from('inventory').select('*').eq('branch_name', branchName);
-  return data || [];
+  const items = data || [];
+  syncSubcategoriesToLocal(items);
+  return items;
 }
 
 export async function getAllInventories(): Promise<RawMaterial[]> {
   const { data } = await supabase.from('inventory').select('*');
-  return data || [];
+  const items = data || [];
+  syncSubcategoriesToLocal(items);
+  return items;
 }
 
 export async function manuallyAdjustStock(
@@ -1474,7 +1662,7 @@ export async function deleteOrderByBillNumber(billNumber: number, reason: string
         
         // Robust Fallback: If menu_item_id is null, try matching by name
         if (!menuDetail) {
-          const baseName = item.name.replace(/^(Steamed|Fried|Pan Fried|Pan-Fried|Peri-Peri|Peri peri)\s+/i, '').split(' (')[0].trim();
+          const baseName = item.name.replace(/^(Steamed|Fried|Pan Fried|Pan-Fried|Peri-Peri|Peri peri|Normal)\s+/i, '').split(' (')[0].trim();
           menuDetail = menuItems?.find(m => m.name.toLowerCase() === baseName.toLowerCase() || m.name.toLowerCase() === item.name.toLowerCase());
         }
 
