@@ -247,6 +247,30 @@ export function syncSubcategoriesToLocal(items: any[]): void {
 }
 
 export const getItemSubcategory = (name: string, id: string, category?: string, subcategory?: string): string => {
+  const nid = id.toLowerCase();
+  const nname = name.toLowerCase();
+
+  // Force packaging if the item is clearly a packaging material (boxes, bags, cups, containers, foil, plastic, etc.)
+  if (
+    nid.includes('box') || nname.includes('box') ||
+    nid.includes('pkg') || nname.includes('pkg') ||
+    nid.includes('bag') || nname.includes('bag') ||
+    nid.includes('cup') || nname.includes('cup') ||
+    nid.includes('paper') || nname.includes('paper') ||
+    nid.includes('glass') || nname.includes('glass') ||
+    nid.includes('spoon') || nname.includes('spoon') ||
+    nid.includes('fork') || nname.includes('fork') ||
+    nid.includes('straw') || nname.includes('straw') ||
+    nid.includes('container') || nname.includes('container') ||
+    nid.includes('foil') || nname.includes('foil') ||
+    nid.includes('plastic') || nname.includes('plastic') ||
+    nid.includes('tissue') || nname.includes('tissue') ||
+    nid.includes('plate') || nname.includes('plate') ||
+    nid.includes('wrap') || nname.includes('wrap')
+  ) {
+    return 'packaging';
+  }
+
   if (subcategory) return subcategory;
   try {
     const saved = localStorage.getItem('custom_subcategories');
@@ -257,12 +281,18 @@ export const getItemSubcategory = (name: string, id: string, category?: string, 
   } catch (e) {
     console.error(e);
   }
-
-  const nid = id.toLowerCase();
-  const nname = name.toLowerCase();
   
   // Category A / MOMO subcategories
-  if (nid.includes('momo') || nname.includes('momo')) return 'momo';
+  if ((nid.includes('momo') || nname.includes('momo')) && 
+      !nid.startsWith('pkg-') && 
+      !nid.includes('box') && 
+      !nname.includes('box') && 
+      !nid.startsWith('spice-') && 
+      !nname.includes('masala') &&
+      !nname.includes('chutney') &&
+      !nname.includes('sauce') &&
+      category !== 'PACKET'
+  ) return 'momo';
   if (nid.includes('bun') || nname.includes('bun') || nid.includes('moburg') || nname.includes('moburg')) return 'buns';
   if (nid.includes('cola') || nname.includes('cola')) return 'cola';
   if (nid.includes('water') || nname.includes('water') || nid.includes('soda') || nname.includes('soda') || nid.includes('drink') || nname.includes('drink')) return 'drinks';
