@@ -12,7 +12,7 @@ import {
 } from 'recharts';
 import { CompletedOrder, Customer } from '../types';
 import { TrendingUp, DollarSign, ShoppingBag, BarChart2, Users, Eye, EyeOff } from 'lucide-react';
-import { getISTDate, getISTDateString } from '../utils/storage';
+import { getISTDate, getISTDateString, isStudentFreeMojitoOrder } from '../utils/storage';
 
 interface PerformanceChartProps {
   orders: CompletedOrder[];
@@ -59,11 +59,13 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         totalOrders: number; dineInOrders: number; takeawayOrders: number; deliveryOrders: number;
         repeatRev: number; newRegRev: number; unregRev: number; zomatoRev: number;
         repeatOrders: number; newRegOrders: number; unregOrders: number; zomatoOrders: number;
+        studentOrders: number;
       }> = {};
       
       // Initialize all dates in range to 0
       let curr = getISTDate(startObj);
-      while (curr <= endObj) {
+      let loopCap = 0;
+      while (curr <= endObj && loopCap < 500) {
           const ds = getISTDateString(curr);
           dailyData[ds] = { 
             totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, deliveryRevenue: 0,
@@ -71,8 +73,10 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0, deliveryOrders: 0,
             repeatRev: 0, newRegRev: 0, unregRev: 0, zomatoRev: 0,
             repeatOrders: 0, newRegOrders: 0, unregOrders: 0, zomatoOrders: 0,
+            studentOrders: 0,
           };
           curr.setDate(curr.getDate() + 1);
+          loopCap++;
       }
 
       // Populate with actual data
@@ -81,48 +85,54 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         if (dailyData[dateStr]) {
           const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
           const actualRev = order.type === 'DELIVERY' && order.manualTotal != null ? order.manualTotal : order.total;
+          const isStudent = isStudentFreeMojitoOrder(order);
           
           dailyData[dateStr].totalRevenue += actualRev;
-          dailyData[dateStr].totalOrders += 1;
           dailyData[dateStr].totalCogs += totalCost;
 
-          // Segment Breakdown logic
-          if (order.type === 'DELIVERY') {
-            dailyData[dateStr].zomatoRev += actualRev;
-            dailyData[dateStr].zomatoOrders += 1;
-          } else if (!order.customerPhone) {
-            dailyData[dateStr].unregRev += actualRev;
-            dailyData[dateStr].unregOrders += 1;
+          if (isStudent) {
+            dailyData[dateStr].studentOrders += 1;
           } else {
-            const cust = customers.find(c => c.phone === order.customerPhone);
-            if (cust) {
-              const joinDateStr = getISTDateString(cust.joinedDate);
-              const orderDateStr = getISTDateString(order.date);
-              if (joinDateStr === orderDateStr) {
+            dailyData[dateStr].totalOrders += 1;
+
+            // Segment Breakdown logic
+            if (order.type === 'DELIVERY') {
+              dailyData[dateStr].zomatoRev += actualRev;
+              dailyData[dateStr].zomatoOrders += 1;
+            } else if (!order.customerPhone) {
+              dailyData[dateStr].unregRev += actualRev;
+              dailyData[dateStr].unregOrders += 1;
+            } else {
+              const cust = customers.find(c => c.phone === order.customerPhone);
+              if (cust) {
+                const joinDateStr = getISTDateString(cust.joinedDate);
+                const orderDateStr = getISTDateString(order.date);
+                if (joinDateStr === orderDateStr) {
+                  dailyData[dateStr].newRegRev += actualRev;
+                  dailyData[dateStr].newRegOrders += 1;
+                } else {
+                  dailyData[dateStr].repeatRev += actualRev;
+                  dailyData[dateStr].repeatOrders += 1;
+                }
+              } else {
                 dailyData[dateStr].newRegRev += actualRev;
                 dailyData[dateStr].newRegOrders += 1;
-              } else {
-                dailyData[dateStr].repeatRev += actualRev;
-                dailyData[dateStr].repeatOrders += 1;
               }
-            } else {
-              dailyData[dateStr].newRegRev += actualRev;
-              dailyData[dateStr].newRegOrders += 1;
             }
-          }
 
-          if (order.type === 'DINE_IN') {
-            dailyData[dateStr].dineInRevenue += order.total;
-            dailyData[dateStr].dineInOrders += 1;
-            dailyData[dateStr].dineInCogs += totalCost;
-          } else if (order.type === 'TAKEAWAY') {
-            dailyData[dateStr].takeawayRevenue += order.total;
-            dailyData[dateStr].takeawayOrders += 1;
-            dailyData[dateStr].takeawayCogs += totalCost;
-          } else if (order.type === 'DELIVERY') {
-            dailyData[dateStr].deliveryRevenue += actualRev;
-            dailyData[dateStr].deliveryOrders += 1;
-            dailyData[dateStr].deliveryCogs += totalCost;
+            if (order.type === 'DINE_IN') {
+              dailyData[dateStr].dineInRevenue += order.total;
+              dailyData[dateStr].dineInOrders += 1;
+              dailyData[dateStr].dineInCogs += totalCost;
+            } else if (order.type === 'TAKEAWAY') {
+              dailyData[dateStr].takeawayRevenue += order.total;
+              dailyData[dateStr].takeawayOrders += 1;
+              dailyData[dateStr].takeawayCogs += totalCost;
+            } else if (order.type === 'DELIVERY') {
+              dailyData[dateStr].deliveryRevenue += actualRev;
+              dailyData[dateStr].deliveryOrders += 1;
+              dailyData[dateStr].deliveryCogs += totalCost;
+            }
           }
         }
       });
@@ -141,6 +151,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             profit: revenue - cogs,
             avgTicket: count > 0 ? revenue / count : 0,
             orderCount: count,
+            studentOrders: values.studentOrders,
             dineInRev: values.dineInRevenue,
             takeawayRev: values.takeawayRevenue,
             deliveryRev: values.deliveryRevenue,
@@ -254,6 +265,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         totalOrders: number; dineInOrders: number; takeawayOrders: number; deliveryOrders: number;
         repeatRev: number; newRegRev: number; unregRev: number; zomatoRev: number;
         repeatOrders: number; newRegOrders: number; unregOrders: number; zomatoOrders: number;
+        studentOrders: number;
         weekNum: number;
         year: number;
         monday: string;
@@ -292,6 +304,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0, deliveryOrders: 0,
             repeatRev: 0, newRegRev: 0, unregRev: 0, zomatoRev: 0,
             repeatOrders: 0, newRegOrders: 0, unregOrders: 0, zomatoOrders: 0,
+            studentOrders: 0,
             weekNum: w,
             year: y,
             monday: mon.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
@@ -301,48 +314,54 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
 
         const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
         const actualRev = order.type === 'DELIVERY' && order.manualTotal != null ? order.manualTotal : order.total;
+        const isStudent = isStudentFreeMojitoOrder(order);
         
         weeklyData[key].totalRevenue += actualRev;
-        weeklyData[key].totalOrders += 1;
         weeklyData[key].totalCogs += totalCost;
 
-        // Segment Breakdown
-        if (order.type === 'DELIVERY') {
-          weeklyData[key].zomatoRev += actualRev;
-          weeklyData[key].zomatoOrders += 1;
-        } else if (!order.customerPhone) {
-          weeklyData[key].unregRev += actualRev;
-          weeklyData[key].unregOrders += 1;
+        if (isStudent) {
+          weeklyData[key].studentOrders += 1;
         } else {
-          const cust = customers.find(c => c.phone === order.customerPhone);
-          if (cust) {
-            const joinDateStr = getISTDateString(cust.joinedDate);
-            const orderDateStr = getISTDateString(order.date);
-            if (joinDateStr === orderDateStr) {
+          weeklyData[key].totalOrders += 1;
+
+          // Segment Breakdown
+          if (order.type === 'DELIVERY') {
+            weeklyData[key].zomatoRev += actualRev;
+            weeklyData[key].zomatoOrders += 1;
+          } else if (!order.customerPhone) {
+            weeklyData[key].unregRev += actualRev;
+            weeklyData[key].unregOrders += 1;
+          } else {
+            const cust = customers.find(c => c.phone === order.customerPhone);
+            if (cust) {
+              const joinDateStr = getISTDateString(cust.joinedDate);
+              const orderDateStr = getISTDateString(order.date);
+              if (joinDateStr === orderDateStr) {
+                weeklyData[key].newRegRev += actualRev;
+                weeklyData[key].newRegOrders += 1;
+              } else {
+                weeklyData[key].repeatRev += actualRev;
+                weeklyData[key].repeatOrders += 1;
+              }
+            } else {
               weeklyData[key].newRegRev += actualRev;
               weeklyData[key].newRegOrders += 1;
-            } else {
-              weeklyData[key].repeatRev += actualRev;
-              weeklyData[key].repeatOrders += 1;
             }
-          } else {
-            weeklyData[key].newRegRev += actualRev;
-            weeklyData[key].newRegOrders += 1;
           }
-        }
 
-        if (order.type === 'DINE_IN') {
-          weeklyData[key].dineInRevenue += order.total;
-          weeklyData[key].dineInOrders += 1;
-          weeklyData[key].dineInCogs += totalCost;
-        } else if (order.type === 'TAKEAWAY') {
-          weeklyData[key].takeawayRevenue += order.total;
-          weeklyData[key].takeawayOrders += 1;
-          weeklyData[key].takeawayCogs += totalCost;
-        } else if (order.type === 'DELIVERY') {
-          weeklyData[key].deliveryRevenue += actualRev;
-          weeklyData[key].deliveryOrders += 1;
-          weeklyData[key].deliveryCogs += totalCost;
+          if (order.type === 'DINE_IN') {
+            weeklyData[key].dineInRevenue += order.total;
+            weeklyData[key].dineInOrders += 1;
+            weeklyData[key].dineInCogs += totalCost;
+          } else if (order.type === 'TAKEAWAY') {
+            weeklyData[key].takeawayRevenue += order.total;
+            weeklyData[key].takeawayOrders += 1;
+            weeklyData[key].takeawayCogs += totalCost;
+          } else if (order.type === 'DELIVERY') {
+            weeklyData[key].deliveryRevenue += actualRev;
+            weeklyData[key].deliveryOrders += 1;
+            weeklyData[key].deliveryCogs += totalCost;
+          }
         }
       });
 
@@ -360,6 +379,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             profit: revenue - cogs,
             avgTicket: count > 0 ? revenue / count : 0,
             orderCount: count,
+            studentOrders: values.studentOrders,
             dineInRev: values.dineInRevenue,
             takeawayRev: values.takeawayRevenue,
             deliveryRev: values.deliveryRevenue,
@@ -399,6 +419,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         totalOrders: number; dineInOrders: number; takeawayOrders: number; deliveryOrders: number;
         repeatRev: number; newRegRev: number; unregRev: number; zomatoRev: number;
         repeatOrders: number; newRegOrders: number; unregOrders: number; zomatoOrders: number;
+        studentOrders: number;
         month: string;
         year: number;
       }> = {};
@@ -422,6 +443,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0, deliveryOrders: 0,
             repeatRev: 0, newRegRev: 0, unregRev: 0, zomatoRev: 0,
             repeatOrders: 0, newRegOrders: 0, unregOrders: 0, zomatoOrders: 0,
+            studentOrders: 0,
             month: new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', month: 'short' }).format(date),
             year: year
           };
@@ -429,48 +451,54 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
 
         const totalCost = order.items.reduce((sum, item) => sum + (item.cost || 0) * item.quantity, 0);
         const actualRev = order.type === 'DELIVERY' && order.manualTotal != null ? order.manualTotal : order.total;
+        const isStudent = isStudentFreeMojitoOrder(order);
         
         monthlyData[key].totalRevenue += actualRev;
-        monthlyData[key].totalOrders += 1;
         monthlyData[key].totalCogs += totalCost;
 
-        // Segment Breakdown
-        if (order.type === 'DELIVERY') {
-          monthlyData[key].zomatoRev += actualRev;
-          monthlyData[key].zomatoOrders += 1;
-        } else if (!order.customerPhone) {
-          monthlyData[key].unregRev += actualRev;
-          monthlyData[key].unregOrders += 1;
+        if (isStudent) {
+          monthlyData[key].studentOrders += 1;
         } else {
-          const cust = customers.find(c => c.phone === order.customerPhone);
-          if (cust) {
-            const joinDateStr = getISTDateString(cust.joinedDate);
-            const orderDateStr = getISTDateString(order.date);
-            if (joinDateStr === orderDateStr) {
+          monthlyData[key].totalOrders += 1;
+
+          // Segment Breakdown
+          if (order.type === 'DELIVERY') {
+            monthlyData[key].zomatoRev += actualRev;
+            monthlyData[key].zomatoOrders += 1;
+          } else if (!order.customerPhone) {
+            monthlyData[key].unregRev += actualRev;
+            monthlyData[key].unregOrders += 1;
+          } else {
+            const cust = customers.find(c => c.phone === order.customerPhone);
+            if (cust) {
+              const joinDateStr = getISTDateString(cust.joinedDate);
+              const orderDateStr = getISTDateString(order.date);
+              if (joinDateStr === orderDateStr) {
+                monthlyData[key].newRegRev += actualRev;
+                monthlyData[key].newRegOrders += 1;
+              } else {
+                monthlyData[key].repeatRev += actualRev;
+                monthlyData[key].repeatOrders += 1;
+              }
+            } else {
               monthlyData[key].newRegRev += actualRev;
               monthlyData[key].newRegOrders += 1;
-            } else {
-              monthlyData[key].repeatRev += actualRev;
-              monthlyData[key].repeatOrders += 1;
             }
-          } else {
-            monthlyData[key].newRegRev += actualRev;
-            monthlyData[key].newRegOrders += 1;
           }
-        }
 
-        if (order.type === 'DINE_IN') {
-          monthlyData[key].dineInRevenue += order.total;
-          monthlyData[key].dineInOrders += 1;
-          monthlyData[key].dineInCogs += totalCost;
-        } else if (order.type === 'TAKEAWAY') {
-          monthlyData[key].takeawayRevenue += order.total;
-          monthlyData[key].takeawayOrders += 1;
-          monthlyData[key].takeawayCogs += totalCost;
-        } else if (order.type === 'DELIVERY') {
-          monthlyData[key].deliveryRevenue += actualRev;
-          monthlyData[key].deliveryOrders += 1;
-          monthlyData[key].deliveryCogs += totalCost;
+          if (order.type === 'DINE_IN') {
+            monthlyData[key].dineInRevenue += order.total;
+            monthlyData[key].dineInOrders += 1;
+            monthlyData[key].dineInCogs += totalCost;
+          } else if (order.type === 'TAKEAWAY') {
+            monthlyData[key].takeawayRevenue += order.total;
+            monthlyData[key].takeawayOrders += 1;
+            monthlyData[key].takeawayCogs += totalCost;
+          } else if (order.type === 'DELIVERY') {
+            monthlyData[key].deliveryRevenue += actualRev;
+            monthlyData[key].deliveryOrders += 1;
+            monthlyData[key].deliveryCogs += totalCost;
+          }
         }
       });
 
@@ -488,6 +516,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             profit: revenue - cogs,
             avgTicket: count > 0 ? revenue / count : 0,
             orderCount: count,
+            studentOrders: values.studentOrders,
             dineInRev: values.dineInRevenue,
             takeawayRev: values.takeawayRevenue,
             deliveryRev: values.deliveryRevenue,
@@ -526,11 +555,13 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
     const totalRevenue = chartData.reduce((sum, d) => sum + d.revenue, 0);
     const totalProfit = chartData.reduce((sum, d) => sum + d.profit, 0);
     const totalOrders = chartData.reduce((sum, d) => sum + d.orderCount, 0);
+    const totalStudentOrders = chartData.reduce((sum, d) => sum + (d.studentOrders || 0), 0);
     
     return {
       totalRevenue,
       totalProfit,
       totalOrders,
+      totalStudentOrders,
       avgTicket: totalOrders > 0 ? totalRevenue / totalOrders : 0
     };
   }, [chartData]);
@@ -854,7 +885,15 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                               </div>
                               <p className="text-xs font-black text-brand-brown tracking-tighter">
                                 {entry.dataKey.toLowerCase().includes('aov') || entry.dataKey.toLowerCase().includes('ticket') || (analysisBasis === 'REVENUE' && !entry.dataKey.toLowerCase().includes('order')) || (analysisBasis === 'ORDERS' && entry.dataKey === 'revenue') ? '₹' : ''}
-                                {typeof entry.value === 'number' ? entry.value.toLocaleString(undefined, { minimumFractionDigits: (entry.dataKey === 'orderCount' || entry.dataKey.toLowerCase().includes('orders')) ? 0 : 1 }) : '0'}
+                                {entry.dataKey === 'orderCount' ? (
+                                  data.studentOrders > 0 ? (
+                                    `${entry.value} + ${data.studentOrders} Students`
+                                  ) : (
+                                    entry.value.toLocaleString(undefined, { minimumFractionDigits: 0 })
+                                  )
+                                ) : (
+                                  typeof entry.value === 'number' ? entry.value.toLocaleString(undefined, { minimumFractionDigits: (entry.dataKey === 'orderCount' || entry.dataKey.toLowerCase().includes('orders')) ? 0 : 1 }) : '0'
+                                )}
                               </p>
                             </div>
                           ))}
@@ -1333,7 +1372,13 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                   <span className="text-xs font-bold text-brand-brown/60 uppercase">Total {analysisBasis === 'REVENUE' ? 'Revenue' : 'Orders'}</span>
               </div>
               <p className="text-2xl font-black text-brand-red">
-                  {analysisBasis === 'REVENUE' ? `₹${stats.totalRevenue.toFixed(2)}` : stats.totalOrders.toLocaleString()}
+                  {analysisBasis === 'REVENUE' ? `₹${stats.totalRevenue.toFixed(2)}` : (
+                    stats.totalStudentOrders > 0 ? (
+                      `${stats.totalOrders.toLocaleString()} + ${stats.totalStudentOrders} Students`
+                    ) : (
+                      stats.totalOrders.toLocaleString()
+                    )
+                  )}
               </p>
           </div>
           <div className="bg-green-50 p-4 rounded-xl border border-green-100">

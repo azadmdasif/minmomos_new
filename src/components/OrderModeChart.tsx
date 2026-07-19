@@ -2,6 +2,7 @@
 import React, { useMemo } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { CompletedOrder } from '../types';
+import { isStudentFreeMojitoOrder } from '../utils/storage';
 
 interface OrderModeChartProps {
   orders: CompletedOrder[];
@@ -13,22 +14,26 @@ const OrderModeChart: React.FC<OrderModeChartProps> = ({ orders, analysisBasis }
     let dineInVal = 0;
     let takeawayVal = 0;
     let deliveryVal = 0;
+    let studentVal = 0;
 
     orders.forEach(o => {
       const amount = o.type === 'DELIVERY' && o.manualTotal != null ? o.manualTotal : o.total;
       const valToAdd = analysisBasis === 'REVENUE' ? amount : 1;
       
-      if (o.type === 'DINE_IN') dineInVal += valToAdd;
+      if (isStudentFreeMojitoOrder(o)) {
+        studentVal += valToAdd;
+      } else if (o.type === 'DINE_IN') dineInVal += valToAdd;
       else if (o.type === 'TAKEAWAY') takeawayVal += valToAdd;
       else if (o.type === 'DELIVERY') deliveryVal += valToAdd;
     });
 
-    const total = dineInVal + takeawayVal + deliveryVal;
+    const total = dineInVal + takeawayVal + deliveryVal + studentVal;
     
     return [
       { name: 'Dine-In', value: dineInVal, color: '#EF4444', pct: total > 0 ? (dineInVal/total*100).toFixed(1) : "0" },
       { name: 'Takeaway', value: takeawayVal, color: '#4F46E5', pct: total > 0 ? (takeawayVal/total*100).toFixed(1) : "0" },
       { name: 'Delivery', value: deliveryVal, color: '#db2777', pct: total > 0 ? (deliveryVal/total*100).toFixed(1) : "0" },
+      { name: 'Students', value: studentVal, color: '#10B981', pct: total > 0 ? (studentVal/total*100).toFixed(1) : "0" },
     ].filter(d => d.value > 0);
   }, [orders, analysisBasis]);
 

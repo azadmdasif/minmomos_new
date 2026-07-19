@@ -15,6 +15,18 @@ export function setCurrentUser(user: User | null): void {
   else localStorage.removeItem(AUTH_KEY);
 }
 
+export function isStudentFreeMojitoOrder(order: CompletedOrder): boolean {
+  if (!order || !order.items) return false;
+  const total = order.type === 'DELIVERY' && order.manualTotal != null ? order.manualTotal : order.total;
+  const isZeroValue = Math.round(total) === 0;
+  const hasStudentMojito = order.items.some(item => 
+    item.id === 'student-mojito-gift' || 
+    (item.name && item.name.includes('Student Promo')) || 
+    item.menuItemId === 'promo-mojito'
+  );
+  return isZeroValue && hasStudentMojito;
+}
+
 // --- TIMEZONE HELPERS ---
 export function getISTDate(date?: string | number | Date): Date {
   if (date) return new Date(date);
@@ -2168,12 +2180,56 @@ export async function fetchLastOrderPriorityItem(phone: string): Promise<{ name:
 }
 
 export async function fetchCustomers(branchFilter?: string): Promise<Customer[]> {
-  const { data } = await supabase.rpc('get_customer_stats', { branch_filter: branchFilter || null }); 
-  if (!data) return [];
-  
-  const customers = await Promise.all(data.map(async (c: any) => {
+  let allData: any[] = [];
+  let page = 0;
+  const pageSize = 1000;
+  let hasMore = true;
+
+  while (hasMore) {
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
+
+    const { data, error } = await supabase
+      .rpc('get_customer_stats', { branch_filter: branchFilter || null })
+      .range(from, to);
+
+    if (error || !data || data.length === 0) {
+      hasMore = false;
+    } else {
+      allData = allData.concat(data);
+      if (data.length < pageSize) {
+        hasMore = false;
+      } else {
+        page++;
+      }
+    }
+  }
+
+  if (allData.length === 0) return [];
+
+  // Batch query all order_items that were paid with coins and are not deleted to map coins efficiently
+  const { data: allRedeemedCoinsData } = await supabase
+    .from('order_items')
+    .select('coins_price, quantity, orders!inner(customer_phone, deletion_info)')
+    .eq('paid_with_coins', true)
+    .is('orders.deletion_info', null);
+
+  const redeemedCoinsMap: Record<string, number> = {};
+  if (allRedeemedCoinsData) {
+    allRedeemedCoinsData.forEach((item: any) => {
+      const rawPhone = item.orders?.customer_phone;
+      if (rawPhone) {
+        const norm = normalizePhone(rawPhone);
+        const coins = (item.coins_price || 0) * (item.quantity || 1);
+        redeemedCoinsMap[norm] = (redeemedCoinsMap[norm] || 0) + coins;
+      }
+    });
+  }
+
+  const customers = allData.map((c: any) => {
     const totalSpent = Number(c.total_spent || 0);
-    const redeemedCoins = await getRedeemedCoins(c.phone);
+    const normPhone = normalizePhone(c.phone);
+    const redeemedCoins = redeemedCoinsMap[normPhone] || 0;
     
     return {
       id: c.id,
@@ -2190,7 +2246,7 @@ export async function fetchCustomers(branchFilter?: string): Promise<Customer[]>
       welcomeCouponUsed: c.welcome_coupon_used || false,
       welcomeCouponCode: c.welcome_coupon_code
     };
-  }));
+  });
 
   return customers;
 }

@@ -10,7 +10,7 @@ import {
   ResponsiveContainer
 } from 'recharts';
 import { CompletedOrder } from '../types';
-import { getISTHour, getISTDay } from '../utils/storage';
+import { getISTHour, getISTDay, isStudentFreeMojitoOrder } from '../utils/storage';
 
 interface TimeWiseRevenueChartProps {
   orders: CompletedOrder[];
@@ -18,6 +18,10 @@ interface TimeWiseRevenueChartProps {
 
 const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) => {
   const [viewMode, setViewMode] = useState<'hourly' | 'daily'>('hourly');
+
+  const nonStudentOrdersCount = useMemo(() => {
+    return orders.filter(o => !isStudentFreeMojitoOrder(o)).length;
+  }, [orders]);
 
   const chartData = useMemo(() => {
     if (viewMode === 'hourly') {
@@ -39,7 +43,9 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
             } else {
               hours[h].revenue += (order.total || 0);
             }
-            hours[h].orders += 1;
+            if (!isStudentFreeMojitoOrder(order)) {
+              hours[h].orders += 1;
+            }
           }
         } catch (e) {
           console.error("Date parsing error in chart:", e);
@@ -78,7 +84,9 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
             } else {
               day.revenue += (order.total || 0);
             }
-            day.orders += 1;
+            if (!isStudentFreeMojitoOrder(order)) {
+              day.orders += 1;
+            }
           }
         } catch (e) {
           console.error("Date parsing error in chart:", e);
@@ -131,7 +139,12 @@ const TimeWiseRevenueChart: React.FC<TimeWiseRevenueChartProps> = ({ orders }) =
             <div className="bg-brand-red/5 px-4 py-2 rounded-xl">
                 <p className="text-[8px] font-black text-brand-red/60 uppercase tracking-widest">Orders</p>
                 <p className="text-sm font-black text-brand-red uppercase">
-                    {orders.length}
+                    {nonStudentOrdersCount}
+                    {orders.length - nonStudentOrdersCount > 0 && (
+                      <span className="text-[9px] text-emerald-600 block font-bold leading-none mt-0.5" title="Student free mojito orders excluded from main count">
+                        +{orders.length - nonStudentOrdersCount} Students
+                      </span>
+                    )}
                 </p>
             </div>
         </div>

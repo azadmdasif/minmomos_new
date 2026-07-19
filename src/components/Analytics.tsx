@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats, updateOrderStatus } from '../utils/storage';
+import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats, updateOrderStatus, isStudentFreeMojitoOrder } from '../utils/storage';
 import {
   generateItemNormalizationMap,
   getFilteredOrders,
@@ -323,6 +323,24 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [activeCustomer, setActiveCustomer] = useState<Customer | null>(null);
   const [usualOrder, setUsualOrder] = useState<{ name: string, quantity: number } | null>(null);
   const [cohortRawData, setCohortRawData] = useState<CohortOrder[]>([]);
+  const [isCohortLoading, setIsCohortLoading] = useState(false);
+
+  useEffect(() => {
+    if ((reportView === 'trends' || reportView === 'customers') && cohortRawData.length === 0 && !isCohortLoading) {
+      const loadCohort = async () => {
+        setIsCohortLoading(true);
+        try {
+          const freshCohortData = await fetchCohortRawData();
+          setCohortRawData(freshCohortData);
+        } catch (error) {
+          console.error("Failed to load cohort data lazily:", error);
+        } finally {
+          setIsCohortLoading(false);
+        }
+      };
+      loadCohort();
+    }
+  }, [reportView, cohortRawData.length, isCohortLoading]);
   const [compositionPeriod, setCompositionPeriod] = useState<string | null>(null);
   const [analysisBasis, setAnalysisBasis] = useState<'REVENUE' | 'ORDERS'>('REVENUE');
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -706,10 +724,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     // Fetch customers for both Admin and Manager
     // Managers only see their own branch customers
     const custFilter = isAdmin ? undefined : user.stationName;
-    const [cust, stats, cohort] = await Promise.all([
+    const [cust, stats] = await Promise.all([
       fetchCustomers(custFilter),
-      fetchCustomerClassificationStats(),
-      fetchCohortRawData()
+      fetchCustomerClassificationStats()
     ]);
     
     if (isAdmin) {
@@ -717,19 +734,14 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     }
     setCustomers(cust);
     setCustomerOrderStats(stats);
-    setCohortRawData(cohort);
   }, [isAdmin, user.stationName, user.role]);
 
   const fetchOrders = useCallback(async () => {
     // Expand start date by 32 days to ensure 30-day SMA is accurate for the start of the visible range
     const expandedStart = getHistoricalStartDate(startDate, 32);
-    const [fetchedOrders, freshCohortData] = await Promise.all([
-      getOrdersForDateRange(expandedStart, endDate),
-      fetchCohortRawData()
-    ]);
+    const fetchedOrders = await getOrdersForDateRange(expandedStart, endDate);
 
     setAllOrdersRaw(fetchedOrders);
-    setCohortRawData(freshCohortData);
     
     // Filter by store - Managers only see their own
     const storeToFilter = isAdmin ? selectedStore : (user.stationName || 'All');
@@ -1282,6 +1294,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     
     let inStoreOrdersCount = 0;
     let deliveryOrdersCount = 0;
+    let studentOrdersCount = 0;
     
     let reviewsCollectedCount = 0;
     let reviewsDeniedCount = 0;
@@ -1296,7 +1309,10 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     orders.forEach(order => {
       const orderCogs = order.items.reduce((acc, item) => acc + (item.cost ?? 0) * item.quantity, 0);
 
-      if (order.type === 'DELIVERY') {
+      if (isStudentFreeMojitoOrder(order)) {
+        studentOrdersCount++;
+        inStoreCogs += Math.round(orderCogs);
+      } else if (order.type === 'DELIVERY') {
         deliveryOrdersCount++;
         deliveryCogs += Math.round(orderCogs);
         
@@ -1327,16 +1343,18 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         }
       }
 
-      // Track Dine-In and Takeaway reviews separately
-      if (order.type === 'DINE_IN') {
-        dineInOrdersCount++;
-        if (order.status === 'REVIEW_COLLECTED') {
-          dineInReviewsCollected++;
-        }
-      } else if (order.type === 'TAKEAWAY') {
-        takeawayOrdersCount++;
-        if (order.status === 'REVIEW_COLLECTED') {
-          takeawayReviewsCollected++;
+      // Track Dine-In and Takeaway reviews separately for non-student free orders
+      if (!isStudentFreeMojitoOrder(order)) {
+        if (order.type === 'DINE_IN') {
+          dineInOrdersCount++;
+          if (order.status === 'REVIEW_COLLECTED') {
+            dineInReviewsCollected++;
+          }
+        } else if (order.type === 'TAKEAWAY') {
+          takeawayOrdersCount++;
+          if (order.status === 'REVIEW_COLLECTED') {
+            takeawayReviewsCollected++;
+          }
         }
       }
     });
@@ -1347,6 +1365,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     const combinedRevenue = revenue + deliveryRevenue;
     const combinedProfit = combinedRevenue - combinedCogs;
     const reviewCollectedPercent = inStoreOrdersCount > 0 ? (reviewsCollectedCount / inStoreOrdersCount) * 100 : 0;
+    
+    const nonStudentTotalOrders = orders.length - studentOrdersCount;
 
     return { 
       totalRevenue: revenue, 
@@ -1356,9 +1376,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       totalCogs: combinedCogs,
       grossProfit: combinedProfit,
       profitMargin: combinedRevenue > 0 ? (combinedProfit / combinedRevenue) * 100 : 0,
-      averageOrderValue: orders.length > 0 ? combinedRevenue / orders.length : 0,
+      averageOrderValue: nonStudentTotalOrders > 0 ? combinedRevenue / nonStudentTotalOrders : 0,
       paymentBreakdown: breakdown,
-      totalOrders: orders.length,
+      totalOrders: nonStudentTotalOrders,
       
       // Detailed new properties for the expanded metrics view
       inStoreOrdersCount,
@@ -1370,7 +1390,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       deliveryCogs,
       deliveryProfit,
       
-      combinedOrdersCount: orders.length,
+      combinedOrdersCount: nonStudentTotalOrders,
       combinedRevenue,
       combinedCogs,
       combinedProfit,
@@ -1387,7 +1407,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       // Takeaway to be displayed separately
       takeawayOrdersCount,
       takeawayReviewsCollected,
-      takeawayReviewPercent: takeawayOrdersCount > 0 ? (takeawayReviewsCollected / takeawayOrdersCount) * 100 : 0
+      takeawayReviewPercent: takeawayOrdersCount > 0 ? (takeawayReviewsCollected / takeawayOrdersCount) * 100 : 0,
+      
+      studentOrdersCount
     };
   }, [orders]);
 
@@ -2205,7 +2227,14 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                 <div className="mt-6 pt-4 border-t border-brand-brown/10 grid grid-cols-3 gap-2">
                   <div>
                     <p className="text-[7.5px] font-black uppercase text-brand-brown/45 tracking-wider">Orders</p>
-                    <p className="text-sm lg:text-base font-black text-brand-brown">{financialData.inStoreOrdersCount}</p>
+                    <p className="text-sm lg:text-base font-black text-brand-brown">
+                      {financialData.inStoreOrdersCount}
+                      {financialData.studentOrdersCount > 0 && (
+                        <span className="text-[9px] text-emerald-700 block font-bold leading-tight mt-0.5" title="Student free mojito orders excluded from main count">
+                          +{financialData.studentOrdersCount} Students
+                        </span>
+                      )}
+                    </p>
                   </div>
                   <div>
                     <p className="text-[7.5px] font-black uppercase text-brand-brown/45 tracking-wider">Profit</p>
@@ -2266,7 +2295,14 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                 <div className="mt-6 pt-4 border-t border-white/10 grid grid-cols-3 gap-2">
                   <div>
                     <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Orders</p>
-                    <p className="text-sm lg:text-base font-black text-white">{financialData.combinedOrdersCount}</p>
+                    <p className="text-sm lg:text-base font-black text-white">
+                      {financialData.combinedOrdersCount}
+                      {financialData.studentOrdersCount > 0 && (
+                        <span className="text-[9px] text-emerald-400 block font-bold leading-tight mt-0.5" title="Student free mojito orders excluded from main count">
+                          +{financialData.studentOrdersCount} Students
+                        </span>
+                      )}
+                    </p>
                   </div>
                   <div>
                     <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Profit</p>
@@ -2566,9 +2602,15 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                           <td className="px-4 lg:px-8 py-4 font-black text-xs lg:text-sm">#{o.billNumber}</td>
                           <td className="px-4 lg:px-8 py-4 text-[10px] lg:text-xs">{getISTFullDateTime(o.date)}</td>
                           <td className="px-4 lg:px-8 py-4">
-                             <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${o.type === 'DELIVERY' ? 'bg-brand-red text-white' : 'bg-brand-brown/5 text-brand-brown/40'}`}>
-                               {o.type.replace('_', ' ')}
-                             </span>
+                             {isStudentFreeMojitoOrder(o) ? (
+                               <span className="px-2 py-0.5 rounded text-[8px] font-black uppercase bg-emerald-600 text-white">
+                                 Students
+                               </span>
+                             ) : (
+                               <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${o.type === 'DELIVERY' ? 'bg-brand-red text-white' : 'bg-brand-brown/5 text-brand-brown/40'}`}>
+                                 {o.type.replace('_', ' ')}
+                               </span>
+                             )}
                           </td>
                           <td className="px-4 lg:px-8 py-4 text-right font-black text-xs lg:text-sm">
                              {o.type === 'DELIVERY' && o.manualTotal != null ? (
@@ -2716,27 +2758,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                </div>
             </div>
 
-            {!isApproved && (
-              <div className="bg-brand-red/10 border-2 border-brand-red rounded-[2rem] p-6 flex flex-col md:flex-row items-center justify-between gap-4 animate-in slide-in-from-top duration-300">
-                <div className="flex items-start gap-4">
-                  <div className="w-12 h-12 rounded-2xl bg-brand-red flex items-center justify-center text-white shrink-0 shadow-lg shadow-brand-red/20">
-                    <GraduationCap className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-black text-brand-brown uppercase">Item Normalization Approval Required</h4>
-                    <p className="text-[11px] font-medium text-brand-brown/70 mt-1 max-w-2xl leading-relaxed">
-                      Item names embed sizes and redemption flags in raw text. To enable consistent, accurate ML exports and snapshot computations, please review and approve the base item mapping lookup table.
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setIsNormModalOpen(true)}
-                  className="px-6 py-3 bg-brand-red text-white text-xs font-black uppercase tracking-widest rounded-xl hover:bg-brand-red/90 transition-all shadow-md active:scale-95 whitespace-nowrap shrink-0"
-                >
-                  Review & Approve Map
-                </button>
-              </div>
-            )}
+
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Customer List */}
