@@ -301,7 +301,7 @@ type ActiveTab = 'active' | 'deleted' | 'adjustments';
 type ReportView = 'revenue' | 'trends' | 'itemSales' | 'comparison' | 'profitability' | 'customers';
 
 const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
-  const isAdmin = user.role === 'ADMIN';
+  const isAdmin = user.role === 'ADMIN' || user.role === 'COFOUNDER';
   
   const [startDate, setStartDate] = useState<string>(getTodaysDateString());
   const [endDate, setEndDate] = useState<string>(getTodaysDateString());

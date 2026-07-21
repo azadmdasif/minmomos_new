@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { CameraCapture } from './CameraCapture';
 import { supabase } from '../utils/supabase';
-import { getISTDateString, getISTFullDateTime, getStations } from '../utils/storage';
+import { getISTDateString, getISTFullDateTime, getStations, logDailyIncomeToLedger } from '../utils/storage';
 import { RAW_MATERIALS_LIST } from '../constants';
 import { 
   Camera, 
@@ -146,7 +146,7 @@ const MOCK_PHOTOS = {
 };
 
 export default function DailyOperations({ user }: DailyOperationsProps) {
-  const isAdmin = user.role === 'ADMIN';
+  const isAdmin = user.role === 'ADMIN' || user.role === 'COFOUNDER';
 
   // State for all records (Admin view)
   const [allRecords, setAllRecords] = useState<DailyOperationRecord[]>([]);
@@ -661,7 +661,7 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
   };
 
   // Stage 8: Save Closing verification and final closing record
-  const handleCloseStore = (actualCash: number, actualUpi: number, discrepancyReason: string, photo: string) => {
+  const handleCloseStore = async (actualCash: number, actualUpi: number, discrepancyReason: string, photo: string) => {
     if (!activeRecord) return;
     const nextStatus = getNewStatus(activeRecord.status, 'Closed');
     saveRecord({
@@ -673,6 +673,14 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
       closingPhoto: photo || activeRecord.closingPhoto || '',
       status: nextStatus
     });
+
+    // Auto upload daily income to the finance ledger
+    await logDailyIncomeToLedger(
+      activeRecord.date,
+      posSales.cash,
+      posSales.upi,
+      activeRecord.branchName
+    );
 
     // Advance viewStage
     const currentIndex = OP_STAGES.indexOf(viewStage || 'ClosingDone');

@@ -373,7 +373,8 @@ export async function logCombinedVendorPaymentToFinance(
   splitUpiAmount?: number,
   fundSource?: string,
   notes?: string | null,
-  procIds?: string[]
+  procIds?: string[],
+  billUrl?: string | null
 ): Promise<void> {
   const MONTHS = [
     "January", "February", "March", "April", "May", "June", 
@@ -391,7 +392,7 @@ export async function logCombinedVendorPaymentToFinance(
     tab_name: tabName,
     date: dateString,
     is_opening: false,
-    bill_url: null
+    bill_url: billUrl || null
   };
 
   const debitCategory = mapSubcategoryToDebitCategory(subcategory);
@@ -425,7 +426,8 @@ export async function logLedgerDebitForProcurement(
   splitCashAmount?: number,
   splitUpiAmount?: number,
   totalSelectedAmount?: number,
-  fundSource?: string
+  fundSource?: string,
+  billUrl?: string | null
 ): Promise<void> {
   const MONTHS = [
     "January", "February", "March", "April", "May", "June", 
@@ -443,7 +445,7 @@ export async function logLedgerDebitForProcurement(
     tab_name: tabName,
     date: dateString,
     is_opening: false,
-    bill_url: null
+    bill_url: billUrl || null
   };
 
   const subcat = getItemSubcategory(proc.item_name, proc.item_id);
@@ -474,6 +476,65 @@ export async function logLedgerDebitForProcurement(
   if (error) console.error("Failed to insert into finance_ledger:", error);
 }
 
+export async function logDailyIncomeToLedger(
+  date: string,
+  cashIncome: number,
+  upiIncome: number,
+  branchName: string
+): Promise<void> {
+  const MONTHS = [
+    "January", "February", "March", "April", "May", "June", 
+    "July", "August", "September", "October", "November", "December"
+  ];
+  const dateObj = date ? new Date(date) : new Date();
+  const monthName = MONTHS[isNaN(dateObj.getTime()) ? new Date().getMonth() : dateObj.getMonth()];
+  const yearVal = isNaN(dateObj.getTime()) ? new Date().getFullYear() : dateObj.getFullYear();
+  const tabName = `${monthName} ${yearVal}`;
+  const dateString = isNaN(dateObj.getTime()) 
+    ? new Date().toISOString().split('T')[0] 
+    : date.split('T')[0];
+
+  const uniqueKey = `[DailyOperationsIncome: ${dateString}]`;
+
+  try {
+    // 1. Delete any existing daily operations income record for this date from the ledger to prevent duplication
+    await supabase
+      .from('finance_ledger')
+      .update({
+        is_deleted: true,
+        deleted_at: new Date().toISOString(),
+        delete_reason: 'Daily Income updated/replaced'
+      })
+      .or(`credit_cash_details.like.%${uniqueKey}%,credit_bank_details.like.%${uniqueKey}%`);
+
+    // If both are 0 or less, we don't insert a blank record
+    if (cashIncome <= 0 && upiIncome <= 0) {
+      return;
+    }
+
+    // 2. Build the new ledger credit entry
+    // Category type: revenue (due to the "revenue:" details prefix)
+    // Funding source: Earned Revenue / Operational (since we don't append '[Funding: Investment]')
+    const rec: any = {
+      tab_name: tabName,
+      date: dateString,
+      is_opening: false,
+      bill_url: null,
+      credit_cash: cashIncome > 0 ? cashIncome : 0,
+      credit_cash_details: cashIncome > 0 ? `revenue: Daily Cash Sales for ${branchName} ${uniqueKey}` : null,
+      credit_bank: upiIncome > 0 ? upiIncome : 0,
+      credit_bank_details: upiIncome > 0 ? `revenue: Daily UPI+Card Sales for ${branchName} ${uniqueKey}` : null
+    };
+
+    const { error: insertErr } = await supabase.from('finance_ledger').insert(rec);
+    if (insertErr) {
+      console.error("Failed to insert daily income into finance_ledger:", insertErr);
+    }
+  } catch (err: any) {
+    console.error("Error in logDailyIncomeToLedger:", err);
+  }
+}
+
 export async function updateProcurementPayment(
   id: string,
   isPaid: boolean,
@@ -484,7 +545,8 @@ export async function updateProcurementPayment(
   paymentHistory: any[],
   splitCashAmount?: number,
   splitUpiAmount?: number,
-  fundSource?: string
+  fundSource?: string,
+  billUrl?: string | null
 ): Promise<void> {
   try {
     const { error } = await supabase
@@ -533,7 +595,8 @@ export async function updateProcurementPayment(
           splitCashAmount,
           splitUpiAmount,
           proc.total_cost || 1,
-          fundSource
+          fundSource,
+          billUrl
         );
       }
     } else if (!isPaid) {
@@ -564,7 +627,8 @@ export async function bulkPayProcurements(
   splitCashAmount?: number,
   splitUpiAmount?: number,
   fundSource?: string,
-  subcategory?: string
+  subcategory?: string,
+  billUrl?: string | null
 ): Promise<void> {
   try {
     const { data: procs, error: fetchErr } = await supabase
@@ -589,7 +653,8 @@ export async function bulkPayProcurements(
         payment_mode: paymentMode,
         reason: 'Bulk Vendor Payment',
         fund_source: fundSource,
-        subcategory: subcategory
+        subcategory: subcategory,
+        bill_image: billUrl || undefined
       });
 
       const { error: updateErr } = await supabase
@@ -631,7 +696,8 @@ export async function bulkPayProcurements(
       splitUpiAmount,
       fundSource,
       paymentNotes,
-      ids
+      ids,
+      billUrl
     );
 
   } catch (err: any) {
@@ -1053,6 +1119,30 @@ export async function updateAppUser(userId: string, user: { username: string, pa
     const { error: relError } = await supabase.from('user_stations').insert(assignments);
     if (relError) throw relError;
   }
+}
+
+export async function deleteAppUser(userId: string): Promise<void> {
+  const { error: assignmentsError } = await supabase
+    .from('user_stations')
+    .delete()
+    .eq('user_id', userId);
+  if (assignmentsError) throw assignmentsError;
+
+  // Set cashier_id to null in orders to prevent foreign key constraint failures
+  try {
+    await supabase
+      .from('orders')
+      .update({ cashier_id: null })
+      .eq('cashier_id', userId);
+  } catch (err) {
+    console.error("Failed to nullify cashier_id in orders:", err);
+  }
+
+  const { error } = await supabase
+    .from('app_users')
+    .delete()
+    .eq('id', userId);
+  if (error) throw error;
 }
 
 export async function getCentralInventory(): Promise<CentralMaterial[]> {

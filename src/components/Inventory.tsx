@@ -99,7 +99,7 @@ const DEFAULT_SUBCATEGORIES: Record<MaterialCategory, Array<{ id: string, label:
 const VALUATION_COLORS = ['#5D4037', '#D84315', '#FF8F00', '#2E7D32', '#1565C0', '#4527A0', '#C62828'];
 
 const Inventory: React.FC<InventoryProps> = ({ user }) => {
-  const isAdmin = user.role === 'ADMIN';
+  const isAdmin = user.role === 'ADMIN' || user.role === 'COFOUNDER';
   const [activeTab, setActiveTab] = useState<InventoryTab>('HUB');
   const [materialCategory, setMaterialCategory] = useState<MaterialCategory>('MOMO');
   const [activeSubcategory, setActiveSubcategory] = useState<string>('all');
@@ -157,6 +157,15 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [paymentMethod, setPaymentMethod] = useState<string>('CASH');
   const [paymentActionReason, setPaymentActionReason] = useState('');
   const [paymentMode, setPaymentMode] = useState<'PAY' | 'EDIT' | 'UNPAY'>('PAY');
+  
+  // Camera & Bill Image States
+  const [capturedBillUrl, setCapturedBillUrl] = useState<string | null>(null);
+  const [bulkCapturedBillUrl, setBulkCapturedBillUrl] = useState<string | null>(null);
+  const [showLiveCamera, setShowLiveCamera] = useState(false);
+  const [isBulkCamera, setIsBulkCamera] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
+  const [newItemVendor, setNewItemVendor] = useState('');
 
   // Bulk Payment States
   const [isBulkPaymentModalOpen, setIsBulkPaymentModalOpen] = useState(false);
@@ -813,13 +822,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
         return;
       }
 
-      const q = parseFloat(qty) || 0;
-      const c = parseFloat(cost) || 0;
-      
-      if (isNaN(q) || isNaN(c)) {
-        alert("Please enter valid numeric values for Quantity and Cost.");
-        return;
-      }
+      const q = 0;
+      const c = 0;
 
       try {
         const id = newItemName.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
@@ -828,6 +832,10 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
         try {
           await createCentralItem(newItemName, newItemUnit, q, c, materialCategory, id, newItemSubcategory);
           await saveItemSubcategory(id, newItemSubcategory);
+          
+          if (newItemVendor) {
+            await mapItemToVendor(id, newItemVendor);
+          }
         } catch (createErr: any) {
           console.error("Failed to create central item:", createErr);
           throw new Error(`Database Entry Failed: ${createErr.message}`);
@@ -835,6 +843,9 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
 
         // 2. Only log procurement if there's actual stock or cost being added, and now the FK is satisfied!
         if (q > 0 || c > 0) {
+          const selectedVendorObj = vendors.find(v => v.id === newItemVendor);
+          const vendorLabel = selectedVendorObj ? selectedVendorObj.name : 'Initial Stock / Registration';
+          
           try {
             await logProcurement({
               item_id: id,
@@ -842,7 +853,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
               quantity: q,
               unit: newItemUnit,
               total_cost: c,
-              vendor: 'Initial Stock / Registration',
+              vendor: vendorLabel,
               date: getISTISOString(),
               is_paid: false
             });
@@ -1091,7 +1102,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
         cashAmt,
         upiAmt,
         bulkFundSource,
-        bulkPaymentSubcategory || undefined
+        bulkPaymentSubcategory || undefined,
+        bulkCapturedBillUrl || null
       );
       
       setIsBulkPaymentModalOpen(false);
@@ -1129,9 +1141,75 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     });
   };
 
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, isBulk = false) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (isBulk) {
+          setBulkCapturedBillUrl(reader.result as string);
+        } else {
+          setCapturedBillUrl(reader.result as string);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const startCamera = async (isBulk = false) => {
+    setIsBulkCamera(isBulk);
+    setShowLiveCamera(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      setMediaStream(stream);
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+      }, 300);
+    } catch (err: any) {
+      console.error("Camera access failed:", err);
+      alert("Could not access camera. Please upload an image file instead.");
+      setShowLiveCamera(false);
+    }
+  };
+
+  const stopCamera = () => {
+    if (mediaStream) {
+      mediaStream.getTracks().forEach(track => track.stop());
+      setMediaStream(null);
+    }
+    setShowLiveCamera(false);
+  };
+
+  const capturePhoto = () => {
+    if (videoRef.current) {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoRef.current.videoWidth || 640;
+      canvas.height = videoRef.current.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        if (isBulkCamera) {
+          setBulkCapturedBillUrl(dataUrl);
+        } else {
+          setCapturedBillUrl(dataUrl);
+        }
+        stopCamera();
+      }
+    }
+  };
+
   const openPaymentModal = (proc: any, mode: 'PAY' | 'EDIT' | 'UNPAY') => {
     setSelectedProcurementForPayment(proc);
     setPaymentMode(mode);
+    
+    // Find the latest payment event containing a bill_image in history, or default to null
+    const historyWithBill = Array.isArray(proc.payment_history)
+      ? [...proc.payment_history].reverse().find(h => h.bill_image)
+      : null;
+    setCapturedBillUrl(historyWithBill?.bill_image || null);
     
     let defaultDate = '';
     if (proc.paid_at) {
@@ -1213,7 +1291,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           notes: nextPaymentNotes,
           payment_mode: nextPaymentMode,
           reason: paymentActionReason.trim() || 'Initial Payment',
-          fund_source: singleFundSource
+          fund_source: singleFundSource,
+          bill_image: capturedBillUrl || undefined
         };
         nextHistory.push(newHistoryEntry);
       } else if (paymentMode === 'EDIT') {
@@ -1263,7 +1342,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           payment_mode: nextPaymentMode,
           reason: paymentActionReason.trim(),
           previous_details: prevDetails,
-          fund_source: singleFundSource
+          fund_source: singleFundSource,
+          bill_image: capturedBillUrl || undefined
         };
         nextHistory.push(newHistoryEntry);
       } else if (paymentMode === 'UNPAY') {
@@ -1296,7 +1376,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
         nextHistory,
         cashAmt,
         upiAmt,
-        singleFundSource
+        singleFundSource,
+        capturedBillUrl || null
       );
 
       setIsPaymentModalOpen(false);
@@ -1386,6 +1467,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     setQty('');
     setCost('');
     setVendor('');
+    setNewItemVendor('');
     setNewItemName('');
     setNewItemUnit(materialCategory === 'MOMO' ? 'pcs' : materialCategory === 'PACKET' ? 'pkt' : 'kg');
     setNewItemSubcategory('');
@@ -3368,11 +3450,15 @@ NOTIFY pgrst, 'reload schema';`}
             <h3 className="text-3xl font-black mb-8 italic text-brand-brown uppercase italic">Register {materialCategory}</h3>
             <div className="space-y-5">
               <input type="text" placeholder="Item Name" value={newItemName} onChange={e => setNewItemName(e.target.value)} className={inputClasses} />
-              <div className="grid grid-cols-2 gap-4">
-                <select value={newItemUnit} onChange={e => setNewItemUnit(e.target.value)} className={inputClasses}><option value="pcs">Pieces</option><option value="kg">KG</option><option value="ltr">LTR</option><option value="pkt">Packets</option></select>
-                <input type="number" placeholder="Initial Qty" value={qty} onChange={e => setQty(e.target.value)} className={inputClasses} />
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Unit of Measurement</label>
+                <select value={newItemUnit} onChange={e => setNewItemUnit(e.target.value)} className={inputClasses}>
+                  <option value="pcs">Pieces</option>
+                  <option value="kg">KG</option>
+                  <option value="ltr">LTR</option>
+                  <option value="pkt">Packets</option>
+                </select>
               </div>
-              <input type="number" placeholder="Purchase Cost (₹)" value={cost} onChange={e => setCost(e.target.value)} className={inputClasses} />
               <div>
                 <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Subcategory (Required)</label>
                 <select 
@@ -3384,6 +3470,21 @@ NOTIFY pgrst, 'reload schema';`}
                   {getSubcategoriesForCategory(materialCategory).map(sub => (
                     <option key={sub.id} value={sub.id}>
                       {sub.icon} {sub.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Primary Vendor (Optional)</label>
+                <select 
+                  value={newItemVendor} 
+                  onChange={e => setNewItemVendor(e.target.value)} 
+                  className={inputClasses}
+                >
+                  <option value="">No Primary Vendor / Local Market</option>
+                  {vendors.map(v => (
+                    <option key={v.id} value={v.id}>
+                      🤝 {v.name}
                     </option>
                   ))}
                 </select>
@@ -3974,6 +4075,53 @@ NOTIFY pgrst, 'reload schema';`}
                     </select>
                   </div>
 
+                  {/* Bill Attachment / Camera Section */}
+                  <div className="bg-brand-stone/10 p-4 rounded-2xl border border-brand-stone/30 space-y-3">
+                    <label className="text-[10px] font-black text-brand-brown uppercase tracking-wider block">📸 Bill Copy / Receipt Photo</label>
+                    
+                    {capturedBillUrl ? (
+                      <div className="space-y-2">
+                        <div className="relative inline-block">
+                          <img 
+                            src={capturedBillUrl} 
+                            alt="Bill Copy" 
+                            className="w-full max-h-40 object-contain rounded-xl border border-brand-stone/50 bg-white"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setCapturedBillUrl(null)}
+                            className="absolute -top-2 -right-2 bg-brand-red text-white w-6 h-6 rounded-full font-bold flex items-center justify-center text-xs shadow hover:bg-red-700 hover:scale-110 transition-transform cursor-pointer"
+                            title="Remove Photo"
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-wider">✓ Photo attached successfully</p>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <button
+                          type="button"
+                          onClick={() => startCamera(false)}
+                          className="flex-1 py-3 bg-brand-brown text-brand-yellow rounded-xl font-bold uppercase text-[9px] tracking-widest flex items-center justify-center gap-2 border border-brand-brown hover:scale-102 transition-all shadow-md cursor-pointer"
+                        >
+                          📷 Capture Photo
+                        </button>
+                        
+                        <label className="flex-1 py-3 bg-white text-brand-brown rounded-xl font-bold uppercase text-[9px] tracking-widest flex items-center justify-center gap-2 border border-brand-stone hover:bg-brand-stone/10 cursor-pointer text-center shadow-md">
+                          📁 Upload File
+                          <input 
+                            type="file" 
+                            accept="image/*" 
+                            capture="environment" 
+                            onChange={(e) => handleFileChange(e, false)} 
+                            className="hidden" 
+                          />
+                        </label>
+                      </div>
+                    )}
+                  </div>
+
                   {paymentMode === 'EDIT' && (
                     <div>
                       <label className="text-[9px] font-black text-brand-red uppercase ml-2 mb-1 block">Reason for Editing (Required for History)</label>
@@ -4061,6 +4209,25 @@ NOTIFY pgrst, 'reload schema';`}
                         )}
                         {hist.reason && (
                           <p className="text-[10px] italic text-brand-red font-semibold mt-1">Reason: "{hist.reason}"</p>
+                        )}
+                        {hist.bill_image && (
+                          <div className="mt-2 pt-2 border-t border-brand-stone/30">
+                            <p className="text-[9px] font-black uppercase tracking-wider text-brand-brown/40 mb-1">📸 Attached Bill Copy:</p>
+                            <img 
+                              src={hist.bill_image} 
+                              alt="Captured Bill" 
+                              className="w-24 h-24 object-cover rounded-xl border border-brand-stone hover:scale-105 transition-transform cursor-pointer"
+                              onClick={() => {
+                                const w = window.open();
+                                if (w) {
+                                  w.document.write(`<img src="${hist.bill_image}" style="max-width:100%; max-height:100vh; display:block; margin:auto;" />`);
+                                  w.document.title = "Attached Bill Copy";
+                                } else {
+                                  alert("Could not open image in new tab. Please allow popups.");
+                                }
+                              }}
+                            />
+                          </div>
                         )}
                         <p className="text-[8px] font-black uppercase text-brand-brown/30 mt-1.5 tracking-wider">By {hist.performed_by || 'Unknown'}</p>
                       </div>
@@ -4215,6 +4382,53 @@ NOTIFY pgrst, 'reload schema';`}
                 </select>
               </div>
 
+              {/* Bulk Bill Attachment / Camera Section */}
+              <div className="bg-brand-stone/10 p-4 rounded-2xl border border-brand-stone/30 space-y-3">
+                <label className="text-[10px] font-black text-brand-brown uppercase tracking-wider block">📸 Bill Copy / Receipt Photo</label>
+                
+                {bulkCapturedBillUrl ? (
+                  <div className="space-y-2">
+                    <div className="relative inline-block">
+                      <img 
+                        src={bulkCapturedBillUrl} 
+                        alt="Bill Copy" 
+                        className="w-full max-h-40 object-contain rounded-xl border border-brand-stone/50 bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setBulkCapturedBillUrl(null)}
+                        className="absolute -top-2 -right-2 bg-brand-red text-white w-6 h-6 rounded-full font-bold flex items-center justify-center text-xs shadow hover:bg-red-700 hover:scale-110 transition-transform cursor-pointer"
+                        title="Remove Photo"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-wider">✓ Photo attached successfully</p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <button
+                      type="button"
+                      onClick={() => startCamera(true)}
+                      className="flex-1 py-3 bg-brand-brown text-brand-yellow rounded-xl font-bold uppercase text-[9px] tracking-widest flex items-center justify-center gap-2 border border-brand-brown hover:scale-102 transition-all shadow-md cursor-pointer"
+                    >
+                      📷 Capture Photo
+                    </button>
+                    
+                    <label className="flex-1 py-3 bg-white text-brand-brown rounded-xl font-bold uppercase text-[9px] tracking-widest flex items-center justify-center gap-2 border border-brand-stone hover:bg-brand-stone/10 cursor-pointer text-center shadow-md">
+                      📁 Upload File
+                      <input 
+                        type="file" 
+                        accept="image/*" 
+                        capture="environment" 
+                        onChange={(e) => handleFileChange(e, true)} 
+                        className="hidden" 
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+
               {/* Action buttons */}
               <div className="grid grid-cols-2 gap-3 pt-2">
                 <button 
@@ -4230,6 +4444,57 @@ NOTIFY pgrst, 'reload schema';`}
                   Confirm Bulk Payment
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Live Camera Viewfinder Overlay */}
+      {showLiveCamera && (
+        <div className="fixed inset-0 bg-black/90 flex flex-col items-center justify-center z-[200] p-4 animate-in fade-in duration-200">
+          <div className="relative w-full max-w-lg bg-zinc-900 rounded-3xl overflow-hidden border border-zinc-800 shadow-2xl flex flex-col">
+            {/* Header */}
+            <div className="p-4 bg-zinc-950/80 border-b border-zinc-800 flex justify-between items-center text-white">
+              <span className="text-xs font-black uppercase tracking-wider text-zinc-400">📷 Real-time Camera Viewfinder</span>
+              <button 
+                onClick={stopCamera} 
+                className="w-8 h-8 rounded-full bg-zinc-800 hover:bg-zinc-700 font-bold text-lg flex items-center justify-center transition-all cursor-pointer"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Video Feed */}
+            <div className="relative bg-black aspect-video flex items-center justify-center">
+              <video 
+                ref={videoRef} 
+                autoPlay 
+                playsInline 
+                className="w-full h-full object-cover"
+              />
+              {/* Overlay frames */}
+              <div className="absolute inset-6 border-2 border-dashed border-white/20 rounded-2xl pointer-events-none flex items-center justify-center">
+                <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest bg-black/40 px-3 py-1 rounded-full">Align Receipt inside frame</span>
+              </div>
+            </div>
+
+            {/* Controls */}
+            <div className="p-6 bg-zinc-950 border-t border-zinc-800 flex flex-col items-center justify-center gap-4">
+              {/* Shutter Button */}
+              <button
+                onClick={capturePhoto}
+                className="w-16 h-16 rounded-full bg-white border-4 border-zinc-300 active:scale-95 transition-transform flex items-center justify-center hover:bg-zinc-100 cursor-pointer shadow-xl"
+                title="Capture Photo"
+              >
+                <span className="w-10 h-10 rounded-full bg-zinc-900" />
+              </button>
+              
+              <button
+                onClick={stopCamera}
+                className="text-xs font-black uppercase tracking-widest text-zinc-400 hover:text-white transition-colors cursor-pointer"
+              >
+                Cancel / Close Camera
+              </button>
             </div>
           </div>
         </div>
