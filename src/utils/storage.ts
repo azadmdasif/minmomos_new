@@ -482,22 +482,33 @@ export async function logDailyIncomeToLedger(
   upiIncome: number,
   branchName: string
 ): Promise<void> {
-  const MONTHS = [
-    "January", "February", "March", "April", "May", "June", 
-    "July", "August", "September", "October", "November", "December"
-  ];
-  const dateObj = date ? new Date(date) : new Date();
-  const monthName = MONTHS[isNaN(dateObj.getTime()) ? new Date().getMonth() : dateObj.getMonth()];
-  const yearVal = isNaN(dateObj.getTime()) ? new Date().getFullYear() : dateObj.getFullYear();
-  const tabName = `${monthName} ${yearVal}`;
-  const dateString = isNaN(dateObj.getTime()) 
-    ? new Date().toISOString().split('T')[0] 
-    : date.split('T')[0];
+  const cleanBranch = branchName || 'BNR';
+  const rawDateStr = date ? date.split('T')[0] : getISTDateString();
+  const parts = rawDateStr.split('-');
+  
+  let dateString = rawDateStr;
+  let tabName = '';
+  
+  if (parts.length === 3) {
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    dateString = `${parts[0]}-${parts[1]}-${parts[2]}`;
+    const MONTHS = [
+      "January", "February", "March", "April", "May", "June", 
+      "July", "August", "September", "October", "November", "December"
+    ];
+    tabName = `${MONTHS[isNaN(m) ? new Date().getMonth() : m]} ${isNaN(y) ? new Date().getFullYear() : y}`;
+  } else {
+    const d = new Date();
+    dateString = getISTDateString(d);
+    tabName = `${d.toLocaleString('en-US', { month: 'long' })} ${d.getFullYear()}`;
+  }
 
-  const uniqueKey = `[DailyOperationsIncome: ${dateString}]`;
+  const uniqueKeyBranch = `[DailyOperationsIncome: ${cleanBranch} - ${dateString}]`;
+  const legacyKey = `[DailyOperationsIncome: ${dateString}]`;
 
   try {
-    // 1. Delete any existing daily operations income record for this date from the ledger to prevent duplication
+    // 1. Delete any existing daily operations income record for this date and branch from the ledger to prevent duplication
     await supabase
       .from('finance_ledger')
       .update({
@@ -505,7 +516,7 @@ export async function logDailyIncomeToLedger(
         deleted_at: new Date().toISOString(),
         delete_reason: 'Daily Income updated/replaced'
       })
-      .or(`credit_cash_details.like.%${uniqueKey}%,credit_bank_details.like.%${uniqueKey}%`);
+      .or(`credit_cash_details.like.%${uniqueKeyBranch}%,credit_bank_details.like.%${uniqueKeyBranch}%,credit_cash_details.like.%Daily Cash Sales for ${cleanBranch}%${dateString}%,credit_bank_details.like.%Daily UPI+Card Sales for ${cleanBranch}%${dateString}%,credit_cash_details.like.%${legacyKey}%,credit_bank_details.like.%${legacyKey}%`);
 
     // If both are 0 or less, we don't insert a blank record
     if (cashIncome <= 0 && upiIncome <= 0) {
@@ -513,17 +524,15 @@ export async function logDailyIncomeToLedger(
     }
 
     // 2. Build the new ledger credit entry
-    // Category type: revenue (due to the "revenue:" details prefix)
-    // Funding source: Earned Revenue / Operational (since we don't append '[Funding: Investment]')
     const rec: any = {
       tab_name: tabName,
       date: dateString,
       is_opening: false,
       bill_url: null,
       credit_cash: cashIncome > 0 ? cashIncome : 0,
-      credit_cash_details: cashIncome > 0 ? `revenue: Daily Cash Sales for ${branchName} ${uniqueKey}` : null,
+      credit_cash_details: cashIncome > 0 ? `revenue: Daily Cash Sales for ${cleanBranch} ${uniqueKeyBranch}` : null,
       credit_bank: upiIncome > 0 ? upiIncome : 0,
-      credit_bank_details: upiIncome > 0 ? `revenue: Daily UPI+Card Sales for ${branchName} ${uniqueKey}` : null
+      credit_bank_details: upiIncome > 0 ? `revenue: Daily UPI+Card Sales for ${cleanBranch} ${uniqueKeyBranch}` : null
     };
 
     const { error: insertErr } = await supabase.from('finance_ledger').insert(rec);
@@ -532,6 +541,63 @@ export async function logDailyIncomeToLedger(
     }
   } catch (err: any) {
     console.error("Error in logDailyIncomeToLedger:", err);
+  }
+}
+
+export async function autoSyncDailyRevenueToLedger(daysBack: number = 60): Promise<void> {
+  try {
+    const startDateObj = new Date();
+    startDateObj.setDate(startDateObj.getDate() - daysBack);
+    const startDateStr = getISTDateString(startDateObj);
+
+    // Fetch orders that are not deleted
+    const { data: orders, error } = await supabase
+      .from('orders')
+      .select('branch_name, total, manual_total, payment_method, created_at, date')
+      .is('deletion_info', null);
+
+    if (error) {
+      console.warn("Could not query orders for autoSyncDailyRevenueToLedger:", error);
+      return;
+    }
+
+    if (!orders || orders.length === 0) return;
+
+    // Group sales by branch + date
+    const salesMap = new Map<string, { cash: number; upi: number; branchName: string; dateStr: string }>();
+
+    orders.forEach(order => {
+      const rawDate = order.created_at || order.date;
+      if (!rawDate) return;
+
+      const dateStr = getISTDateString(rawDate);
+      if (!dateStr || dateStr < startDateStr) return;
+
+      const branchName = order.branch_name || 'BNR';
+      const key = `${branchName}__${dateStr}`;
+
+      if (!salesMap.has(key)) {
+        salesMap.set(key, { cash: 0, upi: 0, branchName, dateStr });
+      }
+
+      const entry = salesMap.get(key)!;
+      const amt = order.manual_total != null ? Number(order.manual_total) : Number(order.total || 0);
+
+      const method = (order.payment_method || '').toUpperCase();
+      if (method === 'CASH') {
+        entry.cash += amt;
+      } else {
+        // UPI, CARD, ONLINE, etc.
+        entry.upi += amt;
+      }
+    });
+
+    // Sync each branch + date's sales to ledger
+    for (const entry of salesMap.values()) {
+      await logDailyIncomeToLedger(entry.dateStr, entry.cash, entry.upi, entry.branchName);
+    }
+  } catch (err) {
+    console.error("Error in autoSyncDailyRevenueToLedger:", err);
   }
 }
 
@@ -1036,6 +1102,9 @@ export async function saveOrder(
         console.info(`No size-specific recipe defined for item: ${menuDetail.name} (Size: ${size}). Stock not deducted.`);
       }
     }
+
+    // Auto update today's daily revenue in the ledger
+    autoSyncDailyRevenueToLedger(2).catch(e => console.error("Auto sync daily revenue error:", e));
 
     return nextBillNumber;
   } catch (err) {

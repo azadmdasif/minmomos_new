@@ -205,7 +205,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ user }) 
 
   // Logged-in context info
   const managerName = user.username || 'Store Manager';
-  const managerBranch = user.stationName || 'Headquarters';
+  const managerBranch = user.stationName || 'BNR';
 
   // Local storage helpers
   const getLocalStorageData = (key: string) => {
@@ -2181,7 +2181,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ user }) 
                       <option key={s.id} value={s.name}>{s.name}</option>
                     ))}
                     {stations.length === 0 && (
-                      <option value="Headquarters">Headquarters</option>
+                      <option value="BNR">BNR</option>
                     )}
                   </select>
                 </div>

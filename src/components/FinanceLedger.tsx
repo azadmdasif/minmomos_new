@@ -37,6 +37,7 @@ import {
   Cell
 } from 'recharts';
 import { supabase } from '../utils/supabase';
+import { autoSyncDailyRevenueToLedger } from '../utils/storage';
 import ConfirmationModal from './ConfirmationModal';
 
 interface TabInfo {
@@ -476,6 +477,13 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
     setIsSheetLoading(true);
     setSheetError(null);
     try {
+      // Sync daily revenue from orders automatically before querying ledger rows
+      try {
+        await autoSyncDailyRevenueToLedger(60);
+      } catch (syncErr) {
+        console.warn('Auto revenue sync warning:', syncErr);
+      }
+
       const { data, error } = await supabase
         .from('finance_ledger')
         .select('*')

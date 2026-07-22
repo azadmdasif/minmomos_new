@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { CameraCapture } from './CameraCapture';
 import { supabase } from '../utils/supabase';
-import { getISTDateString, getISTFullDateTime, getStations, logDailyIncomeToLedger } from '../utils/storage';
+import { getISTDateString, getISTFullDateTime, getStations, logDailyIncomeToLedger, autoSyncDailyRevenueToLedger } from '../utils/storage';
 import { RAW_MATERIALS_LIST } from '../constants';
 import { 
   Camera, 
@@ -24,7 +24,8 @@ import {
   RefreshCw,
   Sparkles,
   Download,
-  AlertTriangle
+  AlertTriangle,
+  Upload
 } from 'lucide-react';
 import { DailyOperationRecord, DailyOpStatus, DailyOpInventoryItem, DailyOpEvent, User } from '../types';
 import jsPDF from 'jspdf';
@@ -40,20 +41,32 @@ const getNewStatus = (currentStatus: DailyOpStatus, targetStatus: DailyOpStatus)
   return targetIndex > currentIndex ? targetStatus : currentStatus;
 };
 
+const safeSetLocalStorage = (key: string, value: string) => {
+  try {
+    localStorage.setItem(key, value);
+  } catch (err) {
+    console.warn(`localStorage quota exceeded for key "${key}". Safely caught exception.`, err);
+    try {
+      localStorage.removeItem(key);
+    } catch (_) {}
+  }
+};
+
+const pruneLargeDataUrl = (val?: string): string | undefined => {
+  if (!val) return val;
+  if (val.startsWith('data:') || val.length > 500) {
+    return val.startsWith('http') ? val : '[PHOTO_SAVED]';
+  }
+  return val;
+};
+
 const serializeRecordsForLocalStorage = (records: DailyOperationRecord[]): string => {
-  const sanitized = records.map(r => {
-    // If status is Closed, we prune base64 photos to save local storage quota.
-    // Closed records are already fully synced to Supabase database.
-    if (r.status !== 'Closed') {
-      return r;
-    }
-    return {
-      ...r,
-      openingPhoto: r.openingPhoto?.startsWith('data:') ? 'PRUNED' : r.openingPhoto,
-      openingSopPhotos: r.openingSopPhotos?.map(p => p.startsWith('data:') ? 'PRUNED' : p) || [],
-      closingPhoto: r.closingPhoto?.startsWith('data:') ? 'PRUNED' : r.closingPhoto
-    };
-  });
+  const sanitized = records.map(r => ({
+    ...r,
+    openingPhoto: pruneLargeDataUrl(r.openingPhoto),
+    openingSopPhotos: r.openingSopPhotos?.map(p => pruneLargeDataUrl(p) || '') || [],
+    closingPhoto: pruneLargeDataUrl(r.closingPhoto)
+  }));
   
   return JSON.stringify(sanitized);
 };
@@ -157,7 +170,7 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
   // Effective branch name being controlled/viewed
   const currentBranch = isAdmin
     ? (adminSelectedBranch !== 'all' ? adminSelectedBranch : 'All Stations')
-    : (user.stationName || 'Headquarters');
+    : (user.stationName || 'BNR');
   
   // State for active Store Manager's record
   const [activeRecord, setActiveRecord] = useState<DailyOperationRecord | null>(null);
@@ -195,6 +208,11 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
     loadAllRecords();
     loadEmployees();
     fetchTodaySales();
+    
+    // Background async sync so component load isn't blocked
+    const timer = setTimeout(() => {
+      autoSyncDailyRevenueToLedger(7).catch(e => console.error("Auto sync daily revenue error:", e));
+    }, 300);
 
     const handleSyncOnVisible = () => {
       if (document.visibilityState === 'visible') {
@@ -208,6 +226,7 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
     document.addEventListener('visibilitychange', handleSyncOnVisible);
 
     return () => {
+      clearTimeout(timer);
       window.removeEventListener('focus', handleSyncOnVisible);
       document.removeEventListener('visibilitychange', handleSyncOnVisible);
     };
@@ -289,19 +308,23 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
     const merged = Array.from(mergedMap.values()).sort((a, b) => b.date.localeCompare(a.date));
     
     setAllRecords(merged);
-    localStorage.setItem('minmomos-daily-operations', serializeRecordsForLocalStorage(merged));
+    safeSetLocalStorage('minmomos-daily-operations', serializeRecordsForLocalStorage(merged));
 
     // Get branches list
-    let branches = Array.from(new Set(merged.map(r => r.branchName)));
+    let branches: string[] = [];
     try {
       const activeStations = await getStations();
       const stationNames = activeStations.map(s => s.name);
-      branches = Array.from(new Set([...branches, ...stationNames]));
+      branches = Array.from(new Set([...merged.map(r => r.branchName), ...stationNames]));
     } catch (e) {
       console.warn("Could not load stations from database", e);
+      branches = Array.from(new Set(merged.map(r => r.branchName)));
     }
-    // Filter out virtual/aggregated values
-    branches = branches.filter(b => b && b !== 'All Stations' && b !== 'all' && b !== 'All Store Branches');
+    // Filter out virtual/aggregated values or legacy default dummy branches
+    branches = branches.filter(b => b && b !== 'All Stations' && b !== 'all' && b !== 'All Store Branches' && b !== 'Headquarters' && b !== 'Main Store');
+    if (branches.length === 0) {
+      branches = ['BNR', 'Main'];
+    }
     setBranchesList(branches);
 
     // Find previous day's closing record for this branch to get expected cash/inventory
@@ -390,7 +413,7 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
       updatedAll.push(updated);
     }
     setAllRecords(updatedAll);
-    localStorage.setItem('minmomos-daily-operations', serializeRecordsForLocalStorage(updatedAll));
+    safeSetLocalStorage('minmomos-daily-operations', serializeRecordsForLocalStorage(updatedAll));
 
     setSyncStatus('syncing');
     // Upsert to Supabase
@@ -452,7 +475,7 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
 
   // Stage 1: Store Arrival (1:00 PM)
   const handleStartDay = () => {
-    // Get GPS
+    // Get GPS with timeout options to avoid hanging if permissions are delayed/blocked
     let gpsCoords = "GPS Not Available";
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -462,7 +485,8 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
         },
         () => {
           createInitialRecord(gpsCoords);
-        }
+        },
+        { timeout: 3000, maximumAge: 60000 }
       );
     } else {
       createInitialRecord(gpsCoords);
@@ -699,7 +723,7 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
       setViewStage(null);
       const updatedAll = allRecords.filter(r => !(r.branchName === activeRecord.branchName && r.date === activeRecord.date));
       setAllRecords(updatedAll);
-      localStorage.setItem('minmomos-daily-operations', serializeRecordsForLocalStorage(updatedAll));
+      safeSetLocalStorage('minmomos-daily-operations', serializeRecordsForLocalStorage(updatedAll));
       
       try {
         await supabase
@@ -1264,9 +1288,23 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
             </div>
 
             {adminSelectedBranch === 'all' && (
-              <div className="mt-4 p-4 bg-brand-cream/45 rounded-2xl border-2 border-brand-stone/30 text-xs text-brand-brown/70 font-semibold flex items-center gap-2">
-                <Sparkles className="w-4.5 h-4.5 text-brand-yellow flex-shrink-0" />
-                <span>Select a specific physical store branch (e.g. BNR, MAIN) from the dropdown above to start or advance its active daily operations workflow.</span>
+              <div className="mt-4 p-4 bg-brand-cream/45 rounded-2xl border-2 border-brand-stone/30 text-xs text-brand-brown/70 font-semibold space-y-3">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4.5 h-4.5 text-brand-yellow flex-shrink-0" />
+                  <span>Select a physical store branch from above or click a button below to launch or advance active daily operations:</span>
+                </div>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {branchesList.map(b => (
+                    <button 
+                      key={b}
+                      onClick={() => setAdminSelectedBranch(b)}
+                      className="bg-brand-brown text-brand-yellow font-black text-[10px] uppercase tracking-wider px-3.5 py-2 rounded-xl shadow-sm hover:scale-103 active:scale-97 transition-all flex items-center gap-1.5"
+                    >
+                      <MapPin className="w-3.5 h-3.5" />
+                      Operate {b}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -1431,14 +1469,44 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
                   <p className="text-[10px] font-black text-brand-brown/50 uppercase tracking-widest">Store Front/Shutter Photo Required</p>
                   
                   {!tempOpeningPhoto ? (
-                    <button 
-                      onClick={() => setActiveCameraTarget('opening')}
-                      className="w-full flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-6 rounded-xl cursor-pointer border border-brand-stone transition-all"
-                    >
-                      <Camera className="w-8 h-8 text-brand-brown/50 animate-pulse" />
-                      <span className="text-xs font-black text-brand-brown uppercase">Take Shutter Photo</span>
-                      <p className="text-[9px] text-brand-brown/40">Real photo upload is mandatory to start the session.</p>
-                    </button>
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <button 
+                          onClick={() => setActiveCameraTarget('opening')}
+                          className="flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-4 rounded-xl cursor-pointer border border-brand-stone transition-all"
+                        >
+                          <Camera className="w-6 h-6 text-brand-brown/70" />
+                          <span className="text-xs font-black text-brand-brown uppercase">Take Photo</span>
+                        </button>
+                        
+                        <label className="flex flex-col items-center justify-center gap-2 bg-white hover:bg-brand-cream p-4 rounded-xl cursor-pointer border border-brand-stone transition-all">
+                          <Upload className="w-6 h-6 text-brand-brown/70" />
+                          <span className="text-xs font-black text-brand-brown uppercase">Upload File</span>
+                          <input 
+                            type="file" 
+                            accept="image/*" 
+                            className="hidden" 
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                const reader = new FileReader();
+                                reader.onloadend = () => {
+                                  setTempOpeningPhoto(reader.result as string);
+                                };
+                                reader.readAsDataURL(file);
+                              }
+                            }}
+                          />
+                        </label>
+                      </div>
+
+                      <button
+                        onClick={() => setTempOpeningPhoto(MOCK_PHOTOS.shutter)}
+                        className="w-full text-[10px] font-black text-brand-brown/60 uppercase tracking-wider bg-white/70 hover:bg-white p-2 rounded-lg border border-brand-stone/40 transition-all"
+                      >
+                        ⚡ Use Sample Shutter Photo
+                      </button>
+                    </div>
                   ) : (
                     <div className="space-y-2">
                       <div className="border border-brand-stone rounded-xl overflow-hidden h-40 bg-zinc-100 relative">
