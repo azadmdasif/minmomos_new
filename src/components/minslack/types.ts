@@ -49,3 +49,16 @@ export interface MinslackChannel {
   unreadCount?: number;
   members?: string[];
 }
+
+export interface MinslackNotification {
+  id: string;
+  type: 'task_assigned' | 'dm' | 'mention';
+  title: string;
+  description: string;
+  author: string;
+  createdAt: string;
+  targetTab: 'chat' | 'board';
+  targetChannelId?: string;
+  targetTaskId?: string;
+  targetTask?: MinslackTask;
+}

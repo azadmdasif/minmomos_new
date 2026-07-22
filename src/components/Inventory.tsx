@@ -194,6 +194,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [qty, setQty] = useState('');
   const [cost, setCost] = useState('');
   const [vendor, setVendor] = useState('');
+  const [transactionDate, setTransactionDate] = useState<string>(getISTDateString());
   const [newItemName, setNewItemName] = useState('');
   const [newItemUnit, setNewItemUnit] = useState('pcs');
   const [newItemSubcategory, setNewItemSubcategory] = useState('');
@@ -845,6 +846,9 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
         if (q > 0 || c > 0) {
           const selectedVendorObj = vendors.find(v => v.id === newItemVendor);
           const vendorLabel = selectedVendorObj ? selectedVendorObj.name : 'Initial Stock / Registration';
+          const selectedDateISO = transactionDate 
+            ? new Date(`${transactionDate}T12:00:00`).toISOString() 
+            : getISTISOString();
           
           try {
             await logProcurement({
@@ -854,7 +858,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
               unit: newItemUnit,
               total_cost: c,
               vendor: vendorLabel,
-              date: getISTISOString(),
+              date: selectedDateISO,
               is_paid: false
             });
           } catch (logErr: any) {
@@ -885,6 +889,10 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
       }
 
       try {
+        const selectedDateISO = transactionDate 
+          ? new Date(`${transactionDate}T12:00:00`).toISOString() 
+          : getISTISOString();
+
         // Step 1: Log to procurement ledger
         try {
           await logProcurement({
@@ -894,7 +902,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
             unit: selectedItem.unit,
             total_cost: cNum,
             vendor: vendor || 'Local Market',
-            date: getISTISOString(),
+            date: selectedDateISO,
             is_paid: false
           });
         } catch (logErr: any) {
@@ -1467,6 +1475,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     setQty('');
     setCost('');
     setVendor('');
+    setTransactionDate(getISTDateString());
     setNewItemVendor('');
     setNewItemName('');
     setNewItemUnit(materialCategory === 'MOMO' ? 'pcs' : materialCategory === 'PACKET' ? 'pkt' : 'kg');
@@ -3489,6 +3498,15 @@ NOTIFY pgrst, 'reload schema';`}
                   ))}
                 </select>
               </div>
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Transaction Date (Default: Today)</label>
+                <input 
+                  type="date" 
+                  value={transactionDate} 
+                  onChange={e => setTransactionDate(e.target.value)} 
+                  className={inputClasses} 
+                />
+              </div>
               <button onClick={handleAddNewItem} className="w-full py-5 bg-brand-brown text-brand-yellow rounded-3xl font-black uppercase tracking-widest shadow-2xl hover:scale-105 transition-transform">Add to Hub Database</button>
               <button onClick={() => setIsAddItemModalOpen(false)} className="w-full py-2 text-brand-brown/40 font-black uppercase text-[11px] tracking-widest">Dismiss</button>
             </div>
@@ -3724,6 +3742,15 @@ NOTIFY pgrst, 'reload schema';`}
             <h3 className="text-3xl font-black mb-2 italic text-brand-brown uppercase">QUICK <span className="text-brand-yellow">BUY</span></h3>
             <p className="text-[10px] font-bold text-brand-brown/40 uppercase mb-8 tracking-widest">Adding entry for {selectedItem?.name}</p>
             <div className="space-y-5">
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Transaction Date</label>
+                <input 
+                  type="date" 
+                  value={transactionDate} 
+                  onChange={e => setTransactionDate(e.target.value)} 
+                  className={inputClasses} 
+                />
+              </div>
               <input type="number" placeholder={`Quantity (${selectedItem?.unit})`} value={qty} onChange={e => setQty(e.target.value)} className={inputClasses} />
               <input type="number" placeholder="Total Bill (₹)" value={cost} onChange={e => setCost(e.target.value)} className={inputClasses} />
               

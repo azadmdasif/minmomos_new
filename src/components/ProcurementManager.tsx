@@ -12,6 +12,7 @@ const ProcurementManager: React.FC = () => {
   const [qty, setQty] = useState('');
   const [cost, setCost] = useState('');
   const [vendor, setVendor] = useState('');
+  const [transactionDate, setTransactionDate] = useState<string>(getISTDateString());
 
   const load = async () => {
     const today = getISTDateString();
@@ -34,6 +35,10 @@ const ProcurementManager: React.FC = () => {
     const item = inventory.find(i => i.id === selectedItem);
     if (item && qty && cost) {
       try {
+        const selectedDateISO = transactionDate 
+          ? new Date(`${transactionDate}T12:00:00`).toISOString() 
+          : getISTISOString();
+
         await logProcurement({
           item_id: item.id,
           item_name: item.name,
@@ -41,11 +46,11 @@ const ProcurementManager: React.FC = () => {
           unit: item.unit,
           total_cost: parseFloat(cost),
           vendor,
-          date: getISTISOString(),
+          date: selectedDateISO,
           is_paid: false
         });
         setIsModalOpen(false);
-        setQty(''); setCost(''); setVendor('');
+        setQty(''); setCost(''); setVendor(''); setTransactionDate(getISTDateString());
         load();
       } catch (e: any) {
         alert("Log failed: " + e.message);
@@ -125,6 +130,15 @@ const ProcurementManager: React.FC = () => {
           <div className="bg-brand-cream rounded-[4rem] p-12 w-full max-w-sm border-8 border-brand-yellow shadow-2xl">
             <h3 className="text-3xl font-black mb-10 italic text-brand-brown uppercase">ENTRY <span className="text-brand-yellow">FORM</span></h3>
             <div className="space-y-4">
+              <div>
+                <label className="text-[9px] font-black text-brand-brown/60 uppercase ml-2 mb-1 block">Transaction Date</label>
+                <input 
+                  type="date" 
+                  value={transactionDate} 
+                  onChange={e => setTransactionDate(e.target.value)} 
+                  className="w-full p-4 rounded-2xl border border-brand-stone bg-white font-bold text-xs text-brand-brown" 
+                />
+              </div>
               <select className="w-full p-4 rounded-2xl border border-brand-stone bg-white font-bold" value={selectedItem} onChange={e => setSelectedItem(e.target.value)}>
                 <option value="">Select Material...</option>
                 {inventory.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}

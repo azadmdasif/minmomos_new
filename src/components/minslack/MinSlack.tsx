@@ -16,9 +16,13 @@ import {
   AlertCircle,
   Hash,
   Sparkles,
-  Users
+  Users,
+  Bell,
+  AtSign,
+  CheckCheck,
+  Filter
 } from 'lucide-react';
-import { MinslackTask, MinslackTag, TaskStatus, PriorityLevel, TaskComment, ChannelMessage, MinslackChannel } from './types';
+import { MinslackTask, MinslackTag, TaskStatus, PriorityLevel, TaskComment, ChannelMessage, MinslackChannel, MinslackNotification } from './types';
 import { User } from '../../types';
 import { getAppUsers } from '../../utils/storage';
 
@@ -50,13 +54,17 @@ const DEFAULT_MESSAGES: ChannelMessage[] = [];
 const DEFAULT_PROJECTS: ProjectItem[] = [];
 
 export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
-  // Navigation: 'chat' | 'board' | 'plan' | 'flags'
-  const [activeTab, setActiveTab] = useState<'chat' | 'board' | 'plan' | 'flags'>('chat');
+  // Navigation: 'chat' | 'board' | 'plan' | 'flags' | 'notifications'
+  const [activeTab, setActiveTab] = useState<'chat' | 'board' | 'plan' | 'flags' | 'notifications'>('chat');
   const [tasks, setTasks] = useState<MinslackTask[]>([]);
   const [messages, setMessages] = useState<ChannelMessage[]>([]);
   const [channels, setChannels] = useState<MinslackChannel[]>([]);
   const [activeChannelId, setActiveChannelId] = useState<string>('general');
   const [projects, setProjects] = useState<ProjectItem[]>([]);
+
+  // Notifications State
+  const [readNotifIds, setReadNotifIds] = useState<string[]>([]);
+  const [notifFilter, setNotifFilter] = useState<'all' | 'unread' | 'tasks' | 'dms' | 'mentions'>('all');
 
   // Direct Message & Member Selection States
   const [isCreateChannelModalOpen, setIsCreateChannelModalOpen] = useState(false);
@@ -95,6 +103,12 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
   const [viewingTask, setViewingTask] = useState<MinslackTask | null>(null);
   const [newCommentText, setNewCommentText] = useState('');
 
+  // Inline Flagging States (Replaces native prompt() forbidden in iframe)
+  const [flaggingTaskId, setFlaggingTaskId] = useState<string | null>(null);
+  const [flaggingTaskReason, setFlaggingTaskReason] = useState('');
+  const [flaggingMsgId, setFlaggingMsgId] = useState<string | null>(null);
+  const [flaggingMsgReason, setFlaggingMsgReason] = useState('');
+
   // Messenger State
   const [chatInput, setChatInput] = useState('');
   const [chatTags, setChatTags] = useState<MinslackTag[]>([]);
@@ -123,7 +137,8 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     const savedMessages = localStorage.getItem('minslack_messages');
     const savedProjects = localStorage.getItem('minslack_projects');
     const savedChannels = localStorage.getItem('minslack_channels');
-    const savedDms = localStorage.getItem('minslack_dms');
+    const savedDms = localStorage.getItem(`minslack_dms_${user.username}`);
+    const savedReadNotifs = localStorage.getItem(`minslack_read_notifs_${user.username}`);
 
     if (savedTasks) {
       const parsed = JSON.parse(savedTasks) as MinslackTask[];
@@ -164,7 +179,11 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     if (savedDms) setActiveDms(JSON.parse(savedDms));
     else {
       setActiveDms([]);
-      localStorage.setItem('minslack_dms', JSON.stringify([]));
+      localStorage.setItem(`minslack_dms_${user.username}`, JSON.stringify([]));
+    }
+
+    if (savedReadNotifs) {
+      setReadNotifIds(JSON.parse(savedReadNotifs));
     }
 
     // Fetch team users
@@ -178,7 +197,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
       }
     };
     loadUsers();
-  }, []);
+  }, [user.username]);
 
   const updateTasksState = (nextTasks: MinslackTask[]) => {
     setTasks(nextTasks);
@@ -202,7 +221,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
 
   const updateActiveDms = (nextDms: string[]) => {
     setActiveDms(nextDms);
-    localStorage.setItem('minslack_dms', JSON.stringify(nextDms));
+    localStorage.setItem(`minslack_dms_${user.username}`, JSON.stringify(nextDms));
   };
 
   const handleCreateChannel = (e: React.FormEvent) => {
@@ -359,6 +378,26 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     if (viewingTask && viewingTask.id === taskId) {
       setViewingTask({ ...viewingTask, status: nextStatus });
     }
+  };
+
+  // Update Task Assignee
+  const handleUpdateTaskAssignee = (taskId: string, nextAssignee: string) => {
+    const updated = tasks.map(t => t.id === taskId ? { ...t, assignee: nextAssignee } : t);
+    updateTasksState(updated);
+    if (viewingTask && viewingTask.id === taskId) {
+      setViewingTask({ ...viewingTask, assignee: nextAssignee });
+    }
+
+    // System announcement
+    const systemMsg: ChannelMessage = {
+      id: `msg-${Date.now()}`,
+      channelId: 'general',
+      author: 'System Bot',
+      authorRole: 'ADMIN',
+      text: `📋 **Task Reassigned** by **@${user.username}**: "${tasks.find(t => t.id === taskId)?.title || 'Task'}" is now assigned to **@${nextAssignee}**`,
+      createdAt: new Date().toISOString()
+    };
+    updateMessagesState([systemMsg, ...messages]);
   };
 
   // Toggle Task Flag
@@ -585,9 +624,16 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
 
   const currentChannelMessages = useMemo(() => {
     return messages
-      .filter(m => m.channelId === activeChannelId)
+      .filter(m => {
+        if (m.channelId !== activeChannelId) return false;
+        if (activeChannelId.startsWith('dm-')) {
+          const parts = activeChannelId.substring(3).split('-');
+          return parts.includes(user.username);
+        }
+        return true;
+      })
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  }, [messages, activeChannelId]);
+  }, [messages, activeChannelId, user.username]);
 
   const visibleChannels = useMemo(() => {
     return channels.filter(ch => {
@@ -602,15 +648,146 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     messages.forEach(msg => {
       if (msg.channelId.startsWith('dm-')) {
         const parts = msg.channelId.substring(3).split('-');
-        const partner = parts.find(p => p !== user.username) || parts[0];
-        if (partner && partner !== user.username && !list.includes(partner)) {
-          list.push(partner);
+        // CRITICAL: DMs are strictly visible to participants only
+        if (parts.includes(user.username)) {
+          const partner = parts.find(p => p !== user.username) || parts[0];
+          if (partner && partner !== user.username && !list.includes(partner)) {
+            list.push(partner);
+          }
         }
       }
     });
     const validUsernames = new Set(availableUsers.map(u => u.username));
     return Array.from(new Set(list)).filter(dmUser => validUsernames.has(dmUser) && dmUser !== user.username);
   }, [activeDms, messages, user.username, availableUsers]);
+
+  // Dynamic Notifications Engine
+  const userNotifications = useMemo(() => {
+    const list: MinslackNotification[] = [];
+    const currUser = user.username;
+
+    // 1. Tasks assigned to current user
+    tasks.forEach(t => {
+      if (t.assignee === currUser) {
+        list.push({
+          id: `notif-task-${t.id}`,
+          type: 'task_assigned',
+          title: `Task Assigned: "${t.title}"`,
+          description: `Creator: @${t.creator || 'team'} • Priority: ${t.priority.toUpperCase()} • Status: ${t.status.replace('_', ' ')}${t.description ? ` • ${t.description.slice(0, 80)}` : ''}`,
+          author: t.creator || 'System',
+          createdAt: t.createdAt,
+          targetTab: 'board',
+          targetTaskId: t.id,
+          targetTask: t
+        });
+      }
+    });
+
+    // 2. Direct Messages & Channel @Mentions
+    messages.forEach(msg => {
+      if (msg.channelId.startsWith('dm-')) {
+        const parts = msg.channelId.substring(3).split('-');
+        if (parts.includes(currUser) && msg.author !== currUser) {
+          list.push({
+            id: `notif-dm-${msg.id}`,
+            type: 'dm',
+            title: `Direct Message from @${msg.author}`,
+            description: msg.text,
+            author: msg.author,
+            createdAt: msg.createdAt,
+            targetTab: 'chat',
+            targetChannelId: msg.channelId
+          });
+        }
+      } else {
+        // Channel mentions
+        const textLower = msg.text.toLowerCase();
+        const userMention = `@${currUser.toLowerCase()}`;
+        const isMentioned = textLower.includes(userMention) || textLower.includes('@all') || textLower.includes('@channel');
+        if (isMentioned && msg.author !== currUser) {
+          list.push({
+            id: `notif-mention-${msg.id}`,
+            type: 'mention',
+            title: `@Mention in #${msg.channelId}`,
+            description: `@${msg.author}: "${msg.text}"`,
+            author: msg.author,
+            createdAt: msg.createdAt,
+            targetTab: 'chat',
+            targetChannelId: msg.channelId
+          });
+        }
+
+        // Thread replies mentions
+        if (msg.replies && msg.replies.length > 0) {
+          msg.replies.forEach(reply => {
+            const replyTextLower = reply.text.toLowerCase();
+            const isReplyMentioned = replyTextLower.includes(userMention) || replyTextLower.includes('@all') || replyTextLower.includes('@channel');
+            if (isReplyMentioned && reply.author !== currUser) {
+              list.push({
+                id: `notif-mention-${reply.id}`,
+                type: 'mention',
+                title: `@Mention in thread in #${msg.channelId}`,
+                description: `@${reply.author}: "${reply.text}"`,
+                author: reply.author,
+                createdAt: reply.createdAt,
+                targetTab: 'chat',
+                targetChannelId: msg.channelId
+              });
+            }
+          });
+        }
+      }
+    });
+
+    return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [tasks, messages, user.username]);
+
+  const unreadNotifCount = useMemo(() => {
+    return userNotifications.filter(n => !readNotifIds.includes(n.id)).length;
+  }, [userNotifications, readNotifIds]);
+
+  const assignedIncompleteTasksCount = useMemo(() => {
+    return tasks.filter(t => t.assignee === user.username && t.status !== 'done').length;
+  }, [tasks, user.username]);
+
+  const markNotifAsRead = (notifId: string) => {
+    if (!readNotifIds.includes(notifId)) {
+      const next = [...readNotifIds, notifId];
+      setReadNotifIds(next);
+      localStorage.setItem(`minslack_read_notifs_${user.username}`, JSON.stringify(next));
+    }
+  };
+
+  const markAllNotifsAsRead = () => {
+    const allIds = userNotifications.map(n => n.id);
+    const combined = Array.from(new Set([...readNotifIds, ...allIds]));
+    setReadNotifIds(combined);
+    localStorage.setItem(`minslack_read_notifs_${user.username}`, JSON.stringify(combined));
+  };
+
+  const handleOpenNotification = (notif: MinslackNotification) => {
+    markNotifAsRead(notif.id);
+    if (notif.targetTab === 'board') {
+      setActiveTab('board');
+      if (notif.targetTask) {
+        setViewingTask(notif.targetTask);
+      }
+    } else if (notif.targetTab === 'chat' && notif.targetChannelId) {
+      setActiveChannelId(notif.targetChannelId);
+      setActiveTab('chat');
+      setViewingThreadMsg(null);
+    }
+  };
+
+  const filteredUserNotifications = useMemo(() => {
+    return userNotifications.filter(n => {
+      if (notifFilter === 'unread') return !readNotifIds.includes(n.id);
+      if (notifFilter === 'tasks') return n.type === 'task_assigned';
+      if (notifFilter === 'dms') return n.type === 'dm';
+      if (notifFilter === 'mentions') return n.type === 'mention';
+      return true;
+    });
+  }, [userNotifications, notifFilter, readNotifIds]);
 
   const allFlaggedItems = useMemo(() => {
     const items: Array<{
@@ -619,6 +796,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
       titleOrAuthor: string;
       descriptionOrText: string;
       reason?: string;
+      assignee?: string;
       tags?: MinslackTag[];
       createdAt: string;
     }> = [];
@@ -630,6 +808,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
         titleOrAuthor: t.title,
         descriptionOrText: t.description,
         reason: t.flagReason,
+        assignee: t.assignee,
         tags: t.tags,
         createdAt: t.createdAt
       });
@@ -756,6 +935,10 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
             <div className="space-y-0.5 px-2">
               {visibleChannels.map(ch => {
                 const isActive = activeTab === 'chat' && activeChannelId === ch.id;
+                const unreadMentionsForChannel = userNotifications.filter(n => {
+                  return n.type === 'mention' && n.targetChannelId === ch.id && !readNotifIds.includes(n.id);
+                }).length;
+
                 return (
                   <button
                     key={ch.id}
@@ -764,14 +947,21 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                       setActiveTab('chat');
                       setViewingThreadMsg(null);
                     }}
-                    className={`w-full text-left px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-2 transition-all ${
+                    className={`w-full text-left px-3 py-1.5 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
                       isActive 
                         ? 'bg-[#1164A3] text-white font-bold shadow-sm' 
                         : 'text-[#BCABB6] hover:bg-[#350A36] hover:text-white'
                     }`}
                   >
-                    <Hash className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-[#BCABB6]/60'}`} />
-                    <span className="truncate">{ch.name}</span>
+                    <div className="flex items-center gap-2 truncate">
+                      <Hash className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-[#BCABB6]/60'}`} />
+                      <span className="truncate">{ch.name}</span>
+                    </div>
+                    {unreadMentionsForChannel > 0 && (
+                      <span className="bg-amber-400 text-[#3F0E40] text-[9px] font-black h-4 min-w-4 px-1 rounded-full flex items-center justify-center shrink-0">
+                        @{unreadMentionsForChannel}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -809,6 +999,12 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                 // Find user info for display
                 const userInfo = availableUsers.find(u => u.username === dmUser);
                 const isSelf = dmUser === user.username;
+
+                const unreadDmForUser = messages.filter(m => {
+                  if (m.channelId !== dmId) return false;
+                  if (m.author === user.username) return false;
+                  return !readNotifIds.includes(`notif-dm-${m.id}`);
+                }).length;
                 
                 return (
                   <button
@@ -817,6 +1013,8 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                       setActiveChannelId(dmId);
                       setActiveTab('chat');
                       setViewingThreadMsg(null);
+                      // Mark DM notifications as read
+                      messages.filter(m => m.channelId === dmId).forEach(m => markNotifAsRead(`notif-dm-${m.id}`));
                     }}
                     className={`w-full text-left px-3 py-1.5 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
                       isActive 
@@ -833,11 +1031,18 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                       </div>
                       <span className="truncate">@{dmUser} {isSelf && <span className="opacity-60 text-[10px] font-normal">(you)</span>}</span>
                     </div>
-                    {userInfo?.role && (
-                      <span className={`text-[8px] px-1 rounded uppercase ${isActive ? 'bg-[#1F74B3] text-white border border-[#1164A3]' : 'bg-[#522653] text-[#BCABB6]'}`}>
-                        {userInfo.role === 'ADMIN' ? 'Adm' : userInfo.role === 'COFOUNDER' ? 'Cof' : userInfo.role === 'STORE_MANAGER' ? 'Mgr' : 'Crew'}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {unreadDmForUser > 0 && (
+                        <span className="bg-amber-400 text-[#3F0E40] text-[9px] font-black h-4 min-w-4 px-1 rounded-full flex items-center justify-center">
+                          {unreadDmForUser}
+                        </span>
+                      )}
+                      {userInfo?.role && (
+                        <span className={`text-[8px] px-1 rounded uppercase ${isActive ? 'bg-[#1F74B3] text-white border border-[#1164A3]' : 'bg-[#522653] text-[#BCABB6]'}`}>
+                          {userInfo.role === 'ADMIN' ? 'Adm' : userInfo.role === 'COFOUNDER' ? 'Cof' : userInfo.role === 'STORE_MANAGER' ? 'Mgr' : 'Crew'}
+                        </span>
+                      )}
+                    </div>
                   </button>
                 );
               })}
@@ -856,6 +1061,29 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
             </div>
 
             <div className="space-y-0.5 px-2">
+              {/* Notifications Center Tab Button */}
+              <button
+                onClick={() => {
+                  setActiveTab('notifications');
+                  setViewingThreadMsg(null);
+                }}
+                className={`w-full text-left px-3 py-2 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
+                  activeTab === 'notifications'
+                    ? 'bg-[#1164A3] text-white font-bold shadow-sm'
+                    : 'text-[#BCABB6] hover:bg-[#350A36] hover:text-white'
+                }`}
+              >
+                <div className="flex items-center gap-2 truncate">
+                  <Bell className={`w-3.5 h-3.5 ${unreadNotifCount > 0 ? 'text-amber-300 animate-bounce' : ''}`} />
+                  <span>Notifications</span>
+                </div>
+                {unreadNotifCount > 0 && (
+                  <span className="bg-amber-400 text-[#3F0E40] text-[9px] font-black h-4 min-w-4 px-1 rounded-full flex items-center justify-center">
+                    {unreadNotifCount}
+                  </span>
+                )}
+              </button>
+
               {/* Task Board Tab Button */}
               <button
                 onClick={() => {
@@ -872,6 +1100,11 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                   <Layout className="w-3.5 h-3.5" />
                   <span>Tasks Board</span>
                 </div>
+                {assignedIncompleteTasksCount > 0 && (
+                  <span className="bg-sky-500 text-white text-[9px] font-black h-4 min-w-4 px-1 rounded-full flex items-center justify-center">
+                    {assignedIncompleteTasksCount}
+                  </span>
+                )}
               </button>
 
               {/* Project Plan (Gantt) Tab Button */}
@@ -936,6 +1169,15 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
         {/* Dynamic Context Header */}
         <div className="h-14 border-b border-slate-200 px-6 flex items-center justify-between shrink-0 bg-slate-50/50">
           <div>
+            {activeTab === 'notifications' && (
+              <div className="flex items-center gap-2">
+                <Bell className="w-4 h-4 text-[#3F0E40]" />
+                <h3 className="text-sm font-extrabold text-slate-900">Notifications Center</h3>
+                <span className="text-[11px] text-slate-400 hidden sm:inline ml-2 border-l border-slate-300 pl-2 font-medium">
+                  Real-time task assignments, DMs, and @mentions
+                </span>
+              </div>
+            )}
             {activeTab === 'chat' && (() => {
               const isDm = activeChannelId.startsWith('dm-');
               let partnerName = '';
@@ -1004,6 +1246,25 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                setActiveTab('notifications');
+                setViewingThreadMsg(null);
+              }}
+              className={`px-3 py-1.5 rounded-lg border text-xs font-bold flex items-center gap-2 transition-all cursor-pointer ${
+                activeTab === 'notifications'
+                  ? 'bg-[#3F0E40] text-white border-[#3F0E40]'
+                  : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <Bell className={`w-3.5 h-3.5 ${unreadNotifCount > 0 ? 'text-amber-500 animate-bounce' : 'text-slate-500'}`} />
+              <span>Notifications</span>
+              {unreadNotifCount > 0 && (
+                <span className="bg-amber-500 text-white text-[10px] font-extrabold px-1.5 py-0.2 rounded-full">
+                  {unreadNotifCount}
+                </span>
+              )}
+            </button>
             <span className="text-xs font-semibold text-slate-500 bg-slate-200/50 px-2.5 py-1 rounded-md">
               Crew Portal
             </span>
@@ -1111,19 +1372,52 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                             </button>
 
                             {!msg.flagged ? (
-                              <button
-                                onClick={() => {
-                                  const reason = prompt('Specify the problem or blockage to flag on this message:');
-                                  if (reason) {
-                                    const next = messages.map(m => m.id === msg.id ? { ...m, flagged: true, flagReason: reason } : m);
-                                    updateMessagesState(next);
-                                  }
-                                }}
-                                className="text-[10px] font-bold text-rose-500/60 opacity-0 group-hover:opacity-100 transition-opacity hover:text-rose-600 uppercase tracking-wider flex items-center gap-1"
-                              >
-                                <Flag className="w-3 h-3" />
-                                Flag as Problem
-                              </button>
+                              flaggingMsgId === msg.id ? (
+                                <div className="flex items-center gap-1.5 bg-rose-50 border border-rose-200 p-1.5 rounded-lg">
+                                  <input
+                                    type="text"
+                                    value={flaggingMsgReason}
+                                    onChange={(e) => setFlaggingMsgReason(e.target.value)}
+                                    placeholder="Specify problem/issue..."
+                                    className="text-xs bg-white border border-rose-300 px-2 py-1 rounded text-slate-800 w-44 focus:outline-none font-medium"
+                                    autoFocus
+                                  />
+                                  <button
+                                    onClick={() => {
+                                      if (flaggingMsgReason.trim()) {
+                                        const next = messages.map(m => m.id === msg.id ? { ...m, flagged: true, flagReason: flaggingMsgReason.trim() } : m);
+                                        updateMessagesState(next);
+                                        setFlaggingMsgId(null);
+                                        setFlaggingMsgReason('');
+                                      }
+                                    }}
+                                    disabled={!flaggingMsgReason.trim()}
+                                    className="text-[10px] font-extrabold bg-rose-600 text-white px-2 py-1 rounded hover:bg-rose-700 cursor-pointer"
+                                  >
+                                    Confirm
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setFlaggingMsgId(null);
+                                      setFlaggingMsgReason('');
+                                    }}
+                                    className="text-[10px] font-bold bg-white text-slate-600 border border-slate-200 px-2 py-1 rounded hover:bg-slate-100 cursor-pointer"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => {
+                                    setFlaggingMsgId(msg.id);
+                                    setFlaggingMsgReason('');
+                                  }}
+                                  className="text-[10px] font-bold text-rose-500/60 opacity-0 group-hover:opacity-100 transition-opacity hover:text-rose-600 uppercase tracking-wider flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Flag className="w-3 h-3" />
+                                  Flag as Problem
+                                </button>
+                              )
                             ) : (
                               <button
                                 onClick={() => handleResolveMessageFlag(msg.id)}
@@ -1218,6 +1512,27 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                       />
                     </div>
                   )}
+
+                  {/* Quick @Mention pill bar */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto py-1">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1 shrink-0">
+                      <AtSign className="w-3 h-3 text-slate-400" /> Mention:
+                    </span>
+                    {availableUsers
+                      .filter(u => u.username !== user.username)
+                      .map(u => (
+                        <button
+                          key={u.id || u.username}
+                          type="button"
+                          onClick={() => {
+                            setChatInput(prev => `${prev}${prev.endsWith(' ') || prev === '' ? '' : ' '}@${u.username} `);
+                          }}
+                          className="px-2 py-0.5 bg-slate-100 hover:bg-amber-100 hover:text-amber-900 border border-slate-200 text-slate-700 rounded text-[10px] font-bold transition-all shrink-0 cursor-pointer"
+                        >
+                          @{u.username}
+                        </button>
+                      ))}
+                  </div>
 
                   {/* Input and Send button */}
                   <div className="flex items-center gap-2">
@@ -1440,8 +1755,8 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                                     {task.priority}
                                   </span>
                                 </div>
-                                <span className="text-[10px] text-slate-500 font-bold truncate max-w-[100px]">
-                                  👤 {task.assignee}
+                                <span className="text-[10px] font-extrabold bg-sky-50 text-sky-900 border border-sky-200 px-2 py-0.5 rounded-md flex items-center gap-1 shrink-0 shadow-2xs">
+                                  👤 @{task.assignee || 'Unassigned'}
                                 </span>
                               </div>
 
@@ -1718,10 +2033,17 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                       <div key={item.id} className="bg-white border-2 border-rose-100 rounded-xl p-5 shadow-sm hover:border-rose-200 transition-all flex flex-col justify-between gap-4">
                         <div className="space-y-3">
                           <div className="flex items-center justify-between gap-2 flex-wrap">
-                            <span className="px-2 py-0.5 rounded text-[8px] font-black uppercase bg-rose-600 text-white flex items-center gap-0.5">
-                              <AlertCircle className="w-3 h-3" />
-                              {item.type.toUpperCase()} BLOCKED
-                            </span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="px-2 py-0.5 rounded text-[8px] font-black uppercase bg-rose-600 text-white flex items-center gap-0.5">
+                                <AlertCircle className="w-3 h-3" />
+                                {item.type.toUpperCase()} BLOCKED
+                              </span>
+                              {item.assignee && (
+                                <span className="px-2 py-0.5 rounded text-[9px] font-extrabold bg-sky-100 text-sky-900 border border-sky-300">
+                                  👤 Assigned: @{item.assignee}
+                                </span>
+                              )}
+                            </div>
                             <span className="text-[10px] text-slate-400 font-mono font-bold">
                               {formatDate(item.createdAt)}
                             </span>
@@ -1774,6 +2096,141 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                       </div>
                     ))}
                   </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* E. VIEW: NOTIFICATIONS & ACTIVITY CENTER */}
+          {activeTab === 'notifications' && (
+            <div className="h-full overflow-y-auto p-6 md:p-8 space-y-6 bg-slate-50/50 custom-scrollbar">
+              {/* Banner Header */}
+              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 bg-[#3F0E40]/10 text-[#3F0E40] rounded-lg">
+                      <Bell className="w-5 h-5 text-[#3F0E40]" />
+                    </div>
+                    <h2 className="text-lg font-extrabold text-slate-900 tracking-tight">Notifications Center</h2>
+                  </div>
+                  <p className="text-xs text-slate-500 max-w-xl">
+                    Real-time alerts for tasks assigned to @{user.username}, direct messages, and @mentions across channels.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={markAllNotifsAsRead}
+                    disabled={unreadNotifCount === 0}
+                    className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+                      unreadNotifCount > 0
+                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm cursor-pointer'
+                        : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                    }`}
+                  >
+                    <CheckCheck className="w-4 h-4" />
+                    Mark All as Read
+                  </button>
+                </div>
+              </div>
+
+              {/* Filter Pills */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mr-2 flex items-center gap-1 shrink-0">
+                  <Filter className="w-3.5 h-3.5" /> Filter:
+                </span>
+                {[
+                  { id: 'all', label: `All (${userNotifications.length})` },
+                  { id: 'unread', label: `Unread (${unreadNotifCount})` },
+                  { id: 'tasks', label: `Task Assignments (${userNotifications.filter(n => n.type === 'task_assigned').length})` },
+                  { id: 'dms', label: `Direct Messages (${userNotifications.filter(n => n.type === 'dm').length})` },
+                  { id: 'mentions', label: `@Mentions (${userNotifications.filter(n => n.type === 'mention').length})` },
+                ].map(f => (
+                  <button
+                    key={f.id}
+                    onClick={() => setNotifFilter(f.id as any)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                      notifFilter === f.id
+                        ? 'bg-[#3F0E40] text-white shadow-sm'
+                        : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Notifications List */}
+              <div className="space-y-3">
+                {filteredUserNotifications.length === 0 ? (
+                  <div className="bg-white border border-slate-200 p-12 text-center rounded-xl max-w-xl mx-auto flex flex-col items-center justify-center shadow-sm">
+                    <Bell className="w-12 h-12 text-slate-300 mb-3" />
+                    <h3 className="text-base font-extrabold text-slate-800">No Notifications Found</h3>
+                    <p className="text-xs text-slate-500 mt-1 max-w-xs">
+                      {notifFilter === 'unread' 
+                        ? "You've read all your notifications! Great job staying updated."
+                        : "When tasks are assigned to you, or colleagues send DMs or @mention you, alerts will appear here."}
+                    </p>
+                  </div>
+                ) : (
+                  filteredUserNotifications.map(notif => {
+                    const isRead = readNotifIds.includes(notif.id);
+                    return (
+                      <div
+                        key={notif.id}
+                        className={`bg-white border rounded-xl p-4 transition-all shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                          !isRead ? 'border-amber-300 bg-amber-50/20' : 'border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-start gap-3 min-w-0">
+                          <div className={`p-2.5 rounded-xl shrink-0 mt-0.5 ${
+                            notif.type === 'task_assigned' 
+                              ? 'bg-blue-50 text-blue-600 border border-blue-200' 
+                              : notif.type === 'dm'
+                              ? 'bg-purple-50 text-purple-600 border border-purple-200'
+                              : 'bg-amber-50 text-amber-700 border border-amber-200'
+                          }`}>
+                            {notif.type === 'task_assigned' && <Layout className="w-5 h-5" />}
+                            {notif.type === 'dm' && <MessageSquare className="w-5 h-5" />}
+                            {notif.type === 'mention' && <AtSign className="w-5 h-5" />}
+                          </div>
+
+                          <div className="space-y-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {!isRead && (
+                                <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" title="Unread" />
+                              )}
+                              <h4 className="font-extrabold text-slate-900 text-sm truncate">{notif.title}</h4>
+                              <span className="text-[10px] text-slate-400 font-mono font-medium">
+                                {formatDate(notif.createdAt)}
+                              </span>
+                            </div>
+
+                            <p className="text-xs font-medium text-slate-600 line-clamp-2 leading-relaxed">
+                              {notif.description}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
+                          {!isRead && (
+                            <button
+                              onClick={() => markNotifAsRead(notif.id)}
+                              className="px-2.5 py-1.5 text-[11px] font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-all"
+                            >
+                              Mark Read
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleOpenNotification(notif)}
+                            className="px-3 py-1.5 bg-[#3F0E40] hover:bg-[#350A36] text-white text-xs font-bold rounded-lg transition-all shadow-sm flex items-center gap-1.5 cursor-pointer"
+                          >
+                            View Details
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </div>
@@ -2198,6 +2655,10 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
             {/* Task header info */}
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] font-black bg-sky-100 text-sky-900 border border-sky-300 px-2.5 py-0.5 rounded flex items-center gap-1 shadow-2xs">
+                  👤 Assigned to: @{viewingTask.assignee || 'Unassigned'}
+                </span>
+
                 <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded border ${
                   viewingTask.status === 'todo' ? 'bg-slate-50 text-slate-600 border-slate-200' :
                   viewingTask.status === 'in_progress' ? 'bg-amber-50 text-amber-700 border-amber-200' :
@@ -2230,45 +2691,110 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
             </div>
 
             {/* Action buttons */}
-            <div className="grid grid-cols-2 gap-3 bg-slate-50/50 p-3 rounded-lg border border-slate-150">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50/50 p-3 rounded-lg border border-slate-150">
+              <div>
+                <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1">Assignee</label>
+                <select
+                  value={viewingTask.assignee || 'Unassigned'}
+                  onChange={(e) => handleUpdateTaskAssignee(viewingTask.id, e.target.value)}
+                  className="bg-white border border-slate-300 px-2.5 py-1.5 rounded focus:outline-none text-slate-700 font-bold w-full text-xs"
+                >
+                  <option value="Unassigned">Unassigned</option>
+                  {availableUsers.map(u => (
+                    <option key={u.id || u.username} value={u.username}>@{u.username}</option>
+                  ))}
+                </select>
+              </div>
+
               <div>
                 <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1">Move Status</label>
-                <div className="flex gap-1.5">
-                  <select
-                    value={viewingTask.status}
-                    onChange={(e) => handleUpdateTaskStatus(viewingTask.id, e.target.value as TaskStatus)}
-                    className="bg-white border border-slate-300 px-3 py-1.5 rounded focus:outline-none text-slate-700 font-bold"
-                  >
-                    <option value="todo">To Do</option>
-                    <option value="in_progress">In Progress</option>
-                    <option value="review">Under Review</option>
-                    <option value="done">Completed</option>
-                  </select>
-                </div>
+                <select
+                  value={viewingTask.status}
+                  onChange={(e) => handleUpdateTaskStatus(viewingTask.id, e.target.value as TaskStatus)}
+                  className="bg-white border border-slate-300 px-2.5 py-1.5 rounded focus:outline-none text-slate-700 font-bold w-full text-xs"
+                >
+                  <option value="todo">To Do</option>
+                  <option value="in_progress">In Progress</option>
+                  <option value="review">Under Review</option>
+                  <option value="done">Completed</option>
+                </select>
               </div>
 
               <div>
                 <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1">Problem flagging</label>
-                <div className="flex gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   {!viewingTask.flagged ? (
-                    <button
-                      onClick={() => {
-                        const reason = prompt('Specify the operational bottleneck/issue:');
-                        if (reason) handleToggleTaskFlag(viewingTask.id, true, reason);
-                      }}
-                      className="px-3 py-1.5 bg-rose-50 text-rose-600 border border-rose-200 hover:bg-rose-100 font-bold rounded transition-all"
-                    >
-                      ⚠️ Flag Blocked
-                    </button>
+                    flaggingTaskId === viewingTask.id ? (
+                      <div className="bg-rose-50 border border-rose-300 p-3 rounded-lg space-y-2 col-span-full shadow-xs">
+                        <label className="block text-xs font-bold text-rose-800">
+                          Operational Bottleneck / Issue Reason:
+                        </label>
+                        <input
+                          type="text"
+                          value={flaggingTaskReason}
+                          onChange={(e) => setFlaggingTaskReason(e.target.value)}
+                          placeholder="e.g. Out of stock, System down, Awaiting approval..."
+                          className="w-full bg-white border border-rose-300 text-xs text-slate-800 px-3 py-1.5 rounded focus:outline-none focus:ring-2 focus:ring-rose-500 font-medium"
+                          autoFocus
+                        />
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (flaggingTaskReason.trim()) {
+                                handleToggleTaskFlag(viewingTask.id, true, flaggingTaskReason.trim());
+                                setFlaggingTaskId(null);
+                                setFlaggingTaskReason('');
+                              }
+                            }}
+                            disabled={!flaggingTaskReason.trim()}
+                            className={`px-3 py-1 rounded text-xs font-bold text-white transition-all cursor-pointer ${
+                              flaggingTaskReason.trim() ? 'bg-rose-600 hover:bg-rose-700 shadow-sm' : 'bg-slate-300 cursor-not-allowed'
+                            }`}
+                          >
+                            Confirm Flag Blocked
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFlaggingTaskId(null);
+                              setFlaggingTaskReason('');
+                            }}
+                            className="px-3 py-1 rounded text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFlaggingTaskId(viewingTask.id);
+                          setFlaggingTaskReason('');
+                        }}
+                        title="Mark task as blocked due to operational issue"
+                        className="w-full py-1.5 bg-rose-50 text-rose-600 border border-rose-200 hover:bg-rose-100 font-bold rounded transition-all text-xs cursor-pointer flex items-center justify-center gap-1"
+                      >
+                        ⚠️ Flag Blocked
+                      </button>
+                    )
                   ) : (
                     <button
+                      type="button"
                       onClick={() => handleToggleTaskFlag(viewingTask.id, false)}
-                      className="px-3 py-1.5 bg-emerald-50 text-emerald-600 border border-emerald-200 hover:bg-emerald-100 font-bold rounded transition-all"
+                      title="Clear bottleneck flag"
+                      className="w-full py-1.5 bg-emerald-50 text-emerald-600 border border-emerald-200 hover:bg-emerald-100 font-bold rounded transition-all text-xs cursor-pointer flex items-center justify-center gap-1"
                     >
                       ✅ Clear Flag
                     </button>
                   )}
                 </div>
+                <p className="text-[9px] text-slate-400 font-medium mt-1 leading-tight">
+                  {viewingTask.flagged
+                    ? "Currently flagged as blocked. Click 'Clear Flag' once issue is resolved."
+                    : "Use 'Flag Blocked' to report a bottleneck stopping task progress."}
+                </p>
               </div>
             </div>
 
