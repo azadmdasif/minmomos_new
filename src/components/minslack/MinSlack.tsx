@@ -25,6 +25,17 @@ import {
 import { MinslackTask, MinslackTag, TaskStatus, PriorityLevel, TaskComment, ChannelMessage, MinslackChannel, MinslackNotification } from './types';
 import { User } from '../../types';
 import { getAppUsers } from '../../utils/storage';
+import { 
+  fetchSupabaseMessages, 
+  syncMessagesToSupabase, 
+  fetchSupabaseTasks, 
+  syncTasksToSupabase, 
+  fetchSupabaseChannels, 
+  syncChannelsToSupabase, 
+  fetchSupabaseProjects, 
+  syncProjectsToSupabase, 
+  subscribeToMinSlackRealtime 
+} from '../../utils/minslackStorage';
 
 interface MinSlackProps {
   user: User;
@@ -131,7 +142,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
   const [projStatus, setProjStatus] = useState<'on_track' | 'at_risk' | 'delayed'>('on_track');
   const [projTags, setProjTags] = useState<MinslackTag[]>([]);
 
-  // Load and save local state
+  // Load and save local & Supabase state
   useEffect(() => {
     const savedTasks = localStorage.getItem('minslack_tasks');
     const savedMessages = localStorage.getItem('minslack_messages');
@@ -144,42 +155,34 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
       const parsed = JSON.parse(savedTasks) as MinslackTask[];
       const filtered = parsed.filter(t => !['task-1', 'task-2', 'task-3'].includes(t.id));
       setTasks(filtered);
-      localStorage.setItem('minslack_tasks', JSON.stringify(filtered));
     } else {
       setTasks(DEFAULT_TASKS);
-      localStorage.setItem('minslack_tasks', JSON.stringify(DEFAULT_TASKS));
     }
 
     if (savedMessages) {
       const parsed = JSON.parse(savedMessages) as ChannelMessage[];
       const filtered = parsed.filter(m => !['msg-1', 'msg-2', 'msg-3'].includes(m.id));
       setMessages(filtered);
-      localStorage.setItem('minslack_messages', JSON.stringify(filtered));
     } else {
       setMessages(DEFAULT_MESSAGES);
-      localStorage.setItem('minslack_messages', JSON.stringify(DEFAULT_MESSAGES));
     }
 
     if (savedProjects) {
       const parsed = JSON.parse(savedProjects) as ProjectItem[];
       const filtered = parsed.filter(p => !['p-1', 'p-2', 'p-3', 'p-4'].includes(p.id));
       setProjects(filtered);
-      localStorage.setItem('minslack_projects', JSON.stringify(filtered));
     } else {
       setProjects(DEFAULT_PROJECTS);
-      localStorage.setItem('minslack_projects', JSON.stringify(DEFAULT_PROJECTS));
     }
 
     if (savedChannels) setChannels(JSON.parse(savedChannels));
     else {
       setChannels(DEFAULT_CHANNELS);
-      localStorage.setItem('minslack_channels', JSON.stringify(DEFAULT_CHANNELS));
     }
 
     if (savedDms) setActiveDms(JSON.parse(savedDms));
     else {
       setActiveDms([]);
-      localStorage.setItem(`minslack_dms_${user.username}`, JSON.stringify([]));
     }
 
     if (savedReadNotifs) {
@@ -197,26 +200,90 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
       }
     };
     loadUsers();
+
+    // Async load from Supabase Cloud
+    const loadFromCloud = async () => {
+      const [remoteMsgs, remoteTasks, remoteChan, remoteProj] = await Promise.all([
+        fetchSupabaseMessages(),
+        fetchSupabaseTasks(),
+        fetchSupabaseChannels(),
+        fetchSupabaseProjects()
+      ]);
+
+      if (remoteMsgs && remoteMsgs.length > 0) {
+        setMessages(remoteMsgs);
+        localStorage.setItem('minslack_messages', JSON.stringify(remoteMsgs));
+      }
+      if (remoteTasks && remoteTasks.length > 0) {
+        setTasks(remoteTasks);
+        localStorage.setItem('minslack_tasks', JSON.stringify(remoteTasks));
+      }
+      if (remoteChan && remoteChan.length > 0) {
+        setChannels(remoteChan);
+        localStorage.setItem('minslack_channels', JSON.stringify(remoteChan));
+      }
+      if (remoteProj && remoteProj.length > 0) {
+        setProjects(remoteProj);
+        localStorage.setItem('minslack_projects', JSON.stringify(remoteProj));
+      }
+    };
+    loadFromCloud();
+
+    // Subscribe to Realtime Postgres Changes across PCs
+    const unsubscribe = subscribeToMinSlackRealtime({
+      onMessagesChange: async () => {
+        const updatedMsgs = await fetchSupabaseMessages();
+        if (updatedMsgs) {
+          setMessages(updatedMsgs);
+          localStorage.setItem('minslack_messages', JSON.stringify(updatedMsgs));
+        }
+      },
+      onTasksChange: async () => {
+        const updatedTasks = await fetchSupabaseTasks();
+        if (updatedTasks) {
+          setTasks(updatedTasks);
+          localStorage.setItem('minslack_tasks', JSON.stringify(updatedTasks));
+        }
+      },
+      onChannelsChange: async () => {
+        const updatedChan = await fetchSupabaseChannels();
+        if (updatedChan) {
+          setChannels(updatedChan);
+          localStorage.setItem('minslack_channels', JSON.stringify(updatedChan));
+        }
+      },
+      onProjectsChange: async () => {
+        const updatedProj = await fetchSupabaseProjects();
+        if (updatedProj) {
+          setProjects(updatedProj);
+          localStorage.setItem('minslack_projects', JSON.stringify(updatedProj));
+        }
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
   }, [user.username]);
 
   const updateTasksState = (nextTasks: MinslackTask[]) => {
     setTasks(nextTasks);
-    localStorage.setItem('minslack_tasks', JSON.stringify(nextTasks));
+    syncTasksToSupabase(nextTasks);
   };
 
   const updateMessagesState = (nextMessages: ChannelMessage[]) => {
     setMessages(nextMessages);
-    localStorage.setItem('minslack_messages', JSON.stringify(nextMessages));
+    syncMessagesToSupabase(nextMessages);
   };
 
   const updateProjectsState = (nextProjects: ProjectItem[]) => {
     setProjects(nextProjects);
-    localStorage.setItem('minslack_projects', JSON.stringify(nextProjects));
+    syncProjectsToSupabase(nextProjects);
   };
 
   const updateChannelsState = (nextChannels: MinslackChannel[]) => {
     setChannels(nextChannels);
-    localStorage.setItem('minslack_channels', JSON.stringify(nextChannels));
+    syncChannelsToSupabase(nextChannels);
   };
 
   const updateActiveDms = (nextDms: string[]) => {
