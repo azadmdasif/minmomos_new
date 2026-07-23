@@ -58,7 +58,7 @@ export async function syncCouponFromSupabase(phone: string): Promise<MarketingCo
 
     const { data, error } = await supabase
       .from('marketing_coupons')
-      .select('*')
+      .select('phone, customer_name, coupon_code, created_at, expires_at, is_used')
       .eq('phone', digits)
       .eq('is_used', false)
       .gt('expires_at', now)
@@ -365,8 +365,9 @@ export async function fetchAllMessageLogsFromSupabase(): Promise<MessageLog[]> {
   try {
     const { data, error } = await supabase
       .from('marketing_message_logs')
-      .select('*')
-      .order('sent_at', { ascending: false });
+      .select('phone, sent_at, message_text, type')
+      .order('sent_at', { ascending: false })
+      .limit(100);
     if (error) {
       console.warn('Could not fetch message logs from Supabase (may not exist):', error.message);
       return [];

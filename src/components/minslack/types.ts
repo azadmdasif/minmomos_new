@@ -1,6 +1,6 @@
 export type MinslackTag = 'ops' | 'hr' | 'stock' | 'kitchen' | 'finance' | 'promo' | 'pos' | 'tech' | 'other';
 
-export type TaskStatus = 'todo' | 'in_progress' | 'review' | 'done';
+export type TaskStatus = 'todo' | 'in_progress' | 'completed' | 'overdue' | 'done' | 'review';
 
 export type PriorityLevel = 'low' | 'medium' | 'high' | 'critical';
 
@@ -25,6 +25,7 @@ export interface MinslackTask {
   flagReason?: string;
   flaggedBy?: string;
   createdAt: string;
+  deadline?: string;
   comments: TaskComment[];
 }
 

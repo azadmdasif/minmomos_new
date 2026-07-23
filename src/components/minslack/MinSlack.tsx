@@ -20,7 +20,8 @@ import {
   Bell,
   AtSign,
   CheckCheck,
-  Filter
+  Filter,
+  Menu
 } from 'lucide-react';
 import { MinslackTask, MinslackTag, TaskStatus, PriorityLevel, TaskComment, ChannelMessage, MinslackChannel, MinslackNotification } from './types';
 import { User } from '../../types';
@@ -34,8 +35,15 @@ import {
   syncChannelsToSupabase, 
   fetchSupabaseProjects, 
   syncProjectsToSupabase, 
-  subscribeToMinSlackRealtime 
+  subscribeToMinSlackRealtime,
+  getDmChannelId,
+  isSameDmChannel,
+  generateUuid,
+  ensureDmChannel,
+  deleteChannelFromSupabase
 } from '../../utils/minslackStorage';
+
+const LEGACY_HARDCODED_CHANNELS = ['operations', 'hr-roster', 'stock-alerts', 'kitchen-crew', 'finance-cash', 'pos-billing'];
 
 interface MinSlackProps {
   user: User;
@@ -54,6 +62,25 @@ export interface ProjectItem {
 
 const ALL_TAGS: MinslackTag[] = ['ops', 'hr', 'stock', 'kitchen', 'finance', 'promo', 'pos', 'tech', 'other'];
 
+export function getTaskStage(task: MinslackTask): 'todo' | 'in_progress' | 'completed' | 'overdue' {
+  if (task.status === 'completed' || task.status === 'done') {
+    return 'completed';
+  }
+  if (task.status === 'overdue') {
+    return 'overdue';
+  }
+  if (task.deadline) {
+    const deadlineTime = new Date(task.deadline).getTime();
+    if (!isNaN(deadlineTime) && deadlineTime < Date.now()) {
+      return 'overdue';
+    }
+  }
+  if (task.status === 'in_progress') {
+    return 'in_progress';
+  }
+  return 'todo';
+}
+
 const DEFAULT_CHANNELS: MinslackChannel[] = [
   { id: 'general', name: 'general', description: 'Company-wide announcements and team coordination' },
 ];
@@ -66,7 +93,7 @@ const DEFAULT_PROJECTS: ProjectItem[] = [];
 
 export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
   // Navigation: 'chat' | 'board' | 'plan' | 'flags' | 'notifications'
-  const [activeTab, setActiveTab] = useState<'chat' | 'board' | 'plan' | 'flags' | 'notifications'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'board' | 'plan' | 'flags' | 'notifications'>('notifications');
   const [tasks, setTasks] = useState<MinslackTask[]>([]);
   const [messages, setMessages] = useState<ChannelMessage[]>([]);
   const [channels, setChannels] = useState<MinslackChannel[]>([]);
@@ -76,6 +103,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
   // Notifications State
   const [readNotifIds, setReadNotifIds] = useState<string[]>([]);
   const [notifFilter, setNotifFilter] = useState<'all' | 'unread' | 'tasks' | 'dms' | 'mentions'>('all');
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   // Direct Message & Member Selection States
   const [isCreateChannelModalOpen, setIsCreateChannelModalOpen] = useState(false);
@@ -93,6 +121,14 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
   const [selectedTagFilter, setSelectedTagFilter] = useState<MinslackTag | 'all'>('all');
   const [selectedPriorityFilter, setSelectedPriorityFilter] = useState<PriorityLevel | 'all'>('all');
   const [flagFilter, setFlagFilter] = useState<'all' | 'flagged' | 'normal'>('all');
+  const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'yesterday' | 'custom'>('all');
+  const [customDate, setCustomDate] = useState<string>(() => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  });
 
   // Interactive Modals
   const [isNewTaskModalOpen, setIsNewTaskModalOpen] = useState(false);
@@ -101,6 +137,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
   const [newTaskAssignee, setNewTaskAssignee] = useState('Unassigned');
   const [newTaskPriority, setNewTaskPriority] = useState<PriorityLevel>('medium');
   const [newTaskTags, setNewTaskTags] = useState<MinslackTag[]>([]);
+  const [newTaskDeadline, setNewTaskDeadline] = useState('');
 
   // Raise Problem Modal
   const [isRaiseProblemModalOpen, setIsRaiseProblemModalOpen] = useState(false);
@@ -175,8 +212,11 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
       setProjects(DEFAULT_PROJECTS);
     }
 
-    if (savedChannels) setChannels(JSON.parse(savedChannels));
-    else {
+    if (savedChannels) {
+      const parsed = JSON.parse(savedChannels) as MinslackChannel[];
+      const filtered = parsed.filter(c => !LEGACY_HARDCODED_CHANNELS.includes(c.name.toLowerCase()));
+      setChannels(filtered.length > 0 ? filtered : DEFAULT_CHANNELS);
+    } else {
       setChannels(DEFAULT_CHANNELS);
     }
 
@@ -210,21 +250,26 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
         fetchSupabaseProjects()
       ]);
 
-      if (remoteMsgs && remoteMsgs.length > 0) {
-        setMessages(remoteMsgs);
-        localStorage.setItem('minslack_messages', JSON.stringify(remoteMsgs));
+      let loadedChannels = (remoteChan || []).filter(c => !LEGACY_HARDCODED_CHANNELS.includes(c.name.toLowerCase()));
+      if (!loadedChannels.some(c => c.name.toLowerCase() === 'general')) {
+        loadedChannels.unshift({
+          id: 'general',
+          name: 'general',
+          description: 'Company-wide announcements and team coordination',
+          isPrivate: false
+        });
+        syncChannelsToSupabase(loadedChannels);
       }
-      if (remoteTasks && remoteTasks.length > 0) {
-        setTasks(remoteTasks);
-        localStorage.setItem('minslack_tasks', JSON.stringify(remoteTasks));
-      }
-      if (remoteChan && remoteChan.length > 0) {
-        setChannels(remoteChan);
-        localStorage.setItem('minslack_channels', JSON.stringify(remoteChan));
-      }
-      if (remoteProj && remoteProj.length > 0) {
-        setProjects(remoteProj);
-        localStorage.setItem('minslack_projects', JSON.stringify(remoteProj));
+
+      setChannels(loadedChannels);
+      if (remoteMsgs) setMessages(remoteMsgs);
+      if (remoteTasks) setTasks(remoteTasks);
+      if (remoteProj) setProjects(remoteProj);
+
+      // Default active channel to general channel UUID
+      const genChan = loadedChannels.find(c => c.name.toLowerCase() === 'general');
+      if (genChan && (activeChannelId === 'general' || !activeChannelId)) {
+        setActiveChannelId(genChan.id);
       }
     };
     loadFromCloud();
@@ -232,31 +277,27 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     // Subscribe to Realtime Postgres Changes across PCs
     const unsubscribe = subscribeToMinSlackRealtime({
       onMessagesChange: async () => {
-        const updatedMsgs = await fetchSupabaseMessages();
+        const updatedMsgs = await fetchSupabaseMessages(true);
         if (updatedMsgs) {
           setMessages(updatedMsgs);
-          localStorage.setItem('minslack_messages', JSON.stringify(updatedMsgs));
         }
       },
       onTasksChange: async () => {
-        const updatedTasks = await fetchSupabaseTasks();
+        const updatedTasks = await fetchSupabaseTasks(true);
         if (updatedTasks) {
           setTasks(updatedTasks);
-          localStorage.setItem('minslack_tasks', JSON.stringify(updatedTasks));
         }
       },
       onChannelsChange: async () => {
-        const updatedChan = await fetchSupabaseChannels();
+        const updatedChan = await fetchSupabaseChannels(true);
         if (updatedChan) {
           setChannels(updatedChan);
-          localStorage.setItem('minslack_channels', JSON.stringify(updatedChan));
         }
       },
       onProjectsChange: async () => {
-        const updatedProj = await fetchSupabaseProjects();
+        const updatedProj = await fetchSupabaseProjects(true);
         if (updatedProj) {
           setProjects(updatedProj);
-          localStorage.setItem('minslack_projects', JSON.stringify(updatedProj));
         }
       }
     });
@@ -273,7 +314,9 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
 
   const updateMessagesState = (nextMessages: ChannelMessage[]) => {
     setMessages(nextMessages);
-    syncMessagesToSupabase(nextMessages);
+    const channelMap = new Map<string, string>();
+    channels.forEach(c => channelMap.set(c.name.toLowerCase(), c.id));
+    syncMessagesToSupabase(nextMessages, channelMap);
   };
 
   const updateProjectsState = (nextProjects: ProjectItem[]) => {
@@ -299,13 +342,13 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
       return;
     }
 
-    if (channels.some(c => c.id === cleanName)) {
+    if (channels.some(c => c.name.toLowerCase() === cleanName)) {
       setChannelError(`A channel named #${cleanName} already exists`);
       return;
     }
 
     const newChan: MinslackChannel = {
-      id: cleanName,
+      id: generateUuid(),
       name: cleanName,
       description: newChannelDesc.trim() || 'Custom created channel',
       members: [user.username, ...newChannelMembers]
@@ -315,7 +358,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     updateChannelsState(nextChans);
 
     // Switch to new channel
-    setActiveChannelId(cleanName);
+    setActiveChannelId(newChan.id);
     setActiveTab('chat');
     setViewingThreadMsg(null);
 
@@ -327,14 +370,31 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     setIsCreateChannelModalOpen(false);
   };
 
-  const handleStartDm = (targetUsername: string) => {
-    if (!activeDms.includes(targetUsername)) {
-      const nextDms = [...activeDms, targetUsername];
+  const handleDeleteChannel = async (e: React.MouseEvent, channelId: string, channelName: string) => {
+    e.stopPropagation();
+    if (channelName.toLowerCase() === 'general') return;
+    if (!confirm(`Are you sure you want to delete channel #${channelName}?`)) return;
+
+    const nextChans = channels.filter(c => c.id !== channelId && c.name.toLowerCase() !== channelName.toLowerCase());
+    updateChannelsState(nextChans);
+    await deleteChannelFromSupabase(channelId, channelName);
+
+    if (activeChannelId === channelId || activeChannelId === channelName) {
+      const gen = nextChans.find(c => c.name.toLowerCase() === 'general');
+      setActiveChannelId(gen ? gen.id : 'general');
+    }
+  };
+
+  const handleStartDm = async (targetUsername: string) => {
+    const targetTrimmed = targetUsername.trim();
+    if (!activeDms.some(d => d.toLowerCase() === targetTrimmed.toLowerCase())) {
+      const nextDms = [...activeDms, targetTrimmed];
       updateActiveDms(nextDms);
     }
     
-    const dmId = `dm-${[user.username, targetUsername].sort().join('-')}`;
-    setActiveChannelId(dmId);
+    const { channel: dmChan, channels: updatedChans } = await ensureDmChannel(user.username, targetTrimmed, channels);
+    setChannels(updatedChans);
+    setActiveChannelId(dmChan.id);
     setActiveTab('chat');
     setViewingThreadMsg(null);
     
@@ -347,7 +407,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     if (!newTaskTitle.trim()) return;
 
     const newTask: MinslackTask = {
-      id: `task-${Date.now()}`,
+      id: generateUuid(),
       title: newTaskTitle,
       description: newTaskDesc,
       status: 'todo',
@@ -357,6 +417,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
       priority: newTaskPriority,
       flagged: false,
       createdAt: new Date().toISOString(),
+      deadline: newTaskDeadline || undefined,
       comments: []
     };
 
@@ -364,12 +425,13 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     updateTasksState(updated);
 
     // Alert general channel
+    const dueText = newTaskDeadline ? ` • Due: ${newTaskDeadline.replace('T', ' ')}` : '';
     const systemAlert: ChannelMessage = {
       id: `msg-${Date.now()}`,
       channelId: 'general',
       author: 'System Bot',
       authorRole: 'ADMIN',
-      text: `📋 **New Task Created** by **@${user.username}**: "${newTaskTitle}" (Assignee: *${newTaskAssignee}*)`,
+      text: `📋 **New Task Created** by **@${user.username}**: "${newTaskTitle}" (Assignee: *${newTaskAssignee}*${dueText})`,
       createdAt: new Date().toISOString()
     };
     updateMessagesState([systemAlert, ...messages]);
@@ -380,6 +442,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     setNewTaskAssignee('Unassigned');
     setNewTaskPriority('medium');
     setNewTaskTags([]);
+    setNewTaskDeadline('');
     setIsNewTaskModalOpen(false);
   };
 
@@ -390,10 +453,10 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
 
     const cleanDesc = problemDesc || `Reported operational problem regarding ${problemTitle}`;
 
-    // Add immediate system message in general & operations channel
+    // Add immediate system message in general channel
     const alertMessage: ChannelMessage = {
       id: `msg-${Date.now()}`,
-      channelId: 'operations',
+      channelId: 'general',
       author: user.username,
       authorRole: user.role,
       text: `⚠️ **🚨 OPERATIONAL PROBLEM RAISED** ⚠️\n**Issue**: ${problemTitle}\n**Description**: ${cleanDesc}\n**Category**: #${problemTag} • **Priority**: ${problemUrgency.toUpperCase()}`,
@@ -493,7 +556,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     // System announcement
     const systemMsg: ChannelMessage = {
       id: `msg-${Date.now()}`,
-      channelId: 'operations',
+      channelId: 'general',
       author: 'System Bot',
       authorRole: 'ADMIN',
       text: flagged 
@@ -510,7 +573,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     if (!viewingTask || !newCommentText.trim()) return;
 
     const newComment: TaskComment = {
-      id: `comment-${Date.now()}`,
+      id: generateUuid(),
       author: user.username,
       authorRole: user.role,
       text: newCommentText,
@@ -535,7 +598,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     if (!chatInput.trim()) return;
 
     const newMsg: ChannelMessage = {
-      id: `msg-${Date.now()}`,
+      id: generateUuid(),
       channelId: activeChannelId,
       author: user.username,
       authorRole: user.role,
@@ -560,7 +623,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     if (!viewingThreadMsg || !threadInput.trim()) return;
 
     const reply: ChannelMessage = {
-      id: `reply-${Date.now()}`,
+      id: generateUuid(),
       channelId: viewingThreadMsg.channelId,
       author: user.username,
       authorRole: user.role,
@@ -595,7 +658,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
 
     const alertMsg: ChannelMessage = {
       id: `msg-${Date.now()}`,
-      channelId: 'operations',
+      channelId: 'general',
       author: 'System Bot',
       authorRole: 'ADMIN',
       text: `✅ **Chat Problem Resolved** by **@${user.username}**`,
@@ -685,57 +748,148 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                         (flagFilter === 'flagged' && task.flagged) || 
                         (flagFilter === 'normal' && !task.flagged);
 
-      return matchSearch && matchTag && matchPriority && matchFlag;
+      const matchDate = (() => {
+        if (dateFilter === 'all') return true;
+        if (!task.createdAt) return false;
+        const taskDate = new Date(task.createdAt);
+        if (isNaN(taskDate.getTime())) return false;
+
+        const taskYYYYMMDD = `${taskDate.getFullYear()}-${String(taskDate.getMonth() + 1).padStart(2, '0')}-${String(taskDate.getDate()).padStart(2, '0')}`;
+        
+        const now = new Date();
+        const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+        if (dateFilter === 'today') {
+          return taskYYYYMMDD === todayStr;
+        }
+
+        if (dateFilter === 'yesterday') {
+          const yesterday = new Date();
+          yesterday.setDate(yesterday.getDate() - 1);
+          const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+          return taskYYYYMMDD === yesterdayStr;
+        }
+
+        if (dateFilter === 'custom') {
+          if (!customDate) return true;
+          return taskYYYYMMDD === customDate;
+        }
+
+        return true;
+      })();
+
+      return matchSearch && matchTag && matchPriority && matchFlag && matchDate;
     });
-  }, [tasks, taskSearch, selectedTagFilter, selectedPriorityFilter, flagFilter]);
+  }, [tasks, taskSearch, selectedTagFilter, selectedPriorityFilter, flagFilter, dateFilter, customDate]);
 
   const currentChannelMessages = useMemo(() => {
+    if (!activeChannelId) return [];
+    const activeChan = channels.find(
+      c => c.id === activeChannelId || c.name.toLowerCase() === activeChannelId.toLowerCase()
+    );
+
+    const activeUuid = activeChan ? activeChan.id : activeChannelId;
+    const activeName = activeChan ? activeChan.name.toLowerCase() : activeChannelId.toLowerCase();
+    const currLower = (user.username || '').trim().toLowerCase();
+
     return messages
       .filter(m => {
-        if (m.channelId !== activeChannelId) return false;
-        if (activeChannelId.startsWith('dm-')) {
-          const parts = activeChannelId.substring(3).split('-');
-          return parts.includes(user.username);
+        if (!m.channelId) return false;
+        const mChanLower = m.channelId.toLowerCase();
+
+        // Direct UUID match
+        if (m.channelId === activeUuid) return true;
+        // Direct name match
+        if (mChanLower === activeName) return true;
+
+        // DM channel match
+        if (activeName.startsWith('dm-')) {
+          if (isSameDmChannel(m.channelId, activeName) || isSameDmChannel(m.channelId, activeUuid)) {
+            const parts = activeName.substring(3).split('-').map(p => p.trim().toLowerCase());
+            return parts.includes(currLower);
+          }
         }
-        return true;
+
+        return false;
       })
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  }, [messages, activeChannelId, user.username]);
+  }, [messages, activeChannelId, channels, user.username]);
 
   const visibleChannels = useMemo(() => {
     return channels.filter(ch => {
-      if (ch.id === 'general') return true;
-      if (!ch.members) return true;
-      return ch.members.includes(user.username);
+      if (!ch.name.startsWith('dm-')) {
+        if (ch.name === 'general') return true;
+        if (!ch.members || ch.members.length === 0) return true;
+        return ch.members.some(m => m.toLowerCase() === (user.username || '').toLowerCase());
+      }
+      return false;
     });
   }, [channels, user.username]);
 
   const allDms = useMemo(() => {
     const list = [...activeDms];
-    messages.forEach(msg => {
-      if (msg.channelId.startsWith('dm-')) {
-        const parts = msg.channelId.substring(3).split('-');
-        // CRITICAL: DMs are strictly visible to participants only
-        if (parts.includes(user.username)) {
-          const partner = parts.find(p => p !== user.username) || parts[0];
-          if (partner && partner !== user.username && !list.includes(partner)) {
-            list.push(partner);
+    const currLower = (user.username || '').trim().toLowerCase();
+
+    // Check channels list for DM channels
+    channels.forEach(ch => {
+      if (ch.name.toLowerCase().startsWith('dm-')) {
+        const parts = ch.name.substring(3).split('-').map(p => p.trim().toLowerCase());
+        if (parts.includes(currLower)) {
+          const partnerLower = parts.find(p => p !== currLower) || parts[0];
+          if (partnerLower && partnerLower !== currLower) {
+            const realUser = availableUsers.find(u => u.username.toLowerCase() === partnerLower);
+            const partnerName = realUser ? realUser.username : partnerLower;
+            if (!list.some(d => d.toLowerCase() === partnerName.toLowerCase())) {
+              list.push(partnerName);
+            }
           }
         }
       }
     });
-    const validUsernames = new Set(availableUsers.map(u => u.username));
-    return Array.from(new Set(list)).filter(dmUser => validUsernames.has(dmUser) && dmUser !== user.username);
-  }, [activeDms, messages, user.username, availableUsers]);
+
+    messages.forEach(msg => {
+      if (msg.channelId && msg.channelId.toLowerCase().startsWith('dm-')) {
+        const parts = msg.channelId.substring(3).split('-');
+        const partsLower = parts.map(p => p.trim().toLowerCase());
+        if (partsLower.includes(currLower)) {
+          const partnerLower = partsLower.find(p => p !== currLower) || partsLower[0];
+          if (partnerLower && partnerLower !== currLower) {
+            const realUser = availableUsers.find(u => u.username.toLowerCase() === partnerLower);
+            const partnerName = realUser ? realUser.username : partnerLower;
+            if (!list.some(d => d.toLowerCase() === partnerName.toLowerCase())) {
+              list.push(partnerName);
+            }
+          }
+        }
+      }
+    });
+
+    const validUsernamesMap = new Map<string, string>();
+    availableUsers.forEach(u => validUsernamesMap.set(u.username.toLowerCase(), u.username));
+
+    const result: string[] = [];
+    const seen = new Set<string>();
+
+    list.forEach(dmUser => {
+      const dmLower = dmUser.trim().toLowerCase();
+      if (dmLower !== currLower && validUsernamesMap.has(dmLower) && !seen.has(dmLower)) {
+        seen.add(dmLower);
+        result.push(validUsernamesMap.get(dmLower)!);
+      }
+    });
+
+    return result;
+  }, [activeDms, channels, messages, user.username, availableUsers]);
 
   // Dynamic Notifications Engine
   const userNotifications = useMemo(() => {
     const list: MinslackNotification[] = [];
     const currUser = user.username;
+    const currLower = (currUser || '').trim().toLowerCase();
 
     // 1. Tasks assigned to current user
     tasks.forEach(t => {
-      if (t.assignee === currUser) {
+      if ((t.assignee || '').toLowerCase() === currLower) {
         list.push({
           id: `notif-task-${t.id}`,
           type: 'task_assigned',
@@ -752,9 +906,10 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
 
     // 2. Direct Messages & Channel @Mentions
     messages.forEach(msg => {
-      if (msg.channelId.startsWith('dm-')) {
-        const parts = msg.channelId.substring(3).split('-');
-        if (parts.includes(currUser) && msg.author !== currUser) {
+      if (msg.channelId && msg.channelId.toLowerCase().startsWith('dm-')) {
+        const parts = msg.channelId.substring(3).split('-').map(p => p.trim().toLowerCase());
+        const authorLower = (msg.author || '').toLowerCase();
+        if (parts.includes(currLower) && authorLower !== currLower) {
           list.push({
             id: `notif-dm-${msg.id}`,
             type: 'dm',
@@ -814,7 +969,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
   }, [userNotifications, readNotifIds]);
 
   const assignedIncompleteTasksCount = useMemo(() => {
-    return tasks.filter(t => t.assignee === user.username && t.status !== 'done').length;
+    return tasks.filter(t => t.assignee === user.username && getTaskStage(t) !== 'completed').length;
   }, [tasks, user.username]);
 
   const markNotifAsRead = (notifId: string) => {
@@ -957,62 +1112,88 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
     return 1;
   };
 
-  return (
-    <div className="flex h-full bg-slate-50 text-slate-800 overflow-hidden font-sans" id="minslack-root">
-      
-      {/* 1. AUTHENTIC SLACK-STYLE LEFT SIDEBAR */}
-      <div className="w-64 bg-[#3F0E40] text-white flex flex-col shrink-0 h-full select-none" id="slack-sidebar">
-        {/* Workspace Name & Status Header */}
-        <div className="p-4 border-b border-[#522653] flex flex-col gap-1">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-extrabold tracking-tight truncate flex items-center gap-1.5">
-              <Sparkles className="w-4 h-4 text-amber-300" />
-              MomoMaya Workspace
-            </h2>
-          </div>
-          <div className="flex items-center gap-2 mt-1">
+  const getChannelDisplayName = (chanIdOrName: string) => {
+    if (!chanIdOrName) return 'general';
+    if (chanIdOrName.toLowerCase().startsWith('dm-')) return chanIdOrName;
+    const found = channels.find(
+      c => c.id === chanIdOrName || c.name.toLowerCase() === chanIdOrName.toLowerCase()
+    );
+    if (found) return found.name;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chanIdOrName)) {
+      return 'general';
+    }
+    return chanIdOrName;
+  };
+
+  // Render Shared Sidebar Layout
+  const renderSidebarContent = (isMobile = false) => (
+    <div className="flex flex-col h-full bg-[#3F0E40] text-white select-none">
+      {/* Workspace Name & Status Header */}
+      <div className="p-4 border-b border-[#522653] flex items-center justify-between gap-1">
+        <div className="flex flex-col gap-1 truncate">
+          <h2 className="text-base font-extrabold tracking-tight truncate flex items-center gap-1.5">
+            <Sparkles className="w-4 h-4 text-amber-300" />
+            MinSlack Workspace
+          </h2>
+          <div className="flex items-center gap-2 mt-0.5">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span className="text-xs text-[#BCABB6] truncate">
               @{user.username} ({user.role === 'ADMIN' ? 'Admin' : user.role === 'COFOUNDER' ? 'Co-Founder' : user.role === 'STORE_MANAGER' ? 'Manager' : 'Crew'})
             </span>
           </div>
         </div>
+        {isMobile && (
+          <button
+            onClick={() => setIsMobileSidebarOpen(false)}
+            className="p-1.5 rounded-lg hover:bg-[#522653] text-[#BCABB6] hover:text-white transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        )}
+      </div>
 
-        {/* Scrollable menu contents */}
-        <div className="flex-1 overflow-y-auto py-3 space-y-4 custom-scrollbar">
-          
-          {/* Section: Channels */}
-          <div className="space-y-1">
-            <div className="px-4 py-1 text-[11px] font-black tracking-widest text-[#BCABB6] uppercase flex items-center justify-between group">
-              <span>Channels</span>
-              <div className="flex items-center gap-1.5">
-                <button 
-                  onClick={() => setIsCreateChannelModalOpen(true)}
-                  className="p-0.5 hover:bg-[#522653] rounded text-[#BCABB6] hover:text-white transition-all cursor-pointer"
-                  title="Create Channel"
-                >
-                  <Plus className="w-3 h-3" />
-                </button>
-                <span className="text-[9px] font-bold bg-[#522653] px-1.5 py-0.2 rounded text-[#BCABB6]">
-                  {visibleChannels.length}
-                </span>
-              </div>
+      {/* Scrollable menu contents */}
+      <div className="flex-1 overflow-y-auto py-3 space-y-4 custom-scrollbar">
+        
+        {/* Section: Channels */}
+        <div className="space-y-1">
+          <div className="px-4 py-1 text-[11px] font-black tracking-widest text-[#BCABB6] uppercase flex items-center justify-between group">
+            <span>Channels</span>
+            <div className="flex items-center gap-1.5">
+              <button 
+                onClick={() => {
+                  setIsCreateChannelModalOpen(true);
+                  if (isMobile) setIsMobileSidebarOpen(false);
+                }}
+                className="p-0.5 hover:bg-[#522653] rounded text-[#BCABB6] hover:text-white transition-all cursor-pointer"
+                title="Create Channel"
+              >
+                <Plus className="w-3 h-3" />
+              </button>
+              <span className="text-[9px] font-bold bg-[#522653] px-1.5 py-0.2 rounded text-[#BCABB6]">
+                {visibleChannels.length}
+              </span>
             </div>
-            
-            <div className="space-y-0.5 px-2">
-              {visibleChannels.map(ch => {
-                const isActive = activeTab === 'chat' && activeChannelId === ch.id;
-                const unreadMentionsForChannel = userNotifications.filter(n => {
-                  return n.type === 'mention' && n.targetChannelId === ch.id && !readNotifIds.includes(n.id);
-                }).length;
+          </div>
+          
+          <div className="space-y-0.5 px-2">
+            {visibleChannels.map(ch => {
+              const isActive = activeTab === 'chat' && activeChannelId === ch.id;
+              const unreadMentionsForChannel = userNotifications.filter(n => {
+                return n.type === 'mention' && n.targetChannelId === ch.id && !readNotifIds.includes(n.id);
+              }).length;
 
-                return (
+              return (
+                <div
+                  key={ch.id}
+                  className="group relative flex items-center"
+                >
                   <button
-                    key={ch.id}
                     onClick={() => {
                       setActiveChannelId(ch.id);
                       setActiveTab('chat');
                       setViewingThreadMsg(null);
+                      if (isMobile) setIsMobileSidebarOpen(false);
                     }}
                     className={`w-full text-left px-3 py-1.5 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
                       isActive 
@@ -1020,7 +1201,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                         : 'text-[#BCABB6] hover:bg-[#350A36] hover:text-white'
                     }`}
                   >
-                    <div className="flex items-center gap-2 truncate">
+                    <div className="flex items-center gap-2 truncate pr-4">
                       <Hash className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-[#BCABB6]/60'}`} />
                       <span className="truncate">{ch.name}</span>
                     </div>
@@ -1030,238 +1211,294 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                       </span>
                     )}
                   </button>
-                );
-              })}
-              {visibleChannels.length === 0 && (
-                <div className="px-4 py-2 text-[11px] text-[#BCABB6]/50 italic">
-                  No channels. Click + to create one.
-                </div>
-              )}
-            </div>
-          </div>
 
-          {/* Section: Direct Messages */}
-          <div className="space-y-1">
-            <div className="px-4 py-1 text-[11px] font-black tracking-widest text-[#BCABB6] uppercase flex items-center justify-between group">
-              <span>Direct Messages</span>
-              <div className="flex items-center gap-1.5">
-                <button 
-                  onClick={() => setIsNewDmModalOpen(true)}
-                  className="p-0.5 hover:bg-[#522653] rounded text-[#BCABB6] hover:text-white transition-all cursor-pointer"
-                  title="New Message"
-                >
-                  <Plus className="w-3 h-3" />
-                </button>
-                <span className="text-[9px] font-bold bg-[#522653] px-1.5 py-0.2 rounded text-[#BCABB6]">
-                  {allDms.length}
-                </span>
+                  {ch.name.toLowerCase() !== 'general' && (
+                    <button
+                      onClick={(e) => handleDeleteChannel(e, ch.id, ch.name)}
+                      className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-300 text-[#BCABB6]/70 transition-all absolute right-1.5 top-1/2 -translate-y-1/2 rounded cursor-pointer"
+                      title="Delete channel"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {visibleChannels.length === 0 && (
+              <div className="px-4 py-2 text-[11px] text-[#BCABB6]/50 italic">
+                No channels. Click + to create one.
               </div>
-            </div>
-
-            <div className="space-y-0.5 px-2">
-              {allDms.map(dmUser => {
-                const dmId = `dm-${[user.username, dmUser].sort().join('-')}`;
-                const isActive = activeTab === 'chat' && activeChannelId === dmId;
-                
-                // Find user info for display
-                const userInfo = availableUsers.find(u => u.username === dmUser);
-                const isSelf = dmUser === user.username;
-
-                const unreadDmForUser = messages.filter(m => {
-                  if (m.channelId !== dmId) return false;
-                  if (m.author === user.username) return false;
-                  return !readNotifIds.includes(`notif-dm-${m.id}`);
-                }).length;
-                
-                return (
-                  <button
-                    key={dmUser}
-                    onClick={() => {
-                      setActiveChannelId(dmId);
-                      setActiveTab('chat');
-                      setViewingThreadMsg(null);
-                      // Mark DM notifications as read
-                      messages.filter(m => m.channelId === dmId).forEach(m => markNotifAsRead(`notif-dm-${m.id}`));
-                    }}
-                    className={`w-full text-left px-3 py-1.5 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
-                      isActive 
-                        ? 'bg-[#1164A3] text-white font-bold shadow-sm' 
-                        : 'text-[#BCABB6] hover:bg-[#350A36] hover:text-white'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 truncate">
-                      <div className="relative">
-                        <div className="w-3.5 h-3.5 rounded bg-amber-200 text-[#3F0E40] text-[9px] font-extrabold flex items-center justify-center uppercase shrink-0">
-                          {dmUser.slice(0, 2)}
-                        </div>
-                        <span className="absolute -bottom-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400 border border-[#3F0E40]" />
-                      </div>
-                      <span className="truncate">@{dmUser} {isSelf && <span className="opacity-60 text-[10px] font-normal">(you)</span>}</span>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      {unreadDmForUser > 0 && (
-                        <span className="bg-amber-400 text-[#3F0E40] text-[9px] font-black h-4 min-w-4 px-1 rounded-full flex items-center justify-center">
-                          {unreadDmForUser}
-                        </span>
-                      )}
-                      {userInfo?.role && (
-                        <span className={`text-[8px] px-1 rounded uppercase ${isActive ? 'bg-[#1F74B3] text-white border border-[#1164A3]' : 'bg-[#522653] text-[#BCABB6]'}`}>
-                          {userInfo.role === 'ADMIN' ? 'Adm' : userInfo.role === 'COFOUNDER' ? 'Cof' : userInfo.role === 'STORE_MANAGER' ? 'Mgr' : 'Crew'}
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-              {allDms.length === 0 && (
-                <div className="px-4 py-1.5 text-[11px] text-[#BCABB6]/50 italic">
-                  No active chats. Click + to DM anyone.
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Section: Apps & Coordination */}
-          <div className="space-y-1">
-            <div className="px-4 py-1 text-[11px] font-black tracking-widest text-[#BCABB6] uppercase">
-              <span>Apps & Tools</span>
-            </div>
-
-            <div className="space-y-0.5 px-2">
-              {/* Notifications Center Tab Button */}
-              <button
-                onClick={() => {
-                  setActiveTab('notifications');
-                  setViewingThreadMsg(null);
-                }}
-                className={`w-full text-left px-3 py-2 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
-                  activeTab === 'notifications'
-                    ? 'bg-[#1164A3] text-white font-bold shadow-sm'
-                    : 'text-[#BCABB6] hover:bg-[#350A36] hover:text-white'
-                }`}
-              >
-                <div className="flex items-center gap-2 truncate">
-                  <Bell className={`w-3.5 h-3.5 ${unreadNotifCount > 0 ? 'text-amber-300 animate-bounce' : ''}`} />
-                  <span>Notifications</span>
-                </div>
-                {unreadNotifCount > 0 && (
-                  <span className="bg-amber-400 text-[#3F0E40] text-[9px] font-black h-4 min-w-4 px-1 rounded-full flex items-center justify-center">
-                    {unreadNotifCount}
-                  </span>
-                )}
-              </button>
-
-              {/* Task Board Tab Button */}
-              <button
-                onClick={() => {
-                  setActiveTab('board');
-                  setViewingThreadMsg(null);
-                }}
-                className={`w-full text-left px-3 py-2 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
-                  activeTab === 'board'
-                    ? 'bg-[#1164A3] text-white font-bold shadow-sm'
-                    : 'text-[#BCABB6] hover:bg-[#350A36] hover:text-white'
-                }`}
-              >
-                <div className="flex items-center gap-2 truncate">
-                  <Layout className="w-3.5 h-3.5" />
-                  <span>Tasks Board</span>
-                </div>
-                {assignedIncompleteTasksCount > 0 && (
-                  <span className="bg-sky-500 text-white text-[9px] font-black h-4 min-w-4 px-1 rounded-full flex items-center justify-center">
-                    {assignedIncompleteTasksCount}
-                  </span>
-                )}
-              </button>
-
-              {/* Project Plan (Gantt) Tab Button */}
-              <button
-                onClick={() => {
-                  setActiveTab('plan');
-                  setViewingThreadMsg(null);
-                }}
-                className={`w-full text-left px-3 py-2 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
-                  activeTab === 'plan'
-                    ? 'bg-[#1164A3] text-white font-bold shadow-sm'
-                    : 'text-[#BCABB6] hover:bg-[#350A36] hover:text-white'
-                }`}
-              >
-                <div className="flex items-center gap-2 truncate">
-                  <Calendar className="w-3.5 h-3.5" />
-                  <span>Project Plan (Gantt)</span>
-                </div>
-              </button>
-
-              {/* Problems & Flags Tab Button */}
-              <button
-                onClick={() => {
-                  setActiveTab('flags');
-                  setViewingThreadMsg(null);
-                }}
-                className={`w-full text-left px-3 py-2 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
-                  activeTab === 'flags'
-                    ? 'bg-[#1164A3] text-white font-bold shadow-sm'
-                    : 'text-[#BCABB6] hover:bg-[#350A36] hover:text-white'
-                }`}
-              >
-                <div className="flex items-center gap-2 truncate">
-                  <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
-                  <span>Raised Problems</span>
-                </div>
-                {activeFlagsCount > 0 && (
-                  <span className="bg-rose-500 text-white text-[9px] font-black h-4.5 min-w-4.5 px-1 rounded-full flex items-center justify-center animate-pulse">
-                    {activeFlagsCount}
-                  </span>
-                )}
-              </button>
-            </div>
+            )}
           </div>
         </div>
 
-        {/* Bottom Panel: Raise Problem Action Button */}
-        <div className="p-3 border-t border-[#522653] bg-[#350A36] flex flex-col gap-2">
-          <button
-            onClick={() => setIsRaiseProblemModalOpen(true)}
-            className="w-full py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold tracking-wide uppercase transition-all shadow-md flex items-center justify-center gap-2"
-          >
-            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-            Raise a Problem
-          </button>
+        {/* Section: Direct Messages */}
+        <div className="space-y-1">
+          <div className="px-4 py-1 text-[11px] font-black tracking-widest text-[#BCABB6] uppercase flex items-center justify-between group">
+            <span>Direct Messages</span>
+            <div className="flex items-center gap-1.5">
+              <button 
+                onClick={() => {
+                  setIsNewDmModalOpen(true);
+                  if (isMobile) setIsMobileSidebarOpen(false);
+                }}
+                className="p-0.5 hover:bg-[#522653] rounded text-[#BCABB6] hover:text-white transition-all cursor-pointer"
+                title="New Message"
+              >
+                <Plus className="w-3 h-3" />
+              </button>
+              <span className="text-[9px] font-bold bg-[#522653] px-1.5 py-0.2 rounded text-[#BCABB6]">
+                {allDms.length}
+              </span>
+            </div>
+          </div>
+
+          <div className="space-y-0.5 px-2">
+            {allDms.map(dmUser => {
+              const dmId = getDmChannelId(user.username, dmUser);
+              const isActive = activeTab === 'chat' && isSameDmChannel(activeChannelId, dmId);
+              
+              // Find user info for display
+              const userInfo = availableUsers.find(u => u.username.toLowerCase() === dmUser.toLowerCase());
+              const isSelf = dmUser.toLowerCase() === user.username.toLowerCase();
+
+              const unreadDmForUser = messages.filter(m => {
+                if (!m.channelId) return false;
+                if (!isSameDmChannel(m.channelId, dmId)) return false;
+                if ((m.author || '').toLowerCase() === user.username.toLowerCase()) return false;
+                return !readNotifIds.includes(`notif-dm-${m.id}`);
+              }).length;
+              
+              return (
+                <button
+                  key={dmUser}
+                  onClick={async () => {
+                    const { channel: dmChan, channels: updatedChans } = await ensureDmChannel(user.username, dmUser, channels);
+                    setChannels(updatedChans);
+                    setActiveChannelId(dmChan.id);
+                    setActiveTab('chat');
+                    setViewingThreadMsg(null);
+                    // Mark DM notifications as read
+                    messages.filter(m => m.channelId && isSameDmChannel(m.channelId, dmId)).forEach(m => markNotifAsRead(`notif-dm-${m.id}`));
+                    if (isMobile) setIsMobileSidebarOpen(false);
+                  }}
+                  className={`w-full text-left px-3 py-1.5 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
+                    isActive 
+                      ? 'bg-[#1164A3] text-white font-bold shadow-sm' 
+                      : 'text-[#BCABB6] hover:bg-[#350A36] hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 truncate">
+                    <div className="relative">
+                      <div className="w-3.5 h-3.5 rounded bg-amber-200 text-[#3F0E40] text-[9px] font-extrabold flex items-center justify-center uppercase shrink-0">
+                        {dmUser.slice(0, 2)}
+                      </div>
+                      <span className="absolute -bottom-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400 border border-[#3F0E40]" />
+                    </div>
+                    <span className="truncate">@{dmUser} {isSelf && <span className="opacity-60 text-[10px] font-normal">(you)</span>}</span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {unreadDmForUser > 0 && (
+                      <span className="bg-amber-400 text-[#3F0E40] text-[9px] font-black h-4 min-w-4 px-1 rounded-full flex items-center justify-center">
+                        {unreadDmForUser}
+                      </span>
+                    )}
+                    {userInfo?.role && (
+                      <span className={`text-[8px] px-1 rounded uppercase ${isActive ? 'bg-[#1F74B3] text-white border border-[#1164A3]' : 'bg-[#522653] text-[#BCABB6]'}`}>
+                        {userInfo.role === 'ADMIN' ? 'Adm' : userInfo.role === 'COFOUNDER' ? 'Cof' : userInfo.role === 'STORE_MANAGER' ? 'Mgr' : 'Crew'}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+            {allDms.length === 0 && (
+              <div className="px-4 py-1.5 text-[11px] text-[#BCABB6]/50 italic">
+                No active chats. Click + to DM anyone.
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Section: Apps & Coordination */}
+        <div className="space-y-1">
+          <div className="px-4 py-1 text-[11px] font-black tracking-widest text-[#BCABB6] uppercase">
+            <span>Apps & Tools</span>
+          </div>
+
+          <div className="space-y-0.5 px-2">
+            {/* Notifications Center Tab Button */}
+            <button
+              onClick={() => {
+                setActiveTab('notifications');
+                setViewingThreadMsg(null);
+                if (isMobile) setIsMobileSidebarOpen(false);
+              }}
+              className={`w-full text-left px-3 py-2 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
+                activeTab === 'notifications'
+                  ? 'bg-[#1164A3] text-white font-bold shadow-sm'
+                  : 'text-[#BCABB6] hover:bg-[#350A36] hover:text-white'
+              }`}
+            >
+              <div className="flex items-center gap-2 truncate">
+                <Bell className={`w-3.5 h-3.5 ${unreadNotifCount > 0 ? 'text-amber-300 animate-bounce' : ''}`} />
+                <span>Notifications</span>
+              </div>
+              {unreadNotifCount > 0 && (
+                <span className="bg-amber-400 text-[#3F0E40] text-[9px] font-black h-4 min-w-4 px-1 rounded-full flex items-center justify-center">
+                  {unreadNotifCount}
+                </span>
+              )}
+            </button>
+
+            {/* Task Board Tab Button */}
+            <button
+              onClick={() => {
+                setActiveTab('board');
+                setViewingThreadMsg(null);
+                if (isMobile) setIsMobileSidebarOpen(false);
+              }}
+              className={`w-full text-left px-3 py-2 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
+                activeTab === 'board'
+                  ? 'bg-[#1164A3] text-white font-bold shadow-sm'
+                  : 'text-[#BCABB6] hover:bg-[#350A36] hover:text-white'
+              }`}
+            >
+              <div className="flex items-center gap-2 truncate">
+                <Layout className="w-3.5 h-3.5" />
+                <span>Tasks Board</span>
+              </div>
+              {assignedIncompleteTasksCount > 0 && (
+                <span className="bg-sky-500 text-white text-[9px] font-black h-4 min-w-4 px-1 rounded-full flex items-center justify-center">
+                  {assignedIncompleteTasksCount}
+                </span>
+              )}
+            </button>
+
+            {/* Project Plan (Gantt) Tab Button */}
+            <button
+              onClick={() => {
+                setActiveTab('plan');
+                setViewingThreadMsg(null);
+                if (isMobile) setIsMobileSidebarOpen(false);
+              }}
+              className={`w-full text-left px-3 py-2 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
+                activeTab === 'plan'
+                  ? 'bg-[#1164A3] text-white font-bold shadow-sm'
+                  : 'text-[#BCABB6] hover:bg-[#350A36] hover:text-white'
+              }`}
+            >
+              <div className="flex items-center gap-2 truncate">
+                <Calendar className="w-3.5 h-3.5" />
+                <span>Project Plan (Gantt)</span>
+              </div>
+            </button>
+
+            {/* Problems & Flags Tab Button */}
+            <button
+              onClick={() => {
+                setActiveTab('flags');
+                setViewingThreadMsg(null);
+                if (isMobile) setIsMobileSidebarOpen(false);
+              }}
+              className={`w-full text-left px-3 py-2 rounded-md text-xs font-semibold flex items-center justify-between transition-all ${
+                activeTab === 'flags'
+                  ? 'bg-[#1164A3] text-white font-bold shadow-sm'
+                  : 'text-[#BCABB6] hover:bg-[#350A36] hover:text-white'
+              }`}
+            >
+              <div className="flex items-center gap-2 truncate">
+                <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                <span>Raised Problems</span>
+              </div>
+              {activeFlagsCount > 0 && (
+                <span className="bg-rose-500 text-white text-[9px] font-black h-4.5 min-w-4.5 px-1 rounded-full flex items-center justify-center animate-pulse">
+                  {activeFlagsCount}
+                </span>
+              )}
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Bottom Panel: Raise Problem Action Button */}
+      <div className="p-3 border-t border-[#522653] bg-[#350A36] flex flex-col gap-2">
+        <button
+          onClick={() => {
+            setIsRaiseProblemModalOpen(true);
+            if (isMobile) setIsMobileSidebarOpen(false);
+          }}
+          className="w-full py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold tracking-wide uppercase transition-all shadow-md flex items-center justify-center gap-2"
+        >
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          Raise a Problem
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="flex h-full bg-slate-50 text-slate-800 overflow-hidden font-sans pb-20 lg:pb-0 relative" id="minslack-root">
+      
+      {/* 1A. DESKTOP SLACK-STYLE LEFT SIDEBAR */}
+      <div className="hidden md:flex w-64 bg-[#3F0E40] text-white flex-col shrink-0 h-full select-none" id="slack-sidebar">
+        {renderSidebarContent(false)}
+      </div>
+
+      {/* 1B. MOBILE SLIDE-OVER DRAWER SIDEBAR */}
+      {isMobileSidebarOpen && (
+        <div className="fixed inset-0 z-50 md:hidden flex animate-in fade-in duration-200">
+          <div 
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity"
+            onClick={() => setIsMobileSidebarOpen(false)} 
+          />
+          <div className="relative w-72 max-w-[85vw] h-full z-10 shadow-2xl overflow-hidden">
+            {renderSidebarContent(true)}
+          </div>
+        </div>
+      )}
 
       {/* 2. MAIN CONTENT AREA */}
       <div className="flex-1 flex flex-col h-full overflow-hidden bg-white" id="main-panel">
         
         {/* Dynamic Context Header */}
-        <div className="h-14 border-b border-slate-200 px-6 flex items-center justify-between shrink-0 bg-slate-50/50">
-          <div>
+        <div className="h-14 border-b border-slate-200 px-3 md:px-6 flex items-center justify-between shrink-0 bg-slate-50/50">
+          <div className="flex items-center gap-2 truncate">
+            {/* Mobile Sidebar Hamburger Toggle */}
+            <button
+              onClick={() => setIsMobileSidebarOpen(true)}
+              className="md:hidden p-1.5 rounded-lg bg-[#3F0E40] text-white hover:bg-[#522653] transition-colors shrink-0 shadow-xs mr-1"
+              title="Open Workspace Navigation"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+
             {activeTab === 'notifications' && (
-              <div className="flex items-center gap-2">
-                <Bell className="w-4 h-4 text-[#3F0E40]" />
-                <h3 className="text-sm font-extrabold text-slate-900">Notifications Center</h3>
-                <span className="text-[11px] text-slate-400 hidden sm:inline ml-2 border-l border-slate-300 pl-2 font-medium">
+              <div className="flex items-center gap-2 truncate">
+                <Bell className="w-4 h-4 text-[#3F0E40] shrink-0" />
+                <h3 className="text-sm font-extrabold text-slate-900 truncate">Notifications Center</h3>
+                <span className="text-[11px] text-slate-400 hidden sm:inline ml-2 border-l border-slate-300 pl-2 font-medium truncate">
                   Real-time task assignments, DMs, and @mentions
                 </span>
               </div>
             )}
             {activeTab === 'chat' && (() => {
-              const isDm = activeChannelId.startsWith('dm-');
+              const isDm = activeChannelId.toLowerCase().startsWith('dm-');
               let partnerName = '';
               if (isDm) {
                 const parts = activeChannelId.substring(3).split('-');
-                if (parts[0] === parts[1]) {
+                if (parts[0] && parts[1] && parts[0].toLowerCase() === parts[1].toLowerCase()) {
                   partnerName = parts[0];
                 } else {
-                  partnerName = parts.find(p => p !== user.username) || parts[0];
+                  partnerName = parts.find(p => p.toLowerCase() !== user.username.toLowerCase()) || parts[0];
                 }
               }
-              const partnerInfo = isDm ? availableUsers.find(u => u.username === partnerName) : null;
+              const partnerInfo = isDm ? availableUsers.find(u => u.username.toLowerCase() === partnerName.toLowerCase()) : null;
 
               return isDm ? (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 truncate">
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-                  <h3 className="text-sm font-extrabold text-slate-900">
+                  <h3 className="text-sm font-extrabold text-slate-900 truncate">
                     Chat with @{partnerName}
                   </h3>
                   {partnerInfo?.role && (
@@ -1276,9 +1513,9 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
               ) : (
                 <div className="flex items-center gap-1.5">
                   <Hash className="w-4 h-4 text-slate-400" />
-                  <h3 className="text-sm font-extrabold text-slate-900">#{activeChannelId}</h3>
+                  <h3 className="text-sm font-extrabold text-slate-900">#{getChannelDisplayName(activeChannelId)}</h3>
                   <span className="text-[11px] text-slate-400 hidden sm:inline ml-2 border-l border-slate-300 pl-2 font-medium">
-                    {channels.find(c => c.id === activeChannelId)?.description}
+                    {channels.find(c => c.id === activeChannelId || c.name.toLowerCase() === activeChannelId.toLowerCase())?.description}
                   </span>
                 </div>
               );
@@ -1350,14 +1587,14 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                 {/* Chat logs */}
                 <div className="flex-1 overflow-y-auto p-6 space-y-5 custom-scrollbar bg-slate-50/20">
                   {currentChannelMessages.length === 0 ? (() => {
-                    const isDm = activeChannelId.startsWith('dm-');
+                    const isDm = activeChannelId.toLowerCase().startsWith('dm-');
                     let partnerName = '';
                     if (isDm) {
                       const parts = activeChannelId.substring(3).split('-');
-                      if (parts[0] === parts[1]) {
+                      if (parts[0] && parts[1] && parts[0].toLowerCase() === parts[1].toLowerCase()) {
                         partnerName = parts[0];
                       } else {
-                        partnerName = parts.find(p => p !== user.username) || parts[0];
+                        partnerName = parts.find(p => p.toLowerCase() !== user.username.toLowerCase()) || parts[0];
                       }
                     }
 
@@ -1372,7 +1609,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                     ) : (
                       <div className="h-full flex flex-col items-center justify-center text-center p-8">
                         <MessageSquare className="w-12 h-12 text-slate-300 mb-2" />
-                        <h4 className="font-bold text-slate-700">This is the start of #{activeChannelId}</h4>
+                        <h4 className="font-bold text-slate-700">This is the start of #{getChannelDisplayName(activeChannelId)}</h4>
                         <p className="text-xs text-slate-500 mt-1 max-w-sm">Discuss topics, post updates, and tag appropriately.</p>
                       </div>
                     );
@@ -1606,13 +1843,13 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                     <input
                       type="text"
                       placeholder={(() => {
-                        const isDm = activeChannelId.startsWith('dm-');
+                        const isDm = activeChannelId.toLowerCase().startsWith('dm-');
                         if (isDm) {
                           const parts = activeChannelId.substring(3).split('-');
-                          const partnerName = parts.find(p => p !== user.username) || parts[0];
+                          const partnerName = parts.find(p => p.toLowerCase() !== user.username.toLowerCase()) || parts[0];
                           return `Message @${partnerName}...`;
                         }
-                        return `Message #${activeChannelId}...`;
+                        return `Message #${getChannelDisplayName(activeChannelId)}...`;
                       })()}
                       value={chatInput}
                       onChange={(e) => setChatInput(e.target.value)}
@@ -1631,7 +1868,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
 
               {/* Chat Thread Replies panel (collapsible sidebar) */}
               {viewingThreadMsg && (
-                <div className="w-80 border-l border-slate-200 bg-white h-full flex flex-col shrink-0 animate-in slide-in-from-right duration-200 z-10">
+                <div className="w-full md:w-80 absolute md:relative right-0 top-0 bottom-0 border-l border-slate-200 bg-white h-full flex flex-col shrink-0 animate-in slide-in-from-right duration-200 z-20 shadow-xl md:shadow-none">
                   <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
                     <div>
                       <span className="text-xs font-extrabold text-slate-800 block">Thread</span>
@@ -1691,29 +1928,61 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
 
           {/* B. VIEW: TASKS BOARD */}
           {activeTab === 'board' && (
-            <div className="h-full flex flex-col p-6 overflow-hidden bg-slate-50/50">
+            <div className="h-full flex flex-col p-2 sm:p-4 overflow-hidden bg-slate-50/50">
               
-              {/* Task filters header bar */}
-              <div className="bg-white border border-slate-200 p-4 rounded-xl mb-6 flex flex-wrap items-center justify-between gap-4 shrink-0 shadow-sm">
-                <div className="flex flex-wrap items-center gap-3 flex-1">
+              {/* Single strip task filters header bar */}
+              <div className="bg-white border border-slate-200 px-2.5 py-2 rounded-lg mb-3 flex items-center justify-between gap-2 shrink-0 overflow-x-auto custom-scrollbar shadow-2xs">
+                <div className="flex items-center gap-1.5 shrink-0">
                   
+                  {/* New Task Button (Leftmost) */}
+                  <button
+                    onClick={() => setIsNewTaskModalOpen(true)}
+                    className="px-3 py-1 bg-[#3F0E40] text-white hover:bg-[#350A36] rounded-md text-xs font-bold transition-all flex items-center gap-1 shrink-0 shadow-xs h-8 whitespace-nowrap mr-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>New Task</span>
+                  </button>
+
                   {/* Search box */}
-                  <div className="relative max-w-xs w-full">
-                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <div className="relative w-28 sm:w-36 md:w-44 shrink-0">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
                     <input
                       type="text"
-                      placeholder="Search tasks..."
+                      placeholder="Search..."
                       value={taskSearch}
                       onChange={(e) => setTaskSearch(e.target.value)}
-                      className="w-full bg-slate-50 pl-9 pr-3 py-1.5 text-xs rounded-md border border-slate-200 focus:outline-none focus:border-slate-400 text-slate-800"
+                      className="w-full bg-slate-50 pl-8 pr-2 py-1 text-xs rounded-md border border-slate-200 focus:outline-none focus:border-slate-400 text-slate-800 h-8"
                     />
+                  </div>
+
+                  {/* Date Assigned Filter */}
+                  <div className="flex items-center gap-1 shrink-0">
+                    <select
+                      value={dateFilter}
+                      onChange={(e) => setDateFilter(e.target.value as any)}
+                      className="bg-slate-50 px-2 py-1 text-xs font-semibold rounded-md border border-slate-200 focus:outline-none text-slate-700 cursor-pointer h-8"
+                    >
+                      <option value="all">📅 All Dates</option>
+                      <option value="today">Today</option>
+                      <option value="yesterday">Yesterday</option>
+                      <option value="custom">Custom</option>
+                    </select>
+
+                    {dateFilter === 'custom' && (
+                      <input
+                        type="date"
+                        value={customDate}
+                        onChange={(e) => setCustomDate(e.target.value)}
+                        className="bg-slate-50 px-1.5 py-1 text-xs font-semibold rounded-md border border-slate-200 focus:outline-none text-slate-700 cursor-pointer h-8"
+                      />
+                    )}
                   </div>
 
                   {/* Tag Filter */}
                   <select
                     value={selectedTagFilter}
                     onChange={(e) => setSelectedTagFilter(e.target.value as any)}
-                    className="bg-slate-50 px-3 py-1.5 text-xs font-bold rounded-md border border-slate-200 focus:outline-none text-slate-700"
+                    className="bg-slate-50 px-2 py-1 text-xs font-semibold rounded-md border border-slate-200 focus:outline-none text-slate-700 cursor-pointer h-8 shrink-0"
                   >
                     <option value="all">🏷️ All Tags</option>
                     {ALL_TAGS.map(t => (
@@ -1725,7 +1994,7 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                   <select
                     value={selectedPriorityFilter}
                     onChange={(e) => setSelectedPriorityFilter(e.target.value as any)}
-                    className="bg-slate-50 px-3 py-1.5 text-xs font-bold rounded-md border border-slate-200 focus:outline-none text-slate-700"
+                    className="bg-slate-50 px-2 py-1 text-xs font-semibold rounded-md border border-slate-200 focus:outline-none text-slate-700 cursor-pointer h-8 shrink-0"
                   >
                     <option value="all">⚡ All Priorities</option>
                     <option value="low">Low</option>
@@ -1738,42 +2007,30 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                   <select
                     value={flagFilter}
                     onChange={(e) => setFlagFilter(e.target.value as any)}
-                    className="bg-slate-50 px-3 py-1.5 text-xs font-bold rounded-md border border-slate-200 focus:outline-none text-slate-700"
+                    className="bg-slate-50 px-2 py-1 text-xs font-semibold rounded-md border border-slate-200 focus:outline-none text-slate-700 cursor-pointer h-8 shrink-0"
                   >
                     <option value="all">🔍 All Items</option>
-                    <option value="flagged">🚨 Blocked / Flagged</option>
-                    <option value="normal">✅ Normal Flow</option>
+                    <option value="flagged">🚨 Flagged</option>
+                    <option value="normal">✅ Normal</option>
                   </select>
                 </div>
-
-                <button
-                  onClick={() => setIsNewTaskModalOpen(true)}
-                  className="px-4 py-2 bg-[#3F0E40] text-white hover:bg-[#350A36] rounded-md text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 shadow-sm"
-                >
-                  <Plus className="w-4 h-4" />
-                  New Task
-                </button>
               </div>
 
               {/* Kanban columns */}
               <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-4 overflow-x-auto pb-4 custom-scrollbar">
-                {(['todo', 'in_progress', 'review', 'done'] as TaskStatus[]).map(status => {
-                  const statusLabel = 
-                    status === 'todo' ? 'To Do' :
-                    status === 'in_progress' ? 'In Progress' :
-                    status === 'review' ? 'Under Review' : 'Completed';
-                  
-                  const statusColor = 
-                    status === 'todo' ? 'border-t-slate-400 bg-slate-100/40' :
-                    status === 'in_progress' ? 'border-t-amber-400 bg-amber-50/20' :
-                    status === 'review' ? 'border-t-indigo-400 bg-indigo-50/20' : 'border-t-emerald-400 bg-emerald-50/20';
-
-                  const columnTasks = filteredTasks.filter(t => t.status === status);
+                {[
+                  { id: 'todo', label: 'To Do', color: 'border-t-slate-400 bg-slate-100/40' },
+                  { id: 'in_progress', label: 'In Progress', color: 'border-t-amber-400 bg-amber-50/20' },
+                  { id: 'completed', label: 'Completed', color: 'border-t-emerald-400 bg-emerald-50/20' },
+                  { id: 'overdue', label: 'Overdue', color: 'border-t-rose-500 bg-rose-50/20' },
+                ].map(col => {
+                  const stageList: TaskStatus[] = ['todo', 'in_progress', 'completed', 'overdue'];
+                  const columnTasks = filteredTasks.filter(t => getTaskStage(t) === col.id);
 
                   return (
-                    <div key={status} className={`flex flex-col h-full min-w-[250px] border-t-4 rounded-lg p-3 ${statusColor} border border-slate-200/80`}>
+                    <div key={col.id} className={`flex flex-col h-full min-w-[250px] border-t-4 rounded-lg p-3 ${col.color} border border-slate-200/80`}>
                       <div className="flex items-center justify-between mb-3 px-1">
-                        <span className="text-xs font-extrabold text-slate-800 tracking-wide uppercase">{statusLabel}</span>
+                        <span className="text-xs font-extrabold text-slate-800 tracking-wide uppercase">{col.label}</span>
                         <span className="text-[10px] font-bold bg-slate-200 px-2 py-0.5 rounded-full text-slate-600">
                           {columnTasks.length}
                         </span>
@@ -1786,89 +2043,104 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                             No tasks
                           </div>
                         ) : (
-                          columnTasks.map(task => (
-                            <div
-                              key={task.id}
-                              onClick={() => setViewingTask(task)}
-                              className={`bg-white border-2 rounded-xl p-3.5 space-y-3 shadow-sm hover:shadow-md hover:border-slate-300 transition-all cursor-pointer relative group ${
-                                task.flagged ? 'border-rose-300 hover:border-rose-400 bg-rose-50/10' : 'border-slate-200'
-                              }`}
-                            >
-                              <div className="space-y-1">
-                                <div className="flex items-start justify-between gap-1.5">
-                                  <h4 className="font-extrabold text-xs text-slate-800 leading-snug line-clamp-2">
-                                    {task.title}
-                                  </h4>
-                                </div>
-                                <p className="text-[11px] text-slate-500 line-clamp-2 leading-normal">
-                                  {task.description}
-                                </p>
-                              </div>
+                          columnTasks.map(task => {
+                            const currentStage = getTaskStage(task);
+                            const currentIdx = stageList.indexOf(currentStage);
 
-                              {/* Comments count / flags indicators */}
-                              <div className="flex flex-wrap items-center justify-between pt-1 gap-2 border-t border-slate-100">
-                                <div className="flex items-center gap-2">
-                                  {task.flagged && (
-                                    <span className="text-[9px] font-bold text-rose-600 bg-rose-50 border border-rose-100 px-1.5 py-0.5 rounded flex items-center gap-0.5 animate-pulse">
-                                      <AlertTriangle className="w-3 h-3" />
-                                      Blocked
+                            return (
+                              <div
+                                key={task.id}
+                                onClick={() => setViewingTask(task)}
+                                className={`bg-white border-2 rounded-xl p-3.5 space-y-3 shadow-sm hover:shadow-md hover:border-slate-300 transition-all cursor-pointer relative group ${
+                                  currentStage === 'overdue' ? 'border-rose-400 bg-rose-50/10' :
+                                  task.flagged ? 'border-rose-300 hover:border-rose-400 bg-rose-50/10' : 'border-slate-200'
+                                }`}
+                              >
+                                <div className="space-y-1">
+                                  <div className="flex items-start justify-between gap-1.5">
+                                    <h4 className="font-extrabold text-xs text-slate-800 leading-snug line-clamp-2">
+                                      {task.title}
+                                    </h4>
+                                  </div>
+                                  <p className="text-[11px] text-slate-500 line-clamp-2 leading-normal">
+                                    {task.description}
+                                  </p>
+                                </div>
+
+                                {/* Comments count / flags indicators */}
+                                <div className="flex flex-wrap items-center justify-between pt-1 gap-2 border-t border-slate-100">
+                                  <div className="flex items-center gap-1.5">
+                                    {currentStage === 'overdue' && (
+                                      <span className="text-[9px] font-black text-rose-700 bg-rose-100 border border-rose-300 px-1.5 py-0.5 rounded flex items-center gap-0.5 animate-pulse">
+                                        ⏰ OVERDUE
+                                      </span>
+                                    )}
+                                    {task.flagged && (
+                                      <span className="text-[9px] font-bold text-rose-600 bg-rose-50 border border-rose-100 px-1.5 py-0.5 rounded flex items-center gap-0.5 animate-pulse">
+                                        <AlertTriangle className="w-3 h-3" />
+                                        Blocked
+                                      </span>
+                                    )}
+                                    <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${
+                                      task.priority === 'critical' ? 'bg-red-50 text-red-700' :
+                                      task.priority === 'high' ? 'bg-orange-50 text-orange-700' :
+                                      task.priority === 'medium' ? 'bg-amber-50 text-amber-700' : 'bg-slate-50 text-slate-600'
+                                    }`}>
+                                      {task.priority}
                                     </span>
-                                  )}
-                                  <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${
-                                    task.priority === 'critical' ? 'bg-red-50 text-red-700' :
-                                    task.priority === 'high' ? 'bg-orange-50 text-orange-700' :
-                                    task.priority === 'medium' ? 'bg-amber-50 text-amber-700' : 'bg-slate-50 text-slate-600'
-                                  }`}>
-                                    {task.priority}
+                                    {task.deadline && (
+                                      <span className="text-[9px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded flex items-center gap-1" title={`Deadline: ${task.deadline}`}>
+                                        <Calendar className="w-2.5 h-2.5 text-amber-600" />
+                                        {task.deadline.replace('T', ' ')}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-[10px] font-extrabold bg-sky-50 text-sky-900 border border-sky-200 px-2 py-0.5 rounded-md flex items-center gap-1 shrink-0 shadow-2xs">
+                                    👤 @{task.assignee || 'Unassigned'}
                                   </span>
                                 </div>
-                                <span className="text-[10px] font-extrabold bg-sky-50 text-sky-900 border border-sky-200 px-2 py-0.5 rounded-md flex items-center gap-1 shrink-0 shadow-2xs">
-                                  👤 @{task.assignee || 'Unassigned'}
-                                </span>
-                              </div>
 
-                              {/* Tags lists */}
-                              {task.tags && task.tags.length > 0 && (
-                                <div className="flex flex-wrap gap-1 pt-1">
-                                  {task.tags.map(t => (
-                                    <span key={t} className={`px-1.5 py-0.2 rounded text-[7px] font-bold uppercase ${getTagColor(t)}`}>
-                                      #{t}
-                                    </span>
-                                  ))}
+                                {/* Tags lists */}
+                                {task.tags && task.tags.length > 0 && (
+                                  <div className="flex flex-wrap gap-1 pt-1">
+                                    {task.tags.map(t => (
+                                      <span key={t} className={`px-1.5 py-0.2 rounded text-[7px] font-bold uppercase ${getTagColor(t)}`}>
+                                        #{t}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Task Card Controls (quick Status Shifters) */}
+                                <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center bg-white shadow-md border border-slate-200 rounded overflow-hidden">
+                                  {currentIdx > 0 && (
+                                    <button
+                                      title="Move Left"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleUpdateTaskStatus(task.id, stageList[currentIdx - 1]);
+                                      }}
+                                      className="p-1 hover:bg-slate-50 text-slate-700 font-bold border-r border-slate-200 text-xs"
+                                    >
+                                      ←
+                                    </button>
+                                  )}
+                                  {currentIdx < stageList.length - 1 && (
+                                    <button
+                                      title="Move Right"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleUpdateTaskStatus(task.id, stageList[currentIdx + 1]);
+                                      }}
+                                      className="p-1 hover:bg-slate-50 text-slate-700 font-bold text-xs"
+                                    >
+                                      →
+                                    </button>
+                                  )}
                                 </div>
-                              )}
-
-                              {/* Task Card Controls (quick Status Shifters) */}
-                              <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center bg-white shadow-md border border-slate-200 rounded overflow-hidden">
-                                {status !== 'todo' && (
-                                  <button
-                                    title="Move Left"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      const nextIdx = (['todo', 'in_progress', 'review', 'done'] as TaskStatus[]).indexOf(status) - 1;
-                                      handleUpdateTaskStatus(task.id, (['todo', 'in_progress', 'review', 'done'] as TaskStatus[])[nextIdx]);
-                                    }}
-                                    className="p-1 hover:bg-slate-50 text-slate-700 font-bold border-r border-slate-200 text-xs"
-                                  >
-                                    ←
-                                  </button>
-                                )}
-                                {status !== 'done' && (
-                                  <button
-                                    title="Move Right"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      const nextIdx = (['todo', 'in_progress', 'review', 'done'] as TaskStatus[]).indexOf(status) + 1;
-                                      handleUpdateTaskStatus(task.id, (['todo', 'in_progress', 'review', 'done'] as TaskStatus[])[nextIdx]);
-                                    }}
-                                    className="p-1 hover:bg-slate-50 text-slate-700 font-bold text-xs"
-                                  >
-                                    →
-                                  </button>
-                                )}
                               </div>
-                            </div>
-                          ))
+                            );
+                          })
                         )}
                       </div>
                     </div>
@@ -2170,61 +2442,46 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
 
           {/* E. VIEW: NOTIFICATIONS & ACTIVITY CENTER */}
           {activeTab === 'notifications' && (
-            <div className="h-full overflow-y-auto p-6 md:p-8 space-y-6 bg-slate-50/50 custom-scrollbar">
-              {/* Banner Header */}
-              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <div className="p-2 bg-[#3F0E40]/10 text-[#3F0E40] rounded-lg">
-                      <Bell className="w-5 h-5 text-[#3F0E40]" />
-                    </div>
-                    <h2 className="text-lg font-extrabold text-slate-900 tracking-tight">Notifications Center</h2>
-                  </div>
-                  <p className="text-xs text-slate-500 max-w-xl">
-                    Real-time alerts for tasks assigned to @{user.username}, direct messages, and @mentions across channels.
-                  </p>
+            <div className="h-full overflow-y-auto p-3 sm:p-4 space-y-3 bg-slate-50/50 custom-scrollbar">
+              {/* Filter Pills and Mark All as Read */}
+              <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 pb-1 shrink-0">
+                <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar py-0.5">
+                  <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mr-1 flex items-center gap-1 shrink-0">
+                    <Filter className="w-3.5 h-3.5" /> Filter:
+                  </span>
+                  {[
+                    { id: 'all', label: `All (${userNotifications.length})` },
+                    { id: 'unread', label: `Unread (${unreadNotifCount})` },
+                    { id: 'tasks', label: `Task Assignments (${userNotifications.filter(n => n.type === 'task_assigned').length})` },
+                    { id: 'dms', label: `Direct Messages (${userNotifications.filter(n => n.type === 'dm').length})` },
+                    { id: 'mentions', label: `@Mentions (${userNotifications.filter(n => n.type === 'mention').length})` },
+                  ].map(f => (
+                    <button
+                      key={f.id}
+                      onClick={() => setNotifFilter(f.id as any)}
+                      className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                        notifFilter === f.id
+                          ? 'bg-[#3F0E40] text-white shadow-2xs'
+                          : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
                 </div>
 
-                <div className="flex items-center gap-2 flex-wrap">
-                  <button
-                    onClick={markAllNotifsAsRead}
-                    disabled={unreadNotifCount === 0}
-                    className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
-                      unreadNotifCount > 0
-                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm cursor-pointer'
-                        : 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                    }`}
-                  >
-                    <CheckCheck className="w-4 h-4" />
-                    Mark All as Read
-                  </button>
-                </div>
-              </div>
-
-              {/* Filter Pills */}
-              <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mr-2 flex items-center gap-1 shrink-0">
-                  <Filter className="w-3.5 h-3.5" /> Filter:
-                </span>
-                {[
-                  { id: 'all', label: `All (${userNotifications.length})` },
-                  { id: 'unread', label: `Unread (${unreadNotifCount})` },
-                  { id: 'tasks', label: `Task Assignments (${userNotifications.filter(n => n.type === 'task_assigned').length})` },
-                  { id: 'dms', label: `Direct Messages (${userNotifications.filter(n => n.type === 'dm').length})` },
-                  { id: 'mentions', label: `@Mentions (${userNotifications.filter(n => n.type === 'mention').length})` },
-                ].map(f => (
-                  <button
-                    key={f.id}
-                    onClick={() => setNotifFilter(f.id as any)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
-                      notifFilter === f.id
-                        ? 'bg-[#3F0E40] text-white shadow-sm'
-                        : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                    }`}
-                  >
-                    {f.label}
-                  </button>
-                ))}
+                <button
+                  onClick={markAllNotifsAsRead}
+                  disabled={unreadNotifCount === 0}
+                  className={`px-3 py-1 rounded-md text-xs font-bold flex items-center gap-1.5 transition-all shrink-0 whitespace-nowrap ${
+                    unreadNotifCount > 0
+                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs cursor-pointer'
+                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                  }`}
+                >
+                  <CheckCheck className="w-3.5 h-3.5" />
+                  Mark All as Read
+                </button>
               </div>
 
               {/* Notifications List */}
@@ -2377,6 +2634,18 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                     <option value="critical">Critical</option>
                   </select>
                 </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="block font-bold text-slate-700 uppercase flex items-center gap-1">
+                  <Calendar className="w-3 h-3 text-slate-500" /> Deadline / Finish Date
+                </label>
+                <input
+                  type="datetime-local"
+                  value={newTaskDeadline}
+                  onChange={(e) => setNewTaskDeadline(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded focus:outline-none text-slate-800 font-medium"
+                />
               </div>
 
               <div className="space-y-1.5">
@@ -2726,13 +2995,23 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                   👤 Assigned to: @{viewingTask.assignee || 'Unassigned'}
                 </span>
 
-                <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded border ${
-                  viewingTask.status === 'todo' ? 'bg-slate-50 text-slate-600 border-slate-200' :
-                  viewingTask.status === 'in_progress' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                  viewingTask.status === 'review' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                }`}>
-                  Status: {viewingTask.status.replace('_', ' ')}
-                </span>
+                {(() => {
+                  const currentStage = getTaskStage(viewingTask);
+                  const badgeColor = 
+                    currentStage === 'todo' ? 'bg-slate-50 text-slate-600 border-slate-200' :
+                    currentStage === 'in_progress' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                    currentStage === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                    'bg-rose-100 text-rose-800 border-rose-300 animate-pulse';
+                  const label = 
+                    currentStage === 'todo' ? 'To Do' :
+                    currentStage === 'in_progress' ? 'In Progress' :
+                    currentStage === 'completed' ? 'Completed' : 'Overdue';
+                  return (
+                    <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded border ${badgeColor}`}>
+                      Stage: {label}
+                    </span>
+                  );
+                })()}
 
                 <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${
                   viewingTask.priority === 'critical' ? 'bg-red-100 text-red-800' :
@@ -2740,6 +3019,12 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
                 }`}>
                   Priority: {viewingTask.priority}
                 </span>
+
+                {viewingTask.deadline && (
+                  <span className="text-[10px] font-bold text-amber-900 bg-amber-50 border border-amber-300 px-2 py-0.5 rounded flex items-center gap-1">
+                    <Calendar className="w-3 h-3 text-amber-600" /> Deadline: {viewingTask.deadline.replace('T', ' ')}
+                  </span>
+                )}
 
                 <span className="text-[10px] text-slate-400 font-mono">
                   Created {formatDate(viewingTask.createdAt)}
@@ -2776,14 +3061,14 @@ export const MinSlack: React.FC<MinSlackProps> = ({ user }) => {
               <div>
                 <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wide mb-1">Move Status</label>
                 <select
-                  value={viewingTask.status}
+                  value={getTaskStage(viewingTask)}
                   onChange={(e) => handleUpdateTaskStatus(viewingTask.id, e.target.value as TaskStatus)}
                   className="bg-white border border-slate-300 px-2.5 py-1.5 rounded focus:outline-none text-slate-700 font-bold w-full text-xs"
                 >
                   <option value="todo">To Do</option>
                   <option value="in_progress">In Progress</option>
-                  <option value="review">Under Review</option>
-                  <option value="done">Completed</option>
+                  <option value="completed">Completed</option>
+                  <option value="overdue">Overdue</option>
                 </select>
               </div>
 

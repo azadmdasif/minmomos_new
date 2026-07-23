@@ -148,7 +148,7 @@ export async function logProcurement(item: any): Promise<void> {
 export async function fetchProcurements(startDate: string, endDate: string): Promise<{ data: any[], error: any }> {
   const { data, error } = await supabase
     .from('procurements')
-    .select('*')
+    .select('id, item_id, item_name, quantity, unit, total_cost, vendor, date, is_paid, payment_history, is_voided')
     .gte('date', `${startDate}T00:00:00+05:30`)
     .lte('date', `${endDate}T23:59:59+05:30`)
     .order('date', { ascending: false });
@@ -160,9 +160,10 @@ export async function fetchProcurements(startDate: string, endDate: string): Pro
 export async function fetchAllNonVoidedProcurements(): Promise<any[]> {
   const { data, error } = await supabase
     .from('procurements')
-    .select('*')
+    .select('id, item_id, item_name, quantity, unit, total_cost, vendor, date, is_paid, payment_history, is_voided')
     .eq('is_voided', false)
-    .order('date', { ascending: false });
+    .order('date', { ascending: false })
+    .limit(300);
   if (error) {
     console.error("Error fetching all non-voided procurements:", error);
     return [];
@@ -173,7 +174,7 @@ export async function fetchAllNonVoidedProcurements(): Promise<any[]> {
 export async function getFinancialSpending(startDate: string, endDate: string): Promise<any[]> {
   const { data, error } = await supabase
     .from('procurements')
-    .select('*')
+    .select('id, item_id, item_name, quantity, unit, total_cost, vendor, date, is_paid, payment_history, is_voided')
     .is('is_voided', false)
     .gte('date', `${startDate}T00:00:00+05:30`)
     .lte('date', `${endDate}T23:59:59+05:30`);
@@ -1215,7 +1216,7 @@ export async function deleteAppUser(userId: string): Promise<void> {
 }
 
 export async function getCentralInventory(): Promise<CentralMaterial[]> {
-  const { data, error } = await supabase.from('central_inventory').select('*').order('name');
+  const { data, error } = await supabase.from('central_inventory').select('id, name, unit, current_stock, min_stock, price, category, subcategory, is_finished, vendor_id').order('name');
   if (error) throw error;
   const items = data || [];
   syncSubcategoriesToLocal(items);
@@ -1459,14 +1460,14 @@ export async function peekNextBillNumber(): Promise<number> {
 }
 
 export async function getInventory(branchName: string): Promise<RawMaterial[]> {
-  const { data } = await supabase.from('inventory').select('*').eq('branch_name', branchName);
+  const { data } = await supabase.from('inventory').select('id, name, unit, current_stock, min_stock, price, category, subcategory, branch_name, vendor_id, is_finished, request_pending').eq('branch_name', branchName);
   const items = data || [];
   syncSubcategoriesToLocal(items);
   return items;
 }
 
 export async function getAllInventories(): Promise<RawMaterial[]> {
-  const { data } = await supabase.from('inventory').select('*');
+  const { data } = await supabase.from('inventory').select('id, name, unit, current_stock, min_stock, price, category, subcategory, branch_name, vendor_id, is_finished, request_pending');
   const items = data || [];
   syncSubcategoriesToLocal(items);
   return items;
@@ -2440,7 +2441,7 @@ export async function fetchCustomerHistory(phone: string): Promise<CompletedOrde
 
 export async function getVendors(): Promise<any[]> {
   try {
-    const { data, error } = await supabase.from('vendors').select('*').order('name');
+    const { data, error } = await supabase.from('vendors').select('id, name, contact_person, phone, email, address, created_at').order('name');
     if (error) {
       if (error.code === '42P01') {
         console.warn("vendors table does not exist yet. Please run vendors_schema.sql in Supabase.");
@@ -2489,7 +2490,7 @@ export async function updateVendor(id: string, vendor: {
 
 export async function getVendorMappings(): Promise<any[]> {
   try {
-    const { data, error } = await supabase.from('vendor_mappings').select('*');
+    const { data, error } = await supabase.from('vendor_mappings').select('id, item_id, vendor_id, price, updated_at');
     if (error) {
       if (error.code === '42P01') {
         console.warn("vendor_mappings table does not exist yet. Please run vendors_schema.sql in Supabase.");
