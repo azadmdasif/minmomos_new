@@ -146,44 +146,56 @@ export async function logProcurement(item: any): Promise<void> {
 }
 
 export async function fetchProcurements(startDate: string, endDate: string): Promise<{ data: any[], error: any }> {
-  const { data, error } = await supabase
-    .from('procurements')
-    .select('id, item_id, item_name, quantity, unit, total_cost, vendor, date, is_paid, payment_history, is_voided')
-    .gte('date', `${startDate}T00:00:00+05:30`)
-    .lte('date', `${endDate}T23:59:59+05:30`)
-    .order('date', { ascending: false });
-  
-  if (error) console.error("Procurement fetch error:", error);
-  return { data: data || [], error };
+  try {
+    const { data, error } = await supabase
+      .from('procurements')
+      .select('*')
+      .gte('date', `${startDate}T00:00:00+05:30`)
+      .lte('date', `${endDate}T23:59:59+05:30`)
+      .order('date', { ascending: false });
+    
+    if (error) console.error("Procurement fetch error:", error);
+    return { data: data || [], error };
+  } catch (err) {
+    return { data: [], error: err };
+  }
 }
 
 export async function fetchAllNonVoidedProcurements(): Promise<any[]> {
-  const { data, error } = await supabase
-    .from('procurements')
-    .select('id, item_id, item_name, quantity, unit, total_cost, vendor, date, is_paid, payment_history, is_voided')
-    .eq('is_voided', false)
-    .order('date', { ascending: false })
-    .limit(300);
-  if (error) {
-    console.error("Error fetching all non-voided procurements:", error);
+  try {
+    const { data, error } = await supabase
+      .from('procurements')
+      .select('*')
+      .order('date', { ascending: false })
+      .limit(300);
+    if (error) {
+      console.error("Error fetching all non-voided procurements:", error);
+      return [];
+    }
+    return (data || []).filter((p: any) => p.is_voided !== true);
+  } catch (e) {
+    console.error("Error in fetchAllNonVoidedProcurements:", e);
     return [];
   }
-  return data || [];
 }
 
 export async function getFinancialSpending(startDate: string, endDate: string): Promise<any[]> {
-  const { data, error } = await supabase
-    .from('procurements')
-    .select('id, item_id, item_name, quantity, unit, total_cost, vendor, date, is_paid, payment_history, is_voided')
-    .is('is_voided', false)
-    .gte('date', `${startDate}T00:00:00+05:30`)
-    .lte('date', `${endDate}T23:59:59+05:30`);
-  
-  if (error) {
-    console.error("Financial fetch error:", error);
+  try {
+    const { data, error } = await supabase
+      .from('procurements')
+      .select('*')
+      .gte('date', `${startDate}T00:00:00+05:30`)
+      .lte('date', `${endDate}T23:59:59+05:30`);
+    
+    if (error) {
+      console.error("Financial fetch error:", error);
+      return [];
+    }
+    return (data || []).filter((p: any) => p.is_voided !== true);
+  } catch (e) {
+    console.error("Error in getFinancialSpending:", e);
     return [];
   }
-  return data || [];
 }
 
 export async function voidProcurement(id: string, reason: string, performedBy: string = 'SYSTEM'): Promise<void> {
@@ -1216,11 +1228,36 @@ export async function deleteAppUser(userId: string): Promise<void> {
 }
 
 export async function getCentralInventory(): Promise<CentralMaterial[]> {
-  const { data, error } = await supabase.from('central_inventory').select('id, name, unit, current_stock, min_stock, price, category, subcategory, is_finished, vendor_id').order('name');
-  if (error) throw error;
-  const items = data || [];
-  syncSubcategoriesToLocal(items);
-  return items;
+  try {
+    const { data, error } = await supabase.from('central_inventory').select('*').order('name');
+    if (error) {
+      if (error.code === '42P01') throw error;
+      const fallback = await supabase.from('central_inventory').select('*');
+      if (fallback.error) throw fallback.error;
+      const items = (fallback.data || []).map((item: any) => ({
+        ...item,
+        min_stock: item.min_stock ?? 0,
+        price: item.price ?? item.last_purchase_cost ?? 0,
+        is_finished: item.is_finished ?? false,
+        subcategory: item.subcategory ?? getItemSubcategory(item.name, item.id, item.category),
+      }));
+      syncSubcategoriesToLocal(items);
+      return items;
+    }
+    const items = (data || []).map((item: any) => ({
+      ...item,
+      min_stock: item.min_stock ?? 0,
+      price: item.price ?? item.last_purchase_cost ?? 0,
+      is_finished: item.is_finished ?? false,
+      subcategory: item.subcategory ?? getItemSubcategory(item.name, item.id, item.category),
+    }));
+    syncSubcategoriesToLocal(items);
+    return items;
+  } catch (err: any) {
+    if (err.code === '42P01') throw err;
+    console.warn("getCentralInventory error:", err);
+    return [];
+  }
 }
 
 export async function createCentralItem(
@@ -1460,17 +1497,113 @@ export async function peekNextBillNumber(): Promise<number> {
 }
 
 export async function getInventory(branchName: string): Promise<RawMaterial[]> {
-  const { data } = await supabase.from('inventory').select('id, name, unit, current_stock, min_stock, price, category, subcategory, branch_name, vendor_id, is_finished, request_pending').eq('branch_name', branchName);
-  const items = data || [];
-  syncSubcategoriesToLocal(items);
-  return items;
+  try {
+    const centralItems = await getCentralInventory();
+    
+    let branchRows: any[] = [];
+    try {
+      const { data, error } = await supabase
+        .from('inventory')
+        .select('*')
+        .ilike('branch_name', branchName);
+      if (!error && data) {
+        branchRows = data;
+      } else {
+        const fallback = await supabase
+          .from('inventory')
+          .select('*')
+          .eq('branch_name', branchName);
+        if (!fallback.error && fallback.data) {
+          branchRows = fallback.data;
+        }
+      }
+    } catch (e) {
+      console.warn("Error fetching inventory table for branch:", branchName, e);
+    }
+
+    const branchMap = new Map<string, any>();
+    branchRows.forEach(row => {
+      branchMap.set(row.id, row);
+    });
+
+    const mergedList: RawMaterial[] = centralItems.map(cItem => {
+      const bItem = branchMap.get(cItem.id);
+      if (bItem) {
+        return {
+          ...cItem,
+          ...bItem,
+          current_stock: bItem.current_stock ?? 0,
+          min_stock: bItem.min_stock ?? cItem.min_stock ?? 0,
+          price: bItem.price ?? cItem.price ?? 0,
+          category: bItem.category || cItem.category,
+          subcategory: bItem.subcategory || cItem.subcategory || getItemSubcategory(cItem.name, cItem.id, cItem.category),
+          branch_name: branchName,
+          is_finished: bItem.is_finished ?? false,
+          request_pending: bItem.request_pending ?? false
+        };
+      }
+      return {
+        id: cItem.id,
+        name: cItem.name,
+        unit: cItem.unit,
+        current_stock: 0,
+        min_stock: cItem.min_stock || 0,
+        price: cItem.price || 0,
+        category: cItem.category,
+        subcategory: cItem.subcategory || getItemSubcategory(cItem.name, cItem.id, cItem.category),
+        branch_name: branchName,
+        vendor_id: cItem.vendor_id,
+        is_finished: false,
+        request_pending: false
+      };
+    });
+
+    // Append any store-specific items not in central_inventory
+    branchRows.forEach(bItem => {
+      if (!centralItems.some(c => c.id === bItem.id)) {
+        mergedList.push({
+          ...bItem,
+          current_stock: bItem.current_stock ?? 0,
+          min_stock: bItem.min_stock ?? 0,
+          price: bItem.price ?? 0,
+          subcategory: bItem.subcategory || getItemSubcategory(bItem.name, bItem.id, bItem.category),
+          branch_name: branchName,
+          is_finished: bItem.is_finished ?? false,
+          request_pending: bItem.request_pending ?? false
+        });
+      }
+    });
+
+    syncSubcategoriesToLocal(mergedList);
+    return mergedList;
+  } catch (err) {
+    console.error("getInventory exception:", err);
+    return [];
+  }
 }
 
 export async function getAllInventories(): Promise<RawMaterial[]> {
-  const { data } = await supabase.from('inventory').select('id, name, unit, current_stock, min_stock, price, category, subcategory, branch_name, vendor_id, is_finished, request_pending');
-  const items = data || [];
-  syncSubcategoriesToLocal(items);
-  return items;
+  try {
+    const { data, error } = await supabase.from('inventory').select('*');
+    if (error) {
+      console.warn("getAllInventories error:", error);
+      return [];
+    }
+    const items = (data || []).map((bItem: any) => ({
+      ...bItem,
+      current_stock: bItem.current_stock ?? 0,
+      min_stock: bItem.min_stock ?? 0,
+      price: bItem.price ?? 0,
+      subcategory: bItem.subcategory || getItemSubcategory(bItem.name, bItem.id, bItem.category),
+      is_finished: bItem.is_finished ?? false,
+      request_pending: bItem.request_pending ?? false
+    }));
+    syncSubcategoriesToLocal(items);
+    return items;
+  } catch (err) {
+    console.error("getAllInventories exception:", err);
+    return [];
+  }
 }
 
 export async function manuallyAdjustStock(
@@ -2490,11 +2623,15 @@ export async function updateVendor(id: string, vendor: {
 
 export async function getVendorMappings(): Promise<any[]> {
   try {
-    const { data, error } = await supabase.from('vendor_mappings').select('id, item_id, vendor_id, price, updated_at');
+    const { data, error } = await supabase.from('vendor_mappings').select('*');
     if (error) {
       if (error.code === '42P01') {
         console.warn("vendor_mappings table does not exist yet. Please run vendors_schema.sql in Supabase.");
         return [];
+      }
+      if (error.code === '42703') {
+        const fallback = await supabase.from('vendor_mappings').select('id, item_id, vendor_id');
+        if (!fallback.error) return fallback.data || [];
       }
       throw error;
     }

@@ -511,15 +511,25 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
       // Fetch central inventory and menu items for ALL users
       try {
         const [c, m, nvp] = await Promise.all([
-          getCentralInventory(),
-          fetchMenuItems(),
-          fetchAllNonVoidedProcurements()
+          getCentralInventory().catch(err => {
+            if (err?.code === '42P01') setIsTableMissing(true);
+            else console.warn("Failed to fetch central inventory:", err);
+            return [];
+          }),
+          fetchMenuItems().catch(err => {
+            console.warn("Failed to fetch menu items:", err);
+            return { data: [], error: err };
+          }),
+          fetchAllNonVoidedProcurements().catch(err => {
+            console.warn("Failed to fetch procurements:", err);
+            return [];
+          })
         ]);
-        setCentralStock(c);
-        if (m.data) setMenuItems(m.data);
-        setAllNonVoidedProcurements(nvp || []);
+        if (c && c.length > 0) setCentralStock(c);
+        if (m && m.data) setMenuItems(m.data);
+        if (nvp) setAllNonVoidedProcurements(nvp);
       } catch (e: any) {
-        if (e.code === '42P01') setIsTableMissing(true);
+        if (e?.code === '42P01') setIsTableMissing(true);
         else console.error("Error fetching central inventory/menu items:", e);
       }
 
@@ -591,8 +601,17 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           console.error("All inventories fetch failed:", e);
         }
 
-        if (selectedStation) {
-          const inv = await getInventory(selectedStation.name);
+        let currentStation = selectedStation;
+        if (!currentStation && s.length > 0) {
+          currentStation = s[0];
+          setSelectedStation(s[0]);
+        }
+
+        if (currentStation) {
+          const inv = await getInventory(currentStation.name);
+          setStoreStock(inv);
+        } else if (user.stationName) {
+          const inv = await getInventory(user.stationName);
           setStoreStock(inv);
         }
       } else if (user.stationName) {
@@ -2206,7 +2225,18 @@ NOTIFY pgrst, 'reload schema';`}
                       >
                         Reset Branch to Zero
                       </button>
-                      <select onChange={(e) => setSelectedStation(stations.find(s => s.id === e.target.value) || null)} className="bg-white border-4 border-brand-brown p-4 rounded-2xl text-[10px] font-black uppercase text-brand-brown shadow-xl outline-none">
+                      <select 
+                        value={selectedStation?.id || ''} 
+                        onChange={async (e) => {
+                          const found = stations.find(s => s.id === e.target.value) || null;
+                          setSelectedStation(found);
+                          if (found) {
+                            const inv = await getInventory(found.name);
+                            setStoreStock(inv);
+                          }
+                        }} 
+                        className="bg-white border-4 border-brand-brown p-4 rounded-2xl text-[10px] font-black uppercase text-brand-brown shadow-xl outline-none"
+                      >
                         <option value="">Select Branch Station...</option>
                         {stations.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                       </select>

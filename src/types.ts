@@ -45,6 +45,9 @@ export interface CentralMaterial {
   last_purchase_date?: string;
   is_finished?: boolean;
   subcategory?: string;
+  min_stock?: number;
+  price?: number;
+  vendor_id?: string;
 }
 
 export interface StockAllocation {
