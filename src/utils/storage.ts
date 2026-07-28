@@ -557,61 +557,99 @@ export async function logDailyIncomeToLedger(
   }
 }
 
-export async function autoSyncDailyRevenueToLedger(daysBack: number = 60): Promise<void> {
+export async function addTodaysRevenueToLedger(targetDateStr?: string): Promise<{
+  success: boolean;
+  totalCash: number;
+  totalUpi: number;
+  branchCount: number;
+  message: string;
+}> {
   try {
-    const startDateObj = new Date();
-    startDateObj.setDate(startDateObj.getDate() - daysBack);
-    const startDateStr = getISTDateString(startDateObj);
+    const dateStr = targetDateStr || getISTDateString();
 
-    // Fetch orders that are not deleted
-    const { data: orders, error } = await supabase
+    // 1. Try querying orders using IST date bounds
+    let { data: orders, error } = await supabase
       .from('orders')
-      .select('branch_name, total, manual_total, payment_method, created_at, date')
+      .select('branch_name, total, manual_total, payment_method, date')
+      .gte('date', `${dateStr}T00:00:00+05:30`)
+      .lte('date', `${dateStr}T23:59:59+05:30`)
       .is('deletion_info', null);
 
     if (error) {
-      console.warn("Could not query orders for autoSyncDailyRevenueToLedger:", error);
-      return;
+      console.warn("Date range order query error, attempting fallback fetch:", error);
     }
 
-    if (!orders || orders.length === 0) return;
+    // 2. Fallback: Fetch most recent 1000 orders ordered by id desc to avoid Supabase default 1000 row limit on oldest orders
+    if (!orders || orders.length === 0) {
+      const { data: recentOrders, error: recentError } = await supabase
+        .from('orders')
+        .select('branch_name, total, manual_total, payment_method, date')
+        .is('deletion_info', null)
+        .order('id', { ascending: false })
+        .limit(1000);
 
-    // Group sales by branch + date
-    const salesMap = new Map<string, { cash: number; upi: number; branchName: string; dateStr: string }>();
-
-    orders.forEach(order => {
-      const rawDate = order.created_at || order.date;
-      if (!rawDate) return;
-
-      const dateStr = getISTDateString(rawDate);
-      if (!dateStr || dateStr < startDateStr) return;
-
-      const branchName = order.branch_name || 'BNR';
-      const key = `${branchName}__${dateStr}`;
-
-      if (!salesMap.has(key)) {
-        salesMap.set(key, { cash: 0, upi: 0, branchName, dateStr });
+      if (recentError && (!orders || orders.length === 0)) {
+        return { success: false, totalCash: 0, totalUpi: 0, branchCount: 0, message: recentError.message };
       }
+      orders = recentOrders || [];
+    }
 
-      const entry = salesMap.get(key)!;
+    if (!orders || orders.length === 0) {
+      return { success: true, totalCash: 0, totalUpi: 0, branchCount: 0, message: `No orders found in database for ${dateStr}.` };
+    }
+
+    const todaysOrders = orders.filter(o => {
+      const rawDate = o.date;
+      if (!rawDate) return false;
+      return getISTDateString(rawDate) === dateStr;
+    });
+
+    if (todaysOrders.length === 0) {
+      return { success: true, totalCash: 0, totalUpi: 0, branchCount: 0, message: `No orders recorded yet for ${dateStr}.` };
+    }
+
+    const salesMap = new Map<string, { cash: number; upi: number }>();
+    let grandCash = 0;
+    let grandUpi = 0;
+
+    todaysOrders.forEach(order => {
+      const branchName = order.branch_name || 'BNR';
+      if (!salesMap.has(branchName)) {
+        salesMap.set(branchName, { cash: 0, upi: 0 });
+      }
+      const entry = salesMap.get(branchName)!;
       const amt = order.manual_total != null ? Number(order.manual_total) : Number(order.total || 0);
-
       const method = (order.payment_method || '').toUpperCase();
+
       if (method === 'CASH') {
         entry.cash += amt;
+        grandCash += amt;
       } else {
-        // UPI, CARD, ONLINE, etc.
         entry.upi += amt;
+        grandUpi += amt;
       }
     });
 
-    // Sync each branch + date's sales to ledger
-    for (const entry of salesMap.values()) {
-      await logDailyIncomeToLedger(entry.dateStr, entry.cash, entry.upi, entry.branchName);
+    for (const [branchName, entry] of salesMap.entries()) {
+      await logDailyIncomeToLedger(dateStr, entry.cash, entry.upi, branchName);
     }
-  } catch (err) {
-    console.error("Error in autoSyncDailyRevenueToLedger:", err);
+
+    return {
+      success: true,
+      totalCash: grandCash,
+      totalUpi: grandUpi,
+      branchCount: salesMap.size,
+      message: `Added today's revenue (${dateStr}): Cash ₹${grandCash.toLocaleString('en-IN')}, Card+UPI ₹${grandUpi.toLocaleString('en-IN')}`
+    };
+  } catch (err: any) {
+    console.error("Error adding today's revenue to ledger:", err);
+    return { success: false, totalCash: 0, totalUpi: 0, branchCount: 0, message: err?.message || 'Failed to sync revenue' };
   }
+}
+
+export async function autoSyncDailyRevenueToLedger(_daysBack: number = 60): Promise<void> {
+  // Auto-sync feature has been disabled as requested. Revenue is added via manual trigger.
+  return;
 }
 
 export async function updateProcurementPayment(
@@ -1115,9 +1153,6 @@ export async function saveOrder(
         console.info(`No size-specific recipe defined for item: ${menuDetail.name} (Size: ${size}). Stock not deducted.`);
       }
     }
-
-    // Auto update today's daily revenue in the ledger
-    autoSyncDailyRevenueToLedger(2).catch(e => console.error("Auto sync daily revenue error:", e));
 
     return nextBillNumber;
   } catch (err) {

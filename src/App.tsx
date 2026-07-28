@@ -1,5 +1,5 @@
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import Sidebar from './components/Sidebar';
 import POS from './components/POS';
 import KDS from './components/KDS';
@@ -15,7 +15,7 @@ import Marketing from './components/Marketing';
 import { EmployeeManagement } from './components/EmployeeManagement';
 import DailyOperations from './components/DailyOperations';
 import { MinSlack } from './components/minslack/MinSlack';
-import { getCurrentUser, setCurrentUser, autoSyncDailyRevenueToLedger } from './utils/storage';
+import { getCurrentUser, setCurrentUser } from './utils/storage';
 import { User } from './types';
 
 type View = 'pos' | 'tables' | 'kds' | 'reports' | 'inventory' | 'users' | 'stations' | 'menu' | 'ledger' | 'marketing' | 'employees' | 'operations' | 'minslack';
@@ -23,12 +23,6 @@ type View = 'pos' | 'tables' | 'kds' | 'reports' | 'inventory' | 'users' | 'stat
 function App() {
   const [view, setView] = useState<View>('reports');
   const [user, setUser] = useState<User | null>(getCurrentUser());
-
-  useEffect(() => {
-    if (user) {
-      autoSyncDailyRevenueToLedger(60).catch(err => console.error('Background revenue sync error:', err));
-    }
-  }, [user]);
 
   const handleLogin = (loggedUser: User) => {
     setUser(loggedUser);

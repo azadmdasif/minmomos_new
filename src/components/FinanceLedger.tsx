@@ -22,7 +22,8 @@ import {
   Briefcase,
   Camera,
   RotateCw,
-  CameraOff
+  CameraOff,
+  PlusCircle
 } from 'lucide-react';
 import { 
   ResponsiveContainer,
@@ -37,7 +38,7 @@ import {
   Cell
 } from 'recharts';
 import { supabase } from '../utils/supabase';
-import { autoSyncDailyRevenueToLedger } from '../utils/storage';
+import { addTodaysRevenueToLedger } from '../utils/storage';
 import ConfirmationModal from './ConfirmationModal';
 
 interface TabInfo {
@@ -472,18 +473,32 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
     }
   };
 
+  // Manual revenue addition state
+  const [isAddingRevenue, setIsAddingRevenue] = useState(false);
+
+  const handleAddTodaysRevenue = async () => {
+    setIsAddingRevenue(true);
+    try {
+      const res = await addTodaysRevenueToLedger();
+      if (res.success) {
+        alert(res.message);
+        await loadSheetRows();
+      } else {
+        alert("Error: " + res.message);
+      }
+    } catch (err: any) {
+      console.error("Failed to add today's revenue:", err);
+      alert("Failed to add revenue: " + (err?.message || "Unknown error"));
+    } finally {
+      setIsAddingRevenue(false);
+    }
+  };
+
   // Load rows from Supabase on-the-fly and compute running balances to feed into grid
   const loadSheetRows = async () => {
     setIsSheetLoading(true);
     setSheetError(null);
     try {
-      // Sync daily revenue from orders automatically before querying ledger rows
-      try {
-        await autoSyncDailyRevenueToLedger(60);
-      } catch (syncErr) {
-        console.warn('Auto revenue sync warning:', syncErr);
-      }
-
       const { data, error } = await supabase
         .from('finance_ledger')
         .select('*')
@@ -2084,6 +2099,20 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                     </div>
 
                     <div className="flex items-center gap-2">
+                      <button 
+                        onClick={handleAddTodaysRevenue}
+                        disabled={isAddingRevenue}
+                        className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors disabled:opacity-50 select-none cursor-pointer shadow-sm"
+                        title="Calculate today's sales (Cash and Card+UPI) to the ledger"
+                      >
+                        {isAddingRevenue ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <PlusCircle className="w-3.5 h-3.5 text-brand-yellow" />
+                        )}
+                        <span>Add Today's Revenue</span>
+                      </button>
+
                       <button 
                         onClick={exportToCSV}
                         disabled={sheetRows.length <= 1}

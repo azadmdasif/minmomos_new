@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { CameraCapture } from './CameraCapture';
 import { supabase } from '../utils/supabase';
-import { getISTDateString, getISTFullDateTime, getStations, logDailyIncomeToLedger, autoSyncDailyRevenueToLedger } from '../utils/storage';
+import { getISTDateString, getISTFullDateTime, getStations, logDailyIncomeToLedger } from '../utils/storage';
 import { RAW_MATERIALS_LIST } from '../constants';
 import { 
   Camera, 
@@ -208,11 +208,6 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
     loadAllRecords();
     loadEmployees();
     fetchTodaySales();
-    
-    // Background async sync so component load isn't blocked
-    const timer = setTimeout(() => {
-      autoSyncDailyRevenueToLedger(7).catch(e => console.error("Auto sync daily revenue error:", e));
-    }, 300);
 
     const handleSyncOnVisible = () => {
       if (document.visibilityState === 'visible') {
@@ -226,7 +221,6 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
     document.addEventListener('visibilitychange', handleSyncOnVisible);
 
     return () => {
-      clearTimeout(timer);
       window.removeEventListener('focus', handleSyncOnVisible);
       document.removeEventListener('visibilitychange', handleSyncOnVisible);
     };
@@ -378,8 +372,8 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
         .from('orders')
         .select('*')
         .eq('branch_name', currentBranch)
-        .gte('created_at', `${todayDate}T00:00:00+05:30`)
-        .lte('created_at', `${todayDate}T23:59:59+05:30`)
+        .gte('date', `${todayDate}T00:00:00+05:30`)
+        .lte('date', `${todayDate}T23:59:59+05:30`)
         .is('deletion_info', null);
 
       if (error) throw error;
