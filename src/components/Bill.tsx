@@ -196,15 +196,15 @@ const Bill: React.FC<BillProps> = ({
     }
   }, [subtotalWithoutPromo, hasPromoMojitoApplied, onUpdateQuantity]);
   
+  const [showConvertStudentModal, setShowConvertStudentModal] = React.useState(false);
+  const [convertSchoolName, setConvertSchoolName] = React.useState('');
+
   const hasAppliedLoyaltyDiscount = orderItems.find(item => item.id === 'loyalty-discount');
 
   const loyaltyDiscount = React.useMemo(() => {
     if (!customer) return null;
     if (customer.note === 'STUDENT' || customer.note?.startsWith('STUDENT|')) {
-      if (customer.totalOrders > 0) {
-        return { percentage: 10, label: '10% Student Discount', code: `STUDENT10-${customer.phone.slice(-4)}` };
-      }
-      return null;
+      return { percentage: 10, label: '10% Student Discount', code: `STUDENT10-${customer.phone.slice(-4)}` };
     }
     const count = customer.totalOrders;
     if (count === 1) return { percentage: 15, label: '15% Loyalty (2nd Visit)', code: `DISC15-${customer.phone.slice(-4)}` };
@@ -334,8 +334,16 @@ const Bill: React.FC<BillProps> = ({
   const handleRegisterCustomer = async (name: string, isStudentRegister?: boolean, schoolName?: string) => {
     try {
       if (isPromptForExisting && customer) {
-        await updateCustomer(customer.id, { name });
-        setCustomer({ ...customer, name });
+        let note = customer.note || 'REGULAR';
+        if (isStudentRegister) {
+          const digits = customer.phone.replace(/\D/g, '');
+          const hikerNo = `HIKER-${digits.length >= 8 ? digits.slice(-8) : (digits + '87654321').slice(0, 8)}`;
+          note = `STUDENT|${schoolName || ''}|${hikerNo}`;
+        } else if (note.startsWith('STUDENT')) {
+          note = 'REGULAR';
+        }
+        await updateCustomer(customer.id, { name, note });
+        setCustomer({ ...customer, name, note });
       } else {
         const newCust = await registerCustomer(customerPhone, name, isStudentRegister, schoolName);
         setCustomer(newCust);
@@ -366,12 +374,39 @@ const Bill: React.FC<BillProps> = ({
     }
   };
 
+  const handleSaveStudentConversion = async () => {
+    if (!customer) return;
+    try {
+      const digits = customer.phone.replace(/\D/g, '');
+      const hikerNo = `HIKER-${digits.length >= 8 ? digits.slice(-8) : (digits + '87654321').slice(0, 8)}`;
+      const note = `STUDENT|${convertSchoolName.trim()}|${hikerNo}`;
+      
+      await updateCustomer(customer.id, { note });
+      setCustomer({ ...customer, note });
+      setShowConvertStudentModal(false);
+    } catch (err) {
+      console.error("Failed to convert customer to student:", err);
+    }
+  };
+
+  const handleRemoveStudentCategory = async () => {
+    if (!customer) return;
+    try {
+      const note = 'REGULAR';
+      await updateCustomer(customer.id, { note });
+      setCustomer({ ...customer, note });
+      setShowConvertStudentModal(false);
+    } catch (err) {
+      console.error("Failed to remove student category:", err);
+    }
+  };
+
   // Auto-apply or update discount
   React.useEffect(() => {
     const discountItems = orderItems.filter(i => i.id === 'loyalty-discount');
-    const isStudentSubsequent = customer && (customer.note === 'STUDENT' || customer.note?.startsWith('STUDENT|')) && customer.totalOrders > 0;
+    const isStudentCategory = customer && (customer.note === 'STUDENT' || customer.note?.startsWith('STUDENT|'));
     
-    if (isStudentSubsequent && discountItems.length === 0) {
+    if ((isStudentCategory || (customer && customer.totalOrders > 0)) && discountItems.length === 0) {
       const subtotal = orderItems.reduce((acc, i) => acc + (i.id !== 'loyalty-discount' && i.price > 0 ? i.price * i.quantity : 0), 0);
       if (subtotal > 0 && loyaltyDiscount) {
         onAddItem([{
@@ -462,6 +497,32 @@ const Bill: React.FC<BillProps> = ({
                   <span className="text-[10px] font-black text-brand-yellow uppercase tracking-widest animate-in fade-in slide-in-from-right-2 block drop-shadow-sm">
                     {customer.name || 'Anonymous Explorer'} • {tier?.name} Stage • Visit #{customer.totalOrders + 1}
                   </span>
+                  <div className="mt-1 flex items-center justify-end gap-2">
+                    {customer.note === 'STUDENT' || customer.note?.startsWith('STUDENT|') ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const parts = (customer.note || '').split('|');
+                          setConvertSchoolName(parts[1] || '');
+                          setShowConvertStudentModal(true);
+                        }}
+                        className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 transition-all inline-flex items-center gap-1"
+                      >
+                        🎓 Student Category (10% Off)
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConvertSchoolName('');
+                          setShowConvertStudentModal(true);
+                        }}
+                        className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-brand-yellow/20 text-brand-yellow border border-brand-yellow/30 hover:bg-brand-yellow hover:text-brand-brown transition-all inline-flex items-center gap-1 shadow"
+                      >
+                        🎓 Turn into Student Category (10% Off)
+                      </button>
+                    )}
+                  </div>
                   {nextTarget && (
                     <div className="mt-1">
                       <div className="w-28 h-1.5 bg-white/10 rounded-full overflow-hidden ml-auto border border-white/5">
@@ -831,6 +892,86 @@ const Bill: React.FC<BillProps> = ({
         onRegister={handleRegisterCustomer}
         onCancel={() => setShowNewCustomerPrompt(false)}
       />
+
+      {/* Convert to Student Modal */}
+      {showConvertStudentModal && customer && (() => {
+        const isStudentNow = customer.note === 'STUDENT' || customer.note?.startsWith('STUDENT|');
+        const digits = customer.phone.replace(/\D/g, '');
+        const hikerNo = `HIKER-${digits.length >= 8 ? digits.slice(-8) : (digits + '87654321').slice(0, 8)}`;
+        
+        return (
+          <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 backdrop-blur-md p-6 animate-in fade-in duration-200">
+            <div className="bg-zinc-900 border border-white/10 rounded-[2.5rem] p-8 max-w-md w-full shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-1 rounded-full bg-emerald-500"></div>
+              
+              <div className="text-center mb-6">
+                <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-emerald-500/10 mb-3">
+                  <span className="text-2xl">🎓</span>
+                </div>
+                <h3 className="text-xl font-black text-white italic uppercase tracking-tight">
+                  Student <span className="text-emerald-400">Category</span>
+                </h3>
+                <p className="text-zinc-400 text-xs font-bold mt-1">
+                  {customer.name || 'Customer'} ({customer.phone})
+                </p>
+              </div>
+
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-4 mb-6 space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold text-zinc-300">
+                  <span>Student Benefit:</span>
+                  <span className="text-emerald-400 font-black">10% OFF All Orders</span>
+                </div>
+                <div className="flex items-center justify-between text-xs font-bold text-zinc-300">
+                  <span>Hiker Card ID:</span>
+                  <span className="text-white font-mono font-bold text-[11px]">{hikerNo}</span>
+                </div>
+              </div>
+
+              <div className="space-y-4 mb-6">
+                <div>
+                  <label className="text-[10px] font-black uppercase text-zinc-400 tracking-widest block mb-1.5 ml-1">
+                    School / College / Institution Name
+                  </label>
+                  <input
+                    type="text"
+                    value={convertSchoolName}
+                    onChange={(e) => setConvertSchoolName(e.target.value)}
+                    placeholder="e.g. Delhi University, Amity, IIT..."
+                    className="w-full bg-white/10 border border-white/15 rounded-xl p-3.5 text-sm text-white font-bold outline-none focus:border-emerald-400 transition-all placeholder:text-zinc-600"
+                    autoFocus
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                <button
+                  type="button"
+                  onClick={handleSaveStudentConversion}
+                  className="w-full py-4 rounded-xl bg-emerald-500 text-zinc-950 font-black uppercase text-xs tracking-widest shadow-lg hover:bg-emerald-400 active:scale-95 transition-all"
+                >
+                  {isStudentNow ? 'Save Student Profile' : 'Convert & Apply 10% Discount'}
+                </button>
+                {isStudentNow && (
+                  <button
+                    type="button"
+                    onClick={handleRemoveStudentCategory}
+                    className="w-full py-2.5 rounded-xl bg-red-500/20 text-red-400 border border-red-500/30 font-black uppercase text-[10px] tracking-widest hover:bg-red-500/30 active:scale-95 transition-all"
+                  >
+                    Revert to Regular Customer
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowConvertStudentModal(false)}
+                  className="w-full py-2.5 rounded-xl bg-zinc-800 text-zinc-400 font-bold uppercase text-[10px] tracking-widest hover:bg-zinc-700 transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

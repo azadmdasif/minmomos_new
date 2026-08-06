@@ -3316,11 +3316,26 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                                <span className="text-[9px] font-black uppercase tracking-widest">DOB: {getISTDateString(activeCustomer.birthday)}</span>
                              </div>
                           )}
-                          {(activeCustomer.note === 'STUDENT' || activeCustomer.note?.startsWith('STUDENT|')) && (
+                          {(activeCustomer.note === 'STUDENT' || activeCustomer.note?.startsWith('STUDENT|')) ? (
                              <div className="flex items-center gap-2 bg-emerald-500/10 px-4 py-2 rounded-xl border border-emerald-500/20 text-emerald-400">
                                <span className="text-xs">🎓</span>
-                               <span className="text-[9px] font-black uppercase tracking-widest">Student Discount (10% Off Subsequent Orders)</span>
+                               <span className="text-[9px] font-black uppercase tracking-widest">Student Category Active (10% Off Orders)</span>
                              </div>
+                          ) : (
+                             <button
+                               type="button"
+                               onClick={() => {
+                                 setIsEditingProfile(true);
+                                 setEditIsStudent(true);
+                                 const digits = activeCustomer.phone.replace(/\D/g, '');
+                                 const hNo = `HIKER-${digits.length >= 8 ? digits.slice(-8) : (digits + '87654321').slice(0, 8)}`;
+                                 setEditHikerNo(hNo);
+                               }}
+                               className="flex items-center gap-2 bg-brand-yellow/20 px-4 py-2 rounded-xl border border-brand-yellow/30 text-brand-yellow hover:bg-brand-yellow hover:text-brand-brown transition-all shadow"
+                             >
+                               <span className="text-xs">🎓</span>
+                               <span className="text-[9px] font-black uppercase tracking-widest">Convert to Student Category (10% Off)</span>
+                             </button>
                           )}
                           {activeCustomer.note && (
                              <div className="flex items-center gap-2 bg-white/5 px-4 py-2 rounded-xl border border-white/10">

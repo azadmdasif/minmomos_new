@@ -282,9 +282,11 @@ _Thank you for visiting MinMomos!_`;
 
                 {/* Coupon Redemption Area */}
                 {customer && !isHistoryView && !orderItems.some(i => i.id === 'loyalty-discount') && (() => {
+                  const isStudent = customer.note === 'STUDENT' || customer.note?.startsWith('STUDENT|');
                   const count = customer.totalOrders;
                   let loyalty = null;
-                  if (count === 1) loyalty = { percentage: 15, label: '15% Loyalty (2nd Visit)', code: `DISC15-${customer.phone.slice(-4)}` };
+                  if (isStudent) loyalty = { percentage: 10, label: '10% Student Discount', code: `STUDENT10-${customer.phone.slice(-4)}` };
+                  else if (count === 1) loyalty = { percentage: 15, label: '15% Loyalty (2nd Visit)', code: `DISC15-${customer.phone.slice(-4)}` };
                   else if (count === 2) loyalty = { percentage: 10, label: '10% Loyalty (3rd Visit)', code: `DISC10-${customer.phone.slice(-4)}` };
                   else if (count === 3) loyalty = { percentage: 5, label: '5% Loyalty (4th Visit)', code: `DISC5-${customer.phone.slice(-4)}` };
                   
