@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { CameraCapture } from './CameraCapture';
 import { supabase } from '../utils/supabase';
-import { getISTDateString, getISTFullDateTime, getStations, logDailyIncomeToLedger } from '../utils/storage';
+import { getISTDateString, getISTFullDateTime, getStations } from '../utils/storage';
 import { RAW_MATERIALS_LIST } from '../constants';
 import { 
   Camera, 
@@ -691,14 +691,6 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
       closingPhoto: photo || activeRecord.closingPhoto || '',
       status: nextStatus
     });
-
-    // Auto upload daily income to the finance ledger
-    await logDailyIncomeToLedger(
-      activeRecord.date,
-      posSales.cash,
-      posSales.upi,
-      activeRecord.branchName
-    );
 
     // Advance viewStage
     const currentIndex = OP_STAGES.indexOf(viewStage || 'ClosingDone');

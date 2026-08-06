@@ -521,6 +521,25 @@ export async function logDailyIncomeToLedger(
   const legacyKey = `[DailyOperationsIncome: ${dateString}]`;
 
   try {
+    // 0. Ensure an opening balance record exists for this tab_name in finance_ledger
+    const { data: openingData } = await supabase
+      .from('finance_ledger')
+      .select('id')
+      .eq('tab_name', tabName)
+      .eq('is_opening', true)
+      .neq('is_deleted', true)
+      .limit(1);
+
+    if (!openingData || openingData.length === 0) {
+      await supabase.from('finance_ledger').insert({
+        tab_name: tabName,
+        date: dateString,
+        credit_cash: 0,
+        credit_bank: 0,
+        is_opening: true
+      });
+    }
+
     // 1. Delete any existing daily operations income record for this date and branch from the ledger to prevent duplication
     await supabase
       .from('finance_ledger')
@@ -567,23 +586,28 @@ export async function addTodaysRevenueToLedger(targetDateStr?: string): Promise<
   try {
     const dateStr = targetDateStr || getISTDateString();
 
-    // 1. Try querying orders using IST date bounds
+    // Calculate broad date boundaries to handle string formats and UTC/IST timezone shifts
+    const dObj = new Date(dateStr);
+    const prevDateStr = new Date(dObj.getTime() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const nextDateStr = new Date(dObj.getTime() + 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    // 1. Fetch orders in the date window
     let { data: orders, error } = await supabase
       .from('orders')
-      .select('branch_name, total, manual_total, payment_method, date')
-      .gte('date', `${dateStr}T00:00:00+05:30`)
-      .lte('date', `${dateStr}T23:59:59+05:30`)
+      .select('branch_name, total, manual_total, payment_method, date, type')
+      .gte('date', prevDateStr)
+      .lte('date', nextDateStr)
       .is('deletion_info', null);
 
     if (error) {
       console.warn("Date range order query error, attempting fallback fetch:", error);
     }
 
-    // 2. Fallback: Fetch most recent 1000 orders ordered by id desc to avoid Supabase default 1000 row limit on oldest orders
+    // 2. Fallback: Fetch recent 1000 orders if range query returned nothing or errored
     if (!orders || orders.length === 0) {
       const { data: recentOrders, error: recentError } = await supabase
         .from('orders')
-        .select('branch_name, total, manual_total, payment_method, date')
+        .select('branch_name, total, manual_total, payment_method, date, type')
         .is('deletion_info', null)
         .order('id', { ascending: false })
         .limit(1000);
@@ -595,17 +619,19 @@ export async function addTodaysRevenueToLedger(targetDateStr?: string): Promise<
     }
 
     if (!orders || orders.length === 0) {
-      return { success: true, totalCash: 0, totalUpi: 0, branchCount: 0, message: `No orders found in database for ${dateStr}.` };
+      return { success: true, totalCash: 0, totalUpi: 0, branchCount: 0, message: `No non-delivery orders found in database for ${dateStr}.` };
     }
 
     const todaysOrders = orders.filter(o => {
       const rawDate = o.date;
       if (!rawDate) return false;
-      return getISTDateString(rawDate) === dateStr;
+      const isToday = getISTDateString(rawDate) === dateStr;
+      const isDelivery = (o.type || '').toUpperCase() === 'DELIVERY';
+      return isToday && !isDelivery;
     });
 
     if (todaysOrders.length === 0) {
-      return { success: true, totalCash: 0, totalUpi: 0, branchCount: 0, message: `No orders recorded yet for ${dateStr}.` };
+      return { success: true, totalCash: 0, totalUpi: 0, branchCount: 0, message: `No non-delivery orders recorded yet for ${dateStr}.` };
     }
 
     const salesMap = new Map<string, { cash: number; upi: number }>();
@@ -639,7 +665,7 @@ export async function addTodaysRevenueToLedger(targetDateStr?: string): Promise<
       totalCash: grandCash,
       totalUpi: grandUpi,
       branchCount: salesMap.size,
-      message: `Added today's revenue (${dateStr}): Cash ₹${grandCash.toLocaleString('en-IN')}, Card+UPI ₹${grandUpi.toLocaleString('en-IN')}`
+      message: `Added today's in-store revenue (${dateStr}): Cash ₹${grandCash.toLocaleString('en-IN')}, Card+UPI ₹${grandUpi.toLocaleString('en-IN')} (Delivery excluded)`
     };
   } catch (err: any) {
     console.error("Error adding today's revenue to ledger:", err);

@@ -525,16 +525,12 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
       const openingRecord = data.find(r => r.is_opening);
       const transactionRecords = data.filter(r => !r.is_opening);
 
-      if (!openingRecord) {
-        setSheetRows([]);
-        return;
-      }
+      const openingCashVal = openingRecord ? (parseFloat(openingRecord.credit_cash) || 0) : 0;
+      const openingBankVal = openingRecord ? (parseFloat(openingRecord.credit_bank) || 0) : 0;
 
-      const openingCashVal = parseFloat(openingRecord.credit_cash) || 0;
-      const openingBankVal = parseFloat(openingRecord.credit_bank) || 0;
-
+      const defaultDate = `${selectedYear}-${String(MONTHS.indexOf(selectedMonth) + 1).padStart(2, '0')}-01`;
       const openingRow = [
-        openingRecord.date,
+        openingRecord ? openingRecord.date : defaultDate,
         "",
         "Opening Balance",
         "",
@@ -546,8 +542,8 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
         openingCashVal,
         openingBankVal,
         openingCashVal + openingBankVal,
-        openingRecord.id,
-        openingRecord
+        openingRecord ? openingRecord.id : "synth_opening",
+        openingRecord || { is_opening: true, date: defaultDate, credit_cash: 0, credit_bank: 0 }
       ];
       formattedRows.push(openingRow);
 
