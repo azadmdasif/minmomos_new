@@ -2,6 +2,7 @@
 import { CompletedOrder, OrderItem, PaymentMethod, OrderType, OrderStatus, RawMaterial, User, Station, CentralMaterial, MaterialCategory, MenuItem, Size, StockAllocation, Customer } from '../types';
 import { supabase } from './supabase';
 import { RAW_MATERIALS_LIST } from '../constants';
+import { capPaymentHistory, uploadImageIfDataUrl } from './imageStorage';
 
 const AUTH_KEY = 'minmomos-auth-user';
 
@@ -145,11 +146,37 @@ export async function logProcurement(item: any): Promise<void> {
   if (error) throw error;
 }
 
+// Column list for procurement LIST fetches. Deliberately EXCLUDES `payment_history`,
+// a large append-only jsonb blob (up to ~400KB per row) that was the single biggest
+// source of Supabase egress. It is fetched on demand per-row via getProcurementPaymentHistory().
+export const PROCUREMENT_LIST_COLUMNS =
+  'id, item_id, item_name, quantity, unit, total_cost, vendor, date, is_voided, void_reason, is_paid, paid_at, paid_by, payment_notes, payment_mode';
+
+// Fetch the full payment_history for a single procurement, on demand (e.g. when opening
+// the payment modal). Keeps the heavy blob out of list queries.
+export async function getProcurementPaymentHistory(id: string): Promise<any[]> {
+  try {
+    const { data, error } = await supabase
+      .from('procurements')
+      .select('payment_history')
+      .eq('id', id)
+      .single();
+    if (error) {
+      console.error("Error fetching procurement payment history:", error);
+      return [];
+    }
+    return Array.isArray(data?.payment_history) ? data.payment_history : [];
+  } catch (e) {
+    console.error("Error in getProcurementPaymentHistory:", e);
+    return [];
+  }
+}
+
 export async function fetchProcurements(startDate: string, endDate: string): Promise<{ data: any[], error: any }> {
   try {
     const { data, error } = await supabase
       .from('procurements')
-      .select('*')
+      .select(PROCUREMENT_LIST_COLUMNS)
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`)
       .order('date', { ascending: false });
@@ -165,7 +192,7 @@ export async function fetchAllNonVoidedProcurements(): Promise<any[]> {
   try {
     const { data, error } = await supabase
       .from('procurements')
-      .select('*')
+      .select(PROCUREMENT_LIST_COLUMNS)
       .order('date', { ascending: false })
       .limit(300);
     if (error) {
@@ -183,10 +210,10 @@ export async function getFinancialSpending(startDate: string, endDate: string): 
   try {
     const { data, error } = await supabase
       .from('procurements')
-      .select('*')
+      .select(PROCUREMENT_LIST_COLUMNS)
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`);
-    
+
     if (error) {
       console.error("Financial fetch error:", error);
       return [];
@@ -692,6 +719,8 @@ export async function updateProcurementPayment(
   billUrl?: string | null
 ): Promise<void> {
   try {
+    // Bound the audit array so a row can never balloon from repeated edits.
+    const cappedHistory = capPaymentHistory(paymentHistory);
     const { error } = await supabase
       .from('procurements')
       .update({
@@ -700,7 +729,7 @@ export async function updateProcurementPayment(
         paid_by: paidBy,
         payment_notes: paymentNotes,
         payment_mode: paymentMode,
-        payment_history: paymentHistory
+        payment_history: cappedHistory
       })
       .eq('id', id);
 
@@ -785,6 +814,10 @@ export async function bulkPayProcurements(
     const totalSelectedAmount = procs.reduce((sum, p) => sum + (p.total_cost || 0), 0);
     const vendorName = procs[0].vendor || 'Local Market';
 
+    // Upload the bulk bill image to Storage once and reuse the short URL across all rows,
+    // so payment_history never stores a base64 blob.
+    const billImageUrl = await uploadImageIfDataUrl(billUrl, 'procurement-bills/bulk');
+
     for (const proc of procs) {
       const nextHistory = Array.isArray(proc.payment_history) ? [...proc.payment_history] : [];
       nextHistory.push({
@@ -797,7 +830,7 @@ export async function bulkPayProcurements(
         reason: 'Bulk Vendor Payment',
         fund_source: fundSource,
         subcategory: subcategory,
-        bill_image: billUrl || undefined
+        bill_image: billImageUrl || undefined
       });
 
       const { error: updateErr } = await supabase
@@ -808,7 +841,7 @@ export async function bulkPayProcurements(
           paid_by: paidBy,
           payment_notes: paymentNotes,
           payment_mode: paymentMode,
-          payment_history: nextHistory
+          payment_history: capPaymentHistory(nextHistory)
         })
         .eq('id', proc.id);
 
@@ -840,7 +873,7 @@ export async function bulkPayProcurements(
       fundSource,
       paymentNotes,
       ids,
-      billUrl
+      billImageUrl
     );
 
   } catch (err: any) {

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { CameraCapture } from './CameraCapture';
 import { supabase } from '../utils/supabase';
 import { getISTDateString, getISTFullDateTime, getStations } from '../utils/storage';
+import { uploadImageIfDataUrl, uploadImagesIfDataUrl } from '../utils/imageStorage';
 import { RAW_MATERIALS_LIST } from '../constants';
 import { 
   Camera, 
@@ -34,6 +35,39 @@ import html2canvas from 'html2canvas';
 // Unused color normalization utilities removed to prevent lint errors since PDF is now generated via clean offscreen HTML with hex styling
 
 const OP_STAGES: DailyOpStatus[] = ['Arrived', 'AttendanceDone', 'OpeningCashAndInventoryDone', 'Operations', 'ClosingStarted', 'ClosingDone', 'Closed'];
+
+// Column list for daily_operations LIST fetches. Deliberately EXCLUDES the base64 photo columns
+// (opening_photo, closing_photo, opening_sop_photos) which are large and were a major egress source.
+// Photos are hydrated per-record on demand via hydrateRecordPhotos().
+const DAILY_OP_LIST_COLUMNS =
+  'id, date, branch_name, manager_name, status, opening_time, opening_gps, attendance, opening_cash, opening_cash_discrepancy_reason, opening_inventory, opening_sop_checklist, opening_sop_time, events, google_reviews_count, manager_notes, closing_sop_checklist, closing_sop_time, closing_cash, closing_upi, closing_discrepancy_reason, closing_time, created_at';
+
+// Fetch just the (heavy) photo columns for a single record and merge them into it. Used when a
+// record is opened for viewing or continued editing, so list loads stay lightweight.
+async function hydrateRecordPhotos(record: DailyOperationRecord): Promise<DailyOperationRecord> {
+  if (!record?.id) return record;
+  // Already hydrated (e.g. from a local record that still holds its photos)? Skip the fetch.
+  if (record.openingPhoto || record.closingPhoto || (record.openingSopPhotos && record.openingSopPhotos.length > 0)) {
+    return record;
+  }
+  try {
+    const { data } = await supabase
+      .from('daily_operations')
+      .select('opening_photo, closing_photo, opening_sop_photos')
+      .eq('id', record.id)
+      .single();
+    if (!data) return record;
+    return {
+      ...record,
+      openingPhoto: data.opening_photo || '',
+      closingPhoto: data.closing_photo || '',
+      openingSopPhotos: data.opening_sop_photos || [],
+    };
+  } catch (e) {
+    console.warn('Could not hydrate record photos:', e);
+    return record;
+  }
+}
 
 const getNewStatus = (currentStatus: DailyOpStatus, targetStatus: DailyOpStatus): DailyOpStatus => {
   const currentIndex = OP_STAGES.indexOf(currentStatus);
@@ -248,17 +282,20 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
     setIsSyncing(true);
     let records: DailyOperationRecord[] = [];
 
-    // 1. Try fetching from Supabase
+    // 1. Try fetching from Supabase.
+    // NOTE: photo columns (opening_photo, closing_photo, opening_sop_photos) hold base64 images
+    // (~450KB per row) and were a major egress source. They are excluded from this list query
+    // and hydrated on demand only when a specific record is viewed/edited (see hydrateRecordPhotos).
     try {
       const { data, error } = await supabase
         .from('daily_operations')
-        .select('*')
+        .select(DAILY_OP_LIST_COLUMNS)
         .order('date', { ascending: false });
 
       if (error) throw error;
-      
+
       if (data && data.length > 0) {
-        records = data.map(item => ({
+        records = data.map((item: any) => ({
           id: item.id,
           date: item.date,
           branchName: item.branch_name,
@@ -336,7 +373,10 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
       ? null
       : merged.find(r => r.branchName === currentBranch && r.date === todayDate);
     if (active) {
-      setActiveRecord(active);
+      // Hydrate the active record's photos so the in-progress opening/closing editor can
+      // pre-populate any images already captured on another device.
+      const hydratedActive = await hydrateRecordPhotos(active);
+      setActiveRecord(hydratedActive);
     } else {
       setActiveRecord(null);
     }
@@ -399,6 +439,20 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
 
   // Save operational record to local and cloud
   const saveRecord = async (updated: DailyOperationRecord) => {
+    // Move any freshly-captured base64 photos into Storage and keep only their URLs on the record.
+    // Already-uploaded URLs pass through untouched, so this is idempotent across repeated saves.
+    try {
+      const photoFolder = `daily-ops/${updated.branchName}/${updated.date}`;
+      const [openingPhoto, closingPhoto, openingSopPhotos] = await Promise.all([
+        uploadImageIfDataUrl(updated.openingPhoto, photoFolder),
+        uploadImageIfDataUrl(updated.closingPhoto, photoFolder),
+        uploadImagesIfDataUrl(updated.openingSopPhotos, photoFolder),
+      ]);
+      updated = { ...updated, openingPhoto, closingPhoto, openingSopPhotos };
+    } catch (e) {
+      console.warn('Photo upload step failed; falling back to inline images.', e);
+    }
+
     setActiveRecord(updated);
 
     // Save to local storage first
@@ -755,16 +809,18 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
   };
 
   // Generate interactive Report modal
-  const handleTriggerReport = (record: DailyOperationRecord) => {
+  const handleTriggerReport = async (record: DailyOperationRecord) => {
     // Find reference record (same weekday last week)
     const recordDateObj = new Date(record.date);
     const prevWeekDate = new Date(recordDateObj.getTime() - 7 * 24 * 60 * 60 * 1000);
     const prevWeekDateStr = prevWeekDate.toISOString().split('T')[0];
-    
+
     const reference = allRecords.find(r => r.branchName === record.branchName && r.date === prevWeekDateStr && r.status === 'Closed');
     setReportReferenceRecord(reference || null);
-    
-    setViewingRecord(record);
+
+    // Photos are excluded from list loads; fetch them for this record before showing the report.
+    const hydrated = await hydrateRecordPhotos(record);
+    setViewingRecord(hydrated);
     setShowReport(true);
   };
 
@@ -1339,7 +1395,7 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
                         <td className="py-4 text-right">
                           <div className="flex justify-end gap-2">
                             <button 
-                              onClick={() => setViewingRecord(rec)}
+                              onClick={async () => setViewingRecord(await hydrateRecordPhotos(rec))}
                               className="bg-brand-cream border border-brand-stone hover:bg-brand-brown hover:text-white p-2 rounded-lg text-brand-brown transition-all"
                               title="Quick View Details"
                             >
