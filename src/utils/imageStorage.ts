@@ -7,12 +7,18 @@ import { supabase } from './supabase';
 
 export const IMAGE_BUCKET = 'app-images';
 
-// Maximum number of entries to retain in a procurement's payment_history audit array.
-// Prevents unbounded growth from repeated edits. History is oldest-first, so we keep the tail.
-export const MAX_PAYMENT_HISTORY_ENTRIES = 40;
+// payment_history is a PER-PROCUREMENT audit array (payment + edit/unpay events for a single
+// purchase). Numerical entries are tiny (~200 bytes) so we retain the full numerical record —
+// well over a year's worth for any realistic procurement. This cap is only a safety valve
+// against a pathological runaway loop; it is far larger than any legitimate history length,
+// so real numerical audit entries are never dropped. Row bloat was caused by inline base64
+// images, which are now offloaded to Storage (rows keep only a short URL).
+export const MAX_PAYMENT_HISTORY_ENTRIES = 500;
 
 /**
- * Trim a payment_history array to the most recent MAX_PAYMENT_HISTORY_ENTRIES entries.
+ * Safety-valve trim of a payment_history array to the most recent MAX_PAYMENT_HISTORY_ENTRIES
+ * entries. In normal use histories are only a few entries long, so nothing is trimmed and the
+ * complete numerical payment record is preserved.
  */
 export function capPaymentHistory<T>(history: T[] | null | undefined): T[] {
   if (!Array.isArray(history)) return [];
