@@ -948,6 +948,14 @@ export async function voidAllocation(id: string, reason: string, performedBy: st
 
 // --- ORDERING & INVENTORY DEDUCTION ---
 
+// Explicit column set for order history fetches, matching exactly what mapDatabaseOrderToType
+// reads. Replaces `select('*, items:order_items(*)')` so we stop shipping every column of every
+// order + order_item over the wire (the Analytics screen was the dominant egress source).
+export const ORDER_SELECT_WITH_ITEMS =
+  'id, bill_number, type, status, total, date, payment_method, branch_name, customer_phone, ' +
+  'customer_id, manual_total, manual_discount, cashier_id, cashier_name, deletion_info, ' +
+  'items:order_items ( id, order_id, menu_item_id, name, price, cost, quantity, paid_with_coins, coins_price )';
+
 function mapDatabaseOrderToType(o: any): CompletedOrder {
   // Supabase might return items under 'order_items' or 'items' depending on alias/join
   const rawItems = o.order_items || o.items || o.order_item || [];
@@ -1875,7 +1883,7 @@ export async function getOrdersForDateRange(startDate: string, endDate: string):
     
     const { data, error } = await supabase
       .from('orders')
-      .select(`*, items:order_items (*)`)
+      .select(ORDER_SELECT_WITH_ITEMS)
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`)
       .is('deletion_info', null)
@@ -1910,9 +1918,9 @@ export async function getOrdersForDateRange(startDate: string, endDate: string):
 }
 
 export async function getOrderByBillNumber(billNumber: number): Promise<CompletedOrder | null> {
-  const { data } = await supabase
+  const { data }: { data: any } = await supabase
     .from('orders')
-    .select(`*, items:order_items (*)`)
+    .select(ORDER_SELECT_WITH_ITEMS)
     .eq('bill_number', billNumber)
     .maybeSingle();
   
@@ -1942,7 +1950,11 @@ export async function getOrdersByItemName(itemName: string, startDate?: string, 
   // Note: !inner makes it an inner join, filtering orders that have at least one matching item
   let query = supabase
     .from('orders')
-    .select(`*, items:order_items!inner(*)`)
+    .select(
+      'id, bill_number, type, status, total, date, payment_method, branch_name, customer_phone, ' +
+      'customer_id, manual_total, manual_discount, cashier_id, cashier_name, deletion_info, ' +
+      'items:order_items!inner ( id, order_id, menu_item_id, name, price, cost, quantity, paid_with_coins, coins_price )'
+    )
     .is('deletion_info', null);
 
   // Apply each word as an AND ilike filter for better flexibility
@@ -1968,8 +1980,8 @@ export async function getOrdersByItemName(itemName: string, startDate?: string, 
   if (!ordersData) return [];
   
   // Return mapped orders
-  const results = await Promise.all(ordersData.map(async (o) => {
-    // When using !inner filter on joined items, Supabase might only return the MATCHING items 
+  const results = await Promise.all((ordersData as any[]).map(async (o: any) => {
+    // When using !inner filter on joined items, Supabase might only return the MATCHING items
     // in the items array. To ensure the bill shows ALL items, we re-fetch if needed.
     // Or better, we always re-fetch items for these specifically found orders to be 100% sure.
     const { data: fullItems } = await supabase
@@ -2017,7 +2029,7 @@ export async function getDeletedOrdersForDateRange(startDate: string, endDate: s
     
     const { data, error } = await supabase
       .from('orders')
-      .select(`*, items:order_items (*)`)
+      .select(ORDER_SELECT_WITH_ITEMS)
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`)
       .not('deletion_info', 'is', null)
@@ -2644,16 +2656,16 @@ export async function fetchCustomerHistory(phone: string): Promise<CompletedOrde
 
   // Fetch orders matching the normalized phone (last 10 digits) using ilike for robustness
   // This helps catch formats like +91, 0, or just the 10 digits
-  const { data } = await supabase
+  const { data }: { data: any } = await supabase
     .from('orders')
-    .select(`*, items:order_items (*)`)
+    .select(ORDER_SELECT_WITH_ITEMS)
     .ilike('customer_phone', `%${normalized}`)
     .is('deletion_info', null)
     .order('date', { ascending: false });
   
   if (!data) return [];
 
-  const results = await Promise.all(data.map(async (o) => {
+  const results = await Promise.all((data as any[]).map(async (o: any) => {
     if (!o.items || o.items.length === 0) {
        const { data: fallbackItems } = await supabase.from('order_items').select('*').eq('order_id', o.id);
        if (fallbackItems && fallbackItems.length > 0) o.items = fallbackItems;
