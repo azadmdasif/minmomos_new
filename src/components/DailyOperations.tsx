@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { CameraCapture } from './CameraCapture';
 import { supabase } from '../utils/supabase';
 import { getISTDateString, getISTFullDateTime, getStations } from '../utils/storage';
+import { uploadImageIfDataUrl, uploadImagesIfDataUrl } from '../utils/imageStorage';
 import { RAW_MATERIALS_LIST } from '../constants';
 import { 
   Camera, 
@@ -438,6 +439,20 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
 
   // Save operational record to local and cloud
   const saveRecord = async (updated: DailyOperationRecord) => {
+    // Move any freshly-captured base64 photos into Storage and keep only their URLs on the record.
+    // Already-uploaded URLs pass through untouched, so this is idempotent across repeated saves.
+    try {
+      const photoFolder = `daily-ops/${updated.branchName}/${updated.date}`;
+      const [openingPhoto, closingPhoto, openingSopPhotos] = await Promise.all([
+        uploadImageIfDataUrl(updated.openingPhoto, photoFolder),
+        uploadImageIfDataUrl(updated.closingPhoto, photoFolder),
+        uploadImagesIfDataUrl(updated.openingSopPhotos, photoFolder),
+      ]);
+      updated = { ...updated, openingPhoto, closingPhoto, openingSopPhotos };
+    } catch (e) {
+      console.warn('Photo upload step failed; falling back to inline images.', e);
+    }
+
     setActiveRecord(updated);
 
     // Save to local storage first

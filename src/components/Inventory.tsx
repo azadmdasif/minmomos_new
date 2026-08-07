@@ -42,6 +42,7 @@ import {
   mapItemToVendor,
   removeVendorMapping
 } from '../utils/storage';
+import { uploadImageIfDataUrl, migrateLegacyImagesToStorage } from '../utils/imageStorage';
 import { 
   PieChart, 
   Pie, 
@@ -635,6 +636,29 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const handleManualRefresh = useCallback(() => {
     fetchData();
   }, [fetchData]);
+
+  const [isMigratingImages, setIsMigratingImages] = useState(false);
+  const handleMigrateLegacyImages = useCallback(async () => {
+    if (isMigratingImages) return;
+    if (!window.confirm(
+      "This one-time cleanup moves old bill/operation photos that are stored inside the database into cloud Storage, to shrink the database and cut egress. It is safe to run and can be repeated. Continue?"
+    )) return;
+    setIsMigratingImages(true);
+    try {
+      const res = await migrateLegacyImagesToStorage((msg) => console.log('[image-migration]', msg));
+      alert(
+        `Image migration complete.\n\n` +
+        `Procurement rows updated: ${res.procurementRowsMigrated} (${res.procurementImagesMoved} bill images moved)\n` +
+        `Daily-ops rows updated: ${res.dailyOpsRowsMigrated} (${res.dailyOpsImagesMoved} photos moved)\n` +
+        `Failures (kept inline): ${res.failures}`
+      );
+      await fetchData();
+    } catch (e: any) {
+      alert("Image migration failed: " + (e?.message || e));
+    } finally {
+      setIsMigratingImages(false);
+    }
+  }, [isMigratingImages, fetchData]);
 
   useEffect(() => {
     setActiveSubcategory('all');
@@ -1284,6 +1308,10 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     const p = selectedProcurementForPayment;
 
     try {
+      // Upload the captured bill image to Storage once, so payment_history stores a short URL
+      // instead of a ~300KB base64 blob. Falls back to the raw value if upload fails.
+      const billImageUrl = await uploadImageIfDataUrl(capturedBillUrl, `procurement-bills/${p.id}`);
+
       let nextIsPaid = p.is_paid;
       let nextPaidAt = p.paid_at || null;
       let nextPaidBy = p.paid_by || null;
@@ -1330,7 +1358,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           payment_mode: nextPaymentMode,
           reason: paymentActionReason.trim() || 'Initial Payment',
           fund_source: singleFundSource,
-          bill_image: capturedBillUrl || undefined
+          bill_image: billImageUrl || undefined
         };
         nextHistory.push(newHistoryEntry);
       } else if (paymentMode === 'EDIT') {
@@ -1381,7 +1409,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           reason: paymentActionReason.trim(),
           previous_details: prevDetails,
           fund_source: singleFundSource,
-          bill_image: capturedBillUrl || undefined
+          bill_image: billImageUrl || undefined
         };
         nextHistory.push(newHistoryEntry);
       } else if (paymentMode === 'UNPAY') {
@@ -1415,7 +1443,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
         cashAmt,
         upiAmt,
         singleFundSource,
-        capturedBillUrl || null
+        billImageUrl || null
       );
 
       setIsPaymentModalOpen(false);
@@ -1832,6 +1860,16 @@ NOTIFY pgrst, 'reload schema';`}
             <svg className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
             {isLoading ? 'Refreshing…' : 'Refresh'}
           </button>
+          {isAdmin && (
+            <button
+              onClick={handleMigrateLegacyImages}
+              disabled={isMigratingImages}
+              title="One-time: move old base64 bill/operation photos into cloud Storage to shrink the database"
+              className="bg-white border border-brand-stone text-brand-brown/70 px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-sm hover:bg-brand-yellow transition-colors flex items-center gap-2 disabled:opacity-50"
+            >
+              {isMigratingImages ? 'Migrating…' : 'Migrate Images'}
+            </button>
+          )}
           {(isAdmin || user.role === 'STORE_MANAGER') && (
             <div className="bg-white p-1 rounded-2xl border border-brand-stone flex shadow-sm flex-wrap items-center">
               <button onClick={() => setActiveTab('HUB')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'HUB' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Active Stock</button>

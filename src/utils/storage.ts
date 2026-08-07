@@ -2,6 +2,7 @@
 import { CompletedOrder, OrderItem, PaymentMethod, OrderType, OrderStatus, RawMaterial, User, Station, CentralMaterial, MaterialCategory, MenuItem, Size, StockAllocation, Customer } from '../types';
 import { supabase } from './supabase';
 import { RAW_MATERIALS_LIST } from '../constants';
+import { capPaymentHistory, uploadImageIfDataUrl } from './imageStorage';
 
 const AUTH_KEY = 'minmomos-auth-user';
 
@@ -718,6 +719,8 @@ export async function updateProcurementPayment(
   billUrl?: string | null
 ): Promise<void> {
   try {
+    // Bound the audit array so a row can never balloon from repeated edits.
+    const cappedHistory = capPaymentHistory(paymentHistory);
     const { error } = await supabase
       .from('procurements')
       .update({
@@ -726,7 +729,7 @@ export async function updateProcurementPayment(
         paid_by: paidBy,
         payment_notes: paymentNotes,
         payment_mode: paymentMode,
-        payment_history: paymentHistory
+        payment_history: cappedHistory
       })
       .eq('id', id);
 
@@ -811,6 +814,10 @@ export async function bulkPayProcurements(
     const totalSelectedAmount = procs.reduce((sum, p) => sum + (p.total_cost || 0), 0);
     const vendorName = procs[0].vendor || 'Local Market';
 
+    // Upload the bulk bill image to Storage once and reuse the short URL across all rows,
+    // so payment_history never stores a base64 blob.
+    const billImageUrl = await uploadImageIfDataUrl(billUrl, 'procurement-bills/bulk');
+
     for (const proc of procs) {
       const nextHistory = Array.isArray(proc.payment_history) ? [...proc.payment_history] : [];
       nextHistory.push({
@@ -823,7 +830,7 @@ export async function bulkPayProcurements(
         reason: 'Bulk Vendor Payment',
         fund_source: fundSource,
         subcategory: subcategory,
-        bill_image: billUrl || undefined
+        bill_image: billImageUrl || undefined
       });
 
       const { error: updateErr } = await supabase
@@ -834,7 +841,7 @@ export async function bulkPayProcurements(
           paid_by: paidBy,
           payment_notes: paymentNotes,
           payment_mode: paymentMode,
-          payment_history: nextHistory
+          payment_history: capPaymentHistory(nextHistory)
         })
         .eq('id', proc.id);
 
@@ -866,7 +873,7 @@ export async function bulkPayProcurements(
       fundSource,
       paymentNotes,
       ids,
-      billUrl
+      billImageUrl
     );
 
   } catch (err: any) {
