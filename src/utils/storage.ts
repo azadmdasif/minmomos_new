@@ -145,11 +145,37 @@ export async function logProcurement(item: any): Promise<void> {
   if (error) throw error;
 }
 
+// Column list for procurement LIST fetches. Deliberately EXCLUDES `payment_history`,
+// a large append-only jsonb blob (up to ~400KB per row) that was the single biggest
+// source of Supabase egress. It is fetched on demand per-row via getProcurementPaymentHistory().
+export const PROCUREMENT_LIST_COLUMNS =
+  'id, item_id, item_name, quantity, unit, total_cost, vendor, date, is_voided, void_reason, is_paid, paid_at, paid_by, payment_notes, payment_mode';
+
+// Fetch the full payment_history for a single procurement, on demand (e.g. when opening
+// the payment modal). Keeps the heavy blob out of list queries.
+export async function getProcurementPaymentHistory(id: string): Promise<any[]> {
+  try {
+    const { data, error } = await supabase
+      .from('procurements')
+      .select('payment_history')
+      .eq('id', id)
+      .single();
+    if (error) {
+      console.error("Error fetching procurement payment history:", error);
+      return [];
+    }
+    return Array.isArray(data?.payment_history) ? data.payment_history : [];
+  } catch (e) {
+    console.error("Error in getProcurementPaymentHistory:", e);
+    return [];
+  }
+}
+
 export async function fetchProcurements(startDate: string, endDate: string): Promise<{ data: any[], error: any }> {
   try {
     const { data, error } = await supabase
       .from('procurements')
-      .select('*')
+      .select(PROCUREMENT_LIST_COLUMNS)
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`)
       .order('date', { ascending: false });
@@ -165,7 +191,7 @@ export async function fetchAllNonVoidedProcurements(): Promise<any[]> {
   try {
     const { data, error } = await supabase
       .from('procurements')
-      .select('*')
+      .select(PROCUREMENT_LIST_COLUMNS)
       .order('date', { ascending: false })
       .limit(300);
     if (error) {
@@ -183,10 +209,10 @@ export async function getFinancialSpending(startDate: string, endDate: string): 
   try {
     const { data, error } = await supabase
       .from('procurements')
-      .select('*')
+      .select(PROCUREMENT_LIST_COLUMNS)
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`);
-    
+
     if (error) {
       console.error("Financial fetch error:", error);
       return [];

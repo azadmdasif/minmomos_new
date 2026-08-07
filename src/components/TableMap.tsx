@@ -32,7 +32,9 @@ const TableMap: React.FC = () => {
       })
       .subscribe();
 
-    pollIntervalRef.current = window.setInterval(fetchTableStatus, 10000);
+    // Realtime subscription (above) delivers live updates; this poll is only a fallback.
+    // Kept at 60s to minimise egress (was 10s).
+    pollIntervalRef.current = window.setInterval(fetchTableStatus, 60000);
 
     return () => {
       supabase.removeChannel(channel);

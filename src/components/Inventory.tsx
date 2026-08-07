@@ -15,6 +15,7 @@ import {
   raiseRestockRequest, 
   seedStandardInventory,
   fetchProcurements,
+  getProcurementPaymentHistory,
   fetchAllNonVoidedProcurements,
   logProcurement,
   fetchAllocations,
@@ -124,8 +125,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [adjustments, setAdjustments] = useState<any[]>([]);
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
   const [isTableMissing, setIsTableMissing] = useState(false);
-  const pollIntervalRef = useRef<number | null>(null);
-  
+
   const [isRestockModalOpen, setIsRestockModalOpen] = useState(false);
   const [isAllocateModalOpen, setIsAllocateModalOpen] = useState(false);
   const [isAddItemModalOpen, setIsAddItemModalOpen] = useState(false);
@@ -626,11 +626,14 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   }, [isAdmin, selectedStation, user.stationName, startDate, endDate, vendorDatePreset, vendorStartDate, vendorEndDate]);
 
   useEffect(() => {
+    // Load once on mount / when filters change. The previous 15s auto-poll re-downloaded the
+    // entire inventory + all-time procurements dataset repeatedly and was a major egress source.
+    // Refresh is now manual (see the Refresh button in the header) via handleManualRefresh().
     fetchData();
-    pollIntervalRef.current = window.setInterval(() => fetchData(true), 15000);
-    return () => {
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-    };
+  }, [fetchData]);
+
+  const handleManualRefresh = useCallback(() => {
+    fetchData();
   }, [fetchData]);
 
   useEffect(() => {
@@ -1228,13 +1231,21 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     }
   };
 
-  const openPaymentModal = (proc: any, mode: 'PAY' | 'EDIT' | 'UNPAY') => {
-    setSelectedProcurementForPayment(proc);
+  const openPaymentModal = async (proc: any, mode: 'PAY' | 'EDIT' | 'UNPAY') => {
+    // payment_history is intentionally excluded from list fetches (large jsonb blob, egress hog).
+    // Hydrate it on demand for just this procurement before opening the modal.
+    let history = Array.isArray(proc.payment_history) ? proc.payment_history : null;
+    if (history === null) {
+      history = await getProcurementPaymentHistory(proc.id);
+    }
+    const procWithHistory = { ...proc, payment_history: history };
+
+    setSelectedProcurementForPayment(procWithHistory);
     setPaymentMode(mode);
-    
+
     // Find the latest payment event containing a bill_image in history, or default to null
-    const historyWithBill = Array.isArray(proc.payment_history)
-      ? [...proc.payment_history].reverse().find(h => h.bill_image)
+    const historyWithBill = Array.isArray(procWithHistory.payment_history)
+      ? [...procWithHistory.payment_history].reverse().find(h => h.bill_image)
       : null;
     setCapturedBillUrl(historyWithBill?.bill_image || null);
     
@@ -1808,10 +1819,19 @@ NOTIFY pgrst, 'reload schema';`}
       <header className="mb-10 flex flex-col md:flex-row justify-between items-start gap-6">
         <div>
           <h2 className="text-5xl font-black text-brand-brown italic tracking-tighter uppercase">SUPPLY <span className="text-brand-yellow">HUB</span></h2>
-          <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">Real-time Stock & movement Tracking</p>
+          <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest mt-1">Stock & movement Tracking</p>
         </div>
-        
+
         <div className="flex flex-wrap gap-4">
+          <button
+            onClick={handleManualRefresh}
+            disabled={isLoading}
+            title="Reload inventory data"
+            className="bg-white border border-brand-stone text-brand-brown px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-sm hover:bg-brand-yellow transition-colors flex items-center gap-2 disabled:opacity-50"
+          >
+            <svg className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+            {isLoading ? 'Refreshing…' : 'Refresh'}
+          </button>
           {(isAdmin || user.role === 'STORE_MANAGER') && (
             <div className="bg-white p-1 rounded-2xl border border-brand-stone flex shadow-sm flex-wrap items-center">
               <button onClick={() => setActiveTab('HUB')} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'HUB' ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/5'}`}>Active Stock</button>
