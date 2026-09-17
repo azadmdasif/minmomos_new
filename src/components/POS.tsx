@@ -22,7 +22,7 @@ import { CustomOffersModal } from './CustomOffersModal';
 
 
 const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, user }) => {
-  const UPSELL_ITEM_ID = 'item-1778060358624';
+  const SIDE_ADDON_IDS = ['add-fries', 'add-mojito', 'add-popcorn'];
   const [menuItems, setMenuItems] = useState<MenuItemType[]>([]);
   const [sections, setSections] = useState<MenuSection[]>(getLocalMenuSections());
   const [order, setOrder] = useState<OrderItem[]>([]);
@@ -41,9 +41,9 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
   const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
   const [isPrinterConnected, setIsPrinterConnected] = useState(false);
   
-  // Cross-sell state
+  // Cross-sell sides state
   const [showUpsellModal, setShowUpsellModal] = useState(false);
-  const [upsellItem, setUpsellItem] = useState<MenuItemType | undefined>(undefined);
+  const [hasShownSidePrompt, setHasShownSidePrompt] = useState(false);
 
   useEffect(() => {
     const loadData = async () => {
@@ -218,21 +218,18 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
   };
 
   const handleAddItem = useCallback((itemsToAdd: OrderItem[]) => {
-    // Check for upselling opportunity
+    // Check for side upselling opportunity (Add Fries, Add Mojito, Add Chicken Popcorn at ₹39 each)
     const hasQualifyingItem = itemsToAdd.some(item => {
       const menuDetail = menuItems.find(m => m.id === item.menuItemId);
       return menuDetail && (menuDetail.category === 'momo' || menuDetail.category === 'moburg');
     });
 
-    const alreadyInOrder = order.some(item => item.menuItemId === UPSELL_ITEM_ID);
-    const addedInThisBatch = itemsToAdd.some(item => item.menuItemId === UPSELL_ITEM_ID);
+    const hasSideAlready = order.some(item => SIDE_ADDON_IDS.includes(item.menuItemId || item.id));
+    const addingSideNow = itemsToAdd.some(item => SIDE_ADDON_IDS.includes(item.menuItemId || item.id));
 
-    if (hasQualifyingItem && !alreadyInOrder && !addedInThisBatch) {
-      const upsell = menuItems.find(m => m.id === UPSELL_ITEM_ID && !m.is_hidden);
-      if (upsell) {
-        setUpsellItem(upsell);
-        setShowUpsellModal(true);
-      }
+    if (hasQualifyingItem && !hasSideAlready && !addingSideNow && !hasShownSidePrompt) {
+      setHasShownSidePrompt(true);
+      setShowUpsellModal(true);
     }
 
     setOrder((prev) => {
@@ -253,7 +250,7 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
       });
       return newOrder;
     });
-  }, [menuItems, order]);
+  }, [menuItems, order, hasShownSidePrompt]);
 
   const handleUpdateQuantity = (id: string, qty: number) => {
     setOrder(prev => qty <= 0 ? prev.filter(i => i.id !== id) : prev.map(i => i.id === id ? { ...i, quantity: qty } : i));
@@ -272,6 +269,7 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
     setIsMobileCartOpen(false);
     setPendingBillNumber(null);
     setIsSaving(false);
+    setHasShownSidePrompt(false);
   };
 
   const handleConfirmOrder = async (method: PaymentMethod, useBluetooth: boolean = false, manualTotal?: number, manualDiscount?: number) => {
@@ -437,7 +435,7 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
           <Bill 
             orderItems={order} 
             onUpdateQuantity={handleUpdateQuantity} 
-            onClear={() => { setOrder([]); setCustomerPhone(''); }} 
+            onClear={() => { setOrder([]); setCustomerPhone(''); setHasShownSidePrompt(false); }} 
             onPreview={handleFinalize}
             branchName={branchName}
             onAddItem={handleAddItem}
@@ -479,7 +477,7 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
             <Bill 
               orderItems={order} 
               onUpdateQuantity={handleUpdateQuantity} 
-              onClear={() => { setOrder([]); setCustomerPhone(''); setIsMobileCartOpen(false); }} 
+              onClear={() => { setOrder([]); setCustomerPhone(''); setHasShownSidePrompt(false); setIsMobileCartOpen(false); }} 
               onPreview={handleFinalize}
               branchName={branchName}
               onAddItem={handleAddItem}
@@ -517,8 +515,9 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
       <CrossSellModal 
         isOpen={showUpsellModal}
         onClose={() => setShowUpsellModal(false)}
-        upsellItem={upsellItem}
+        currentOrder={order}
         onConfirm={(item) => handleAddItem([item])}
+        onUpdateQuantity={handleUpdateQuantity}
       />
       <CustomOffersModal
         isOpen={isOffersOpen}

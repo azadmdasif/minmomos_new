@@ -631,7 +631,7 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
   // Current selected month & year (for tabs)
   const currentYear = new Date().getFullYear();
   const [selectedMonth, setSelectedMonth] = useState<string>(MONTHS[new Date().getMonth()]);
-  const selectedYear = currentYear;
+  const [selectedYear, setSelectedYear] = useState<number>(currentYear);
 
   // Active tab sheet state
   const activeTabName = `${selectedMonth} ${selectedYear}`;

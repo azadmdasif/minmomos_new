@@ -10,6 +10,10 @@ interface VariantSelectionModalProps {
 }
 
 const formatPrepName = (prep: string) => {
+  if (prep === 'strips') return 'Chicken Strips (3 pc)';
+  if (prep === 'wings') return 'Chicken Wings (3 pc)';
+  if (prep === 'pan-fried') return 'Pan Fried';
+  if (prep === 'peri-peri') return 'Peri Peri';
   return prep.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
 };
 
@@ -18,13 +22,16 @@ const VariantSelectionModal: React.FC<VariantSelectionModalProps> = ({ item, onC
   const [selectedSize, setSelectedSize] = useState<Size>('medium');
   const [quantity, setQuantity] = useState(1);
 
+  const isNoSize = useMemo(() => {
+    if (!item) return false;
+    return item.category === 'combo' || item.category === 'summit-meals' || item.no_sizes === true;
+  }, [item]);
+
   const { isSingleVariant, availablePreps } = useMemo(() => {
     if (!item) return { isSingleVariant: false, availablePreps: [] };
 
-    const prices = new Set<number>();
     const preps: PreparationType[] = [];
-
-    const PREP_ORDER: PreparationType[] = ['steamed', 'fried', 'pan-fried', 'peri-peri', 'normal'];
+    const PREP_ORDER: PreparationType[] = ['steamed', 'fried', 'pan-fried', 'peri-peri', 'tandoori', 'kurkure', 'strips', 'wings', 'normal'];
 
     for (const prep in item.preparations) {
       const prepKey = prep as PreparationType;
@@ -36,7 +43,6 @@ const VariantSelectionModal: React.FC<VariantSelectionModalProps> = ({ item, onC
           const sizeKey = size as Size;
           const price = prepData[sizeKey];
           if (price !== undefined && price !== -1 && price > 0) {
-            prices.add(price);
             hasAnyValidPrice = true;
           }
         }
@@ -46,18 +52,20 @@ const VariantSelectionModal: React.FC<VariantSelectionModalProps> = ({ item, onC
       }
     }
     
+    const uniquePreps = [...new Set(preps)].sort((a, b) => {
+      const indexA = PREP_ORDER.indexOf(a);
+      const indexB = PREP_ORDER.indexOf(b);
+      return (indexA === -1 ? 99 : indexA) - (indexB === -1 ? 99 : indexB);
+    });
+
     return {
-      isSingleVariant: prices.size === 1,
-      availablePreps: [...new Set(preps)].sort((a, b) => {
-        const indexA = PREP_ORDER.indexOf(a);
-        const indexB = PREP_ORDER.indexOf(b);
-        return (indexA === -1 ? 99 : indexA) - (indexB === -1 ? 99 : indexB);
-      })
+      isSingleVariant: uniquePreps.length <= 1 && (isNoSize || false),
+      availablePreps: uniquePreps
     };
-  }, [item]);
+  }, [item, isNoSize]);
 
   const availableSizes = useMemo(() => {
-    if (!item) return [];
+    if (!item || isNoSize) return [];
     const sizes: Size[] = [];
     const SIZE_ORDER: Size[] = ['small', 'medium', 'large'];
     const prepData = item.preparations[selectedPrep];
@@ -75,7 +83,7 @@ const VariantSelectionModal: React.FC<VariantSelectionModalProps> = ({ item, onC
     return sizes.sort((a, b) => {
       return SIZE_ORDER.indexOf(a) - SIZE_ORDER.indexOf(b);
     });
-  }, [item, selectedPrep]);
+  }, [item, selectedPrep, isNoSize]);
 
 
   // Reset state when a new item is selected or prep changes
@@ -133,21 +141,34 @@ const VariantSelectionModal: React.FC<VariantSelectionModalProps> = ({ item, onC
 
   const handleAddItem = () => {
     let name = item.name;
-    // If there are multiple variants, construct a descriptive name
-    if (!isSingleVariant) {
-        const sizeText = selectedSize.charAt(0).toUpperCase() + selectedSize.slice(1);
-        // Only add preparation to the name if there's more than one option
-        if (availablePreps.length > 1) {
-            const prepText = formatPrepName(selectedPrep);
-            name = `${prepText} ${item.name} (${sizeText})`;
+
+    if (isNoSize) {
+      if (availablePreps.length > 1) {
+        const prepText = formatPrepName(selectedPrep);
+        if (selectedPrep === 'strips' || selectedPrep === 'wings' || item.category === 'summit-meals') {
+          name = `${item.name} - ${prepText}`;
+        } else if (selectedPrep === 'normal') {
+          name = item.name;
         } else {
-            // Don't add "Normal" to the name for items like Tandoori
-             name = `${item.name} (${sizeText})`;
+          name = `${prepText} ${item.name}`;
         }
+      }
+    } else if (!isSingleVariant) {
+      const sizeText = selectedSize.charAt(0).toUpperCase() + selectedSize.slice(1);
+      if (availablePreps.length > 1) {
+        const prepText = formatPrepName(selectedPrep);
+        name = `${prepText} ${item.name} (${sizeText})`;
+      } else {
+        name = `${item.name} (${sizeText})`;
+      }
     }
 
+    const orderItemId = isNoSize
+      ? `${item.id}-${selectedPrep}-sale`
+      : (isSingleVariant ? item.id : `${item.id}-${selectedPrep}-${selectedSize}-sale`);
+
     const momoOrderItem: OrderItem = {
-      id: isSingleVariant ? item.id : `${item.id}-${selectedPrep}-${selectedSize}-sale`,
+      id: orderItemId,
       menuItemId: item.id,
       name: name,
       price: currentPrice,
@@ -192,7 +213,9 @@ const VariantSelectionModal: React.FC<VariantSelectionModalProps> = ({ item, onC
             <>
               {availablePreps.length > 1 && (
                 <div className="mb-4">
-                  <h3 className="font-semibold mb-2">Preparation</h3>
+                  <h3 className="font-semibold mb-2">
+                    {selectedPrep === 'strips' || selectedPrep === 'wings' || item.category === 'summit-meals' ? 'Variation' : 'Preparation'}
+                  </h3>
                   <div className="flex gap-2">
                     {availablePreps.map(prep => (
                       <button
@@ -207,20 +230,22 @@ const VariantSelectionModal: React.FC<VariantSelectionModalProps> = ({ item, onC
                 </div>
               )}
 
-              <div className="mb-4">
-                <h3 className="font-semibold mb-2">Size</h3>
-                <div className="flex gap-2">
-                  {availableSizes.map(size => (
-                    <button
-                      key={size}
-                      onClick={() => setSelectedSize(size)}
-                      className={`flex-1 py-2 rounded-lg transition-colors font-semibold ${selectedSize === size ? 'bg-brand-red text-white border border-brand-red' : 'bg-white text-brand-brown border border-brand-brown/30 hover:bg-brand-brown/5'}`}
-                    >
-                      {size.charAt(0).toUpperCase() + size.slice(1)}
-                    </button>
-                  ))}
+              {!isNoSize && availableSizes.length > 0 && (
+                <div className="mb-4">
+                  <h3 className="font-semibold mb-2">Size</h3>
+                  <div className="flex gap-2">
+                    {availableSizes.map(size => (
+                      <button
+                        key={size}
+                        onClick={() => setSelectedSize(size)}
+                        className={`flex-1 py-2 rounded-lg transition-colors font-semibold ${selectedSize === size ? 'bg-brand-red text-white border border-brand-red' : 'bg-white text-brand-brown border border-brand-brown/30 hover:bg-brand-brown/5'}`}
+                      >
+                        {size.charAt(0).toUpperCase() + size.slice(1)}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
             </>
           )}
 

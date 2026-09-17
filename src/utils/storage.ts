@@ -130,11 +130,53 @@ export function setLocalItemHidden(id: string, isHidden: boolean): void {
 export async function fetchMenuItems(): Promise<{ data: MenuItem[], error: any }> {
   const { data, error } = await supabase.from('menu_items').select('*').order('name');
   const localHidden = getLocalHiddenItemIds();
-  const mappedData = data?.map(item => ({
-    ...item,
-    minCoinsPrices: item.min_coins_prices || item.minCoinsPrices || {},
-    is_hidden: item.is_hidden !== undefined ? Boolean(item.is_hidden) : localHidden.has(item.id)
-  })) || [];
+  let mappedData = data?.map(item => {
+    const master = MENU_ITEMS.find(m => m.id === item.id);
+    return {
+      ...item,
+      minCoinsPrices: item.min_coins_prices || item.minCoinsPrices || {},
+      is_hidden: item.is_hidden !== undefined ? Boolean(item.is_hidden) : localHidden.has(item.id),
+      variationRecipes: item.variation_recipes || item.variationRecipes || master?.variationRecipes || {},
+      no_sizes: item.no_sizes !== undefined ? item.no_sizes : (master?.no_sizes || item.category === 'combo' || item.category === 'summit-meals')
+    };
+  }) || [];
+
+  if (mappedData.length === 0) {
+    mappedData = MENU_ITEMS.map(item => ({
+      ...item,
+      is_hidden: localHidden.has(item.id)
+    }));
+  } else {
+    // Ensure essential items (e.g. add-fries, add-mojito, add-popcorn, momo-summit-meal, momo-chicken-meal) are available in menu
+    const existingIds = new Set(mappedData.map(m => m.id));
+    const missingMaster = MENU_ITEMS.filter(m => !existingIds.has(m.id));
+    if (missingMaster.length > 0) {
+      const formattedMissing = missingMaster.map(item => ({
+        ...item,
+        is_hidden: localHidden.has(item.id)
+      }));
+      mappedData = [...mappedData, ...formattedMissing];
+      // Sync missing items to database in background
+      try {
+        supabase.from('menu_items').upsert(missingMaster).then();
+      } catch (syncErr) {
+        console.warn("Background sync of master items:", syncErr);
+      }
+    }
+
+    // Ensure combo items respect no_sizes
+    mappedData = mappedData.map(item => {
+      if (item.category === 'combo' || item.category === 'summit-meals') {
+        return { ...item, no_sizes: true };
+      }
+      if (item.id === 'add-popcorn' && item.name === 'Add Popcorn') {
+        const masterItem = MENU_ITEMS.find(m => m.id === 'add-popcorn');
+        return masterItem ? { ...item, name: masterItem.name, image: masterItem.image } : { ...item, name: 'Add Chicken Popcorn' };
+      }
+      return item;
+    });
+  }
+
   return { data: mappedData, error };
 }
 
@@ -153,14 +195,19 @@ export async function upsertMenuItem(item: MenuItem): Promise<void> {
     costs: item.costs,
     recipe: item.recipe,
     sizeRecipes: item.sizeRecipes,
+    variationRecipes: item.variationRecipes,
+    no_sizes: Boolean(item.no_sizes),
     is_hidden: Boolean(item.is_hidden)
   };
   
   const { error } = await supabase.from('menu_items').upsert(payload);
   if (error) {
-    // If is_hidden column does not exist in the database table yet, retry without is_hidden so it saves smoothly
-    if (error.message?.includes('is_hidden') || error.code === '42703' || error.code === 'PGRST204') {
+    // If specific columns do not exist in the database table yet, retry without optional columns so it saves smoothly
+    if (error.message?.includes('is_hidden') || error.message?.includes('variation') || error.message?.includes('no_sizes') || error.code === '42703' || error.code === 'PGRST204') {
       delete payload.is_hidden;
+      delete payload.no_sizes;
+      delete payload.variationRecipes;
+      delete payload.variation_recipes;
       const { error: retryError } = await supabase.from('menu_items').upsert(payload);
       if (retryError) throw retryError;
     } else {
@@ -199,6 +246,13 @@ export function getLocalMenuSections(): MenuSection[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
+        const existingIds = new Set(parsed.map((s: MenuSection) => s.id));
+        const missingDefaults = DEFAULT_MENU_SECTIONS.filter(d => !existingIds.has(d.id));
+        if (missingDefaults.length > 0) {
+          const merged = [...parsed, ...missingDefaults];
+          setLocalMenuSections(merged);
+          return merged;
+        }
         return parsed;
       }
     }
@@ -229,8 +283,11 @@ export async function fetchMenuSections(): Promise<{ data: MenuSection[], error:
     }
 
     if (data && data.length > 0) {
-      setLocalMenuSections(data);
-      return { data, error: null };
+      const existingIds = new Set(data.map((s: MenuSection) => s.id));
+      const missingDefaults = DEFAULT_MENU_SECTIONS.filter(d => !existingIds.has(d.id));
+      const combined = missingDefaults.length > 0 ? [...data, ...missingDefaults] : data;
+      setLocalMenuSections(combined);
+      return { data: combined, error: null };
     } else {
       // Table is empty, seed defaults
       const local = getLocalMenuSections();
@@ -1182,7 +1239,8 @@ export function resolveItemActiveRecipe(
     .replace(/\b(Free|Gift|Promo|Redeemed|Celebratory|Student Promo|Offer:?|Special)\b/gi, '')
     .replace(/\s*\([^)]*\)/g, '')
     .replace(/\s*\[[^\]]*\]/g, '')
-    .replace(/^(Steamed|Fried|Pan Fried|Pan-Fried|Peri-Peri|Peri peri|Normal)\s+/i, '')
+    .replace(/^(Steamed|Fried|Pan Fried|Pan-Fried|Peri-Peri|Peri peri|Normal|Tandoori|Kurkure)\s+/i, '')
+    .replace(/\s*-\s*(Tandoori|Kurkure|Pan Fried|Pan-Fried|Chicken Strips|Chicken Wings|Strips|Wings).*$/i, '')
     .trim()
     .toLowerCase();
 
@@ -1199,9 +1257,18 @@ export function resolveItemActiveRecipe(
     menuDetail = MENU_ITEMS.find(m => m.id === menuItemId || m.name.toLowerCase() === cleanName || cleanName.includes(m.name.toLowerCase()));
   }
 
-  // 3. Determine portion size
-  let size: Size = 'medium';
+  // 3. Determine variation & portion size
   const nameLower = rawName.toLowerCase();
+  const idLower = rawId.toLowerCase();
+
+  let matchedVariation: string | null = null;
+  if (idLower.includes('tandoori') || nameLower.includes('tandoori')) matchedVariation = 'tandoori';
+  else if (idLower.includes('kurkure') || nameLower.includes('kurkure')) matchedVariation = 'kurkure';
+  else if (idLower.includes('pan-fried') || idLower.includes('pan_fried') || nameLower.includes('pan fried') || nameLower.includes('pan-fried')) matchedVariation = 'pan-fried';
+  else if (idLower.includes('strips') || nameLower.includes('strips')) matchedVariation = 'strips';
+  else if (idLower.includes('wings') || nameLower.includes('wings')) matchedVariation = 'wings';
+
+  let size: Size = 'medium';
   if (nameLower.includes('small') || rawId.includes('small') || rawId === 'gift-campa-cola' || nameLower.includes('campa cola (gift)')) {
     size = 'small';
   } else if (nameLower.includes('large') || rawId.includes('large')) {
@@ -1210,30 +1277,71 @@ export function resolveItemActiveRecipe(
     size = 'medium';
   }
 
-  // 4. Resolve recipe requirements
+  // 4. Resolve recipe requirements (Priority: Variation Recipe -> Size Recipe -> Global Recipe)
   let activeRecipe: RecipeRequirement[] = [];
 
   if (menuDetail) {
-    const sizeRecipe = menuDetail.sizeRecipes?.[size];
-    if (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) {
-      activeRecipe = sizeRecipe;
+    if (matchedVariation && menuDetail.variationRecipes?.[matchedVariation] && Array.isArray(menuDetail.variationRecipes[matchedVariation]) && menuDetail.variationRecipes[matchedVariation]!.length > 0) {
+      activeRecipe = menuDetail.variationRecipes[matchedVariation]!;
     } else {
-      const anySize = (menuDetail.sizeRecipes?.medium?.length ? menuDetail.sizeRecipes.medium : null) ||
-                      (menuDetail.sizeRecipes?.small?.length ? menuDetail.sizeRecipes.small : null) ||
-                      (menuDetail.sizeRecipes?.large?.length ? menuDetail.sizeRecipes.large : null);
-      if (anySize && anySize.length > 0) {
-        activeRecipe = anySize;
+      const sizeRecipe = menuDetail.sizeRecipes?.[size];
+      if (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) {
+        activeRecipe = sizeRecipe;
+      } else {
+        const anySize = (menuDetail.sizeRecipes?.medium?.length ? menuDetail.sizeRecipes.medium : null) ||
+                        (menuDetail.sizeRecipes?.small?.length ? menuDetail.sizeRecipes.small : null) ||
+                        (menuDetail.sizeRecipes?.large?.length ? menuDetail.sizeRecipes.large : null);
+        if (anySize && anySize.length > 0) {
+          activeRecipe = anySize;
+        }
       }
-    }
 
-    if (activeRecipe.length === 0 && menuDetail.recipe && Array.isArray(menuDetail.recipe) && menuDetail.recipe.length > 0) {
-      activeRecipe = menuDetail.recipe;
+      if (activeRecipe.length === 0 && menuDetail.recipe && Array.isArray(menuDetail.recipe) && menuDetail.recipe.length > 0) {
+        activeRecipe = menuDetail.recipe;
+      }
     }
   }
 
   // 5. Fallback recipes for built-in catalog items if no database recipe exists
   if (activeRecipe.length === 0) {
-    if (nameLower.includes('mojito')) {
+    if (nameLower.includes('summit meal') || menuItemId === 'momo-summit-meal') {
+      if (matchedVariation === 'tandoori') {
+        activeRecipe = [
+          { materialId: 'momo-chicken', quantity: 6 },
+          { materialId: 'sauce-tandoori', quantity: 0.05 },
+          { materialId: 'spice-momo-masala', quantity: 0.02 },
+          { materialId: 'pkg-momo-box', quantity: 1 }
+        ];
+      } else if (matchedVariation === 'kurkure') {
+        activeRecipe = [
+          { materialId: 'momo-chicken', quantity: 6 },
+          { materialId: 'momo-kurkure', quantity: 6 },
+          { materialId: 'spice-peri-peri', quantity: 0.02 },
+          { materialId: 'pkg-momo-box', quantity: 1 }
+        ];
+      } else {
+        activeRecipe = [
+          { materialId: 'momo-chicken', quantity: 6 },
+          { materialId: 'pkt-butter', quantity: 0.25 },
+          { materialId: 'sauce-red-chutney', quantity: 0.05 },
+          { materialId: 'pkg-momo-box', quantity: 1 }
+        ];
+      }
+    } else if (nameLower.includes('chicken meal') || menuItemId === 'momo-chicken-meal' || menuItemId === 'summit-chicken-meal') {
+      if (matchedVariation === 'wings') {
+        activeRecipe = [
+          { materialId: 'chicken-wings-raw', quantity: 3 },
+          { materialId: 'pkt-mayo', quantity: 0.05 },
+          { materialId: 'pkg-momo-box', quantity: 1 }
+        ];
+      } else {
+        activeRecipe = [
+          { materialId: 'chicken-strips-raw', quantity: 3 },
+          { materialId: 'pkt-mayo', quantity: 0.05 },
+          { materialId: 'pkg-momo-box', quantity: 1 }
+        ];
+      }
+    } else if (nameLower.includes('mojito')) {
       activeRecipe = [
         { materialId: 'soda-water', quantity: 1 },
         { materialId: 'syrup-mint-mojito', quantity: 0.05 }

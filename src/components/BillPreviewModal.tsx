@@ -6,6 +6,7 @@ import { Send } from 'lucide-react';
 import { OrderItem, PaymentMethod, OrderType, Customer, MenuItem, PreparationType, Size } from '../types';
 import PrintReceipt from './PrintReceipt';
 import { getCustomerByPhone, calculateTotalMinCoins, calculateProgressiveEarned, getTierInfo } from '../utils/storage';
+import { POPUP_SIDE_ADDONS } from '../constants';
 
 interface BillPreviewModalProps {
   isOpen: boolean;
@@ -445,8 +446,56 @@ _Thank you for visiting MinMomos!_`;
                 )}
               </div>
 
+              {/* Quick Add Sides Bar */}
+              {!isHistoryView && (
+                <div className="bg-brand-stone/60 border border-brand-brown/10 rounded-2xl p-3 mt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[9px] font-black uppercase text-brand-brown/70 tracking-wider flex items-center gap-1.5">
+                      <span>⚡</span> Quick Add-On Sides (₹39 each)
+                    </span>
+                    <span className="text-[8px] font-bold text-stone-400">1-tap add to this bill</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {POPUP_SIDE_ADDONS.map(addon => {
+                      const inOrderQty = orderItems.find(i => i.id === addon.id || i.menuItemId === addon.menuItemId)?.quantity || 0;
+                      return (
+                        <button
+                          key={addon.id}
+                          type="button"
+                          id={`quick-add-${addon.id}`}
+                          onClick={() => onAddItem([{
+                            id: addon.id,
+                            menuItemId: addon.menuItemId,
+                            name: addon.name,
+                            price: addon.price,
+                            cost: addon.cost,
+                            quantity: 1
+                          }])}
+                          className={`py-2 px-2.5 rounded-xl bg-white border transition-all text-left flex items-center justify-between group shadow-sm active:scale-95 cursor-pointer ${
+                            inOrderQty > 0 
+                              ? 'border-mountain-green bg-emerald-50/40 ring-1 ring-mountain-green/30' 
+                              : 'border-stone-200 hover:border-mountain-green hover:bg-emerald-50/50'
+                          }`}
+                        >
+                          <div className="truncate flex items-center gap-1">
+                            <span className="text-xs">{addon.icon}</span>
+                            <span className="text-[10px] font-black uppercase text-brand-brown truncate">{addon.name.replace('Add ', '')}</span>
+                            {inOrderQty > 0 && (
+                              <span className="px-1.5 py-0.2 rounded-full bg-mountain-green text-white text-[8px] font-black">
+                                x{inOrderQty}
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] font-black text-mountain-green ml-1 shrink-0">+₹{addon.price}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* Payment Section */}
-              <div className="space-y-2 mt-auto pt-6">
+              <div className="space-y-2 mt-auto pt-4">
                 <div className="border-b border-brand-stone pb-1">
                    <h3 className="text-[9px] font-black uppercase text-stone-400 tracking-widest">Finalization</h3>
                 </div>

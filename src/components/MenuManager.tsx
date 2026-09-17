@@ -15,10 +15,10 @@ import {
 import { MENU_ITEMS, DEFAULT_MENU_SECTIONS } from '../constants';
 import { supabase } from '../utils/supabase';
 
-const PREP_TYPES: PreparationType[] = ['steamed', 'fried', 'normal', 'peri-peri', 'pan-fried'];
+const PREP_TYPES: PreparationType[] = ['steamed', 'fried', 'normal', 'peri-peri', 'pan-fried', 'tandoori', 'kurkure', 'strips', 'wings'];
 const SIZES: Size[] = ['small', 'medium', 'large'];
 
-const POPULAR_EMOJIS = ['♨️', '🍔', '🥗', '🥤', '🍱', '🍰', '🥟', '🍜', '🍟', '🍕', '🍗', '🌶️', '🧋', '☕', '🍦', '🌮', '🍙', '🍩', '🌯', '🥪'];
+const POPULAR_EMOJIS = ['♨️', '🍔', '🥗', '🥤', '🍱', '🏔️', '🍰', '🥟', '🍜', '🍟', '🍕', '🍗', '🌶️', '🧋', '☕', '🍦', '🌮', '🍙', '🍩', '🌯', '🥪'];
 
 const SUPABASE_SQL_SCRIPT = `-- ==========================================================
 -- MENU SECTIONS & DYNAMIC CATEGORIES MIGRATION FOR MINMOMOS
@@ -55,7 +55,8 @@ VALUES
     ('moburg', 'Moburg', '🍔', 2, true),
     ('side', 'Sides', '🥗', 3, true),
     ('drink', 'Drinks', '🥤', 4, true),
-    ('combo', 'Combos', '🍱', 5, true)
+    ('combo', 'Combos', '🍱', 5, true),
+    ('summit-meals', 'Summit Meals', '🏔️', 6, true)
 ON CONFLICT (id) DO UPDATE
 SET 
     name = EXCLUDED.name,
@@ -87,6 +88,10 @@ CREATE INDEX IF NOT EXISTS idx_menu_sections_order ON menu_sections (display_ord
 `;
 
 const formatPrepName = (prep: string) => {
+  if (prep === 'strips') return 'Chicken Strips (3 pc)';
+  if (prep === 'wings') return 'Chicken Wings (3 pc)';
+  if (prep === 'pan-fried') return 'Pan Fried';
+  if (prep === 'peri-peri') return 'Peri Peri';
   return prep.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
 };
 
@@ -176,17 +181,20 @@ const MenuManager: React.FC = () => {
 
   const openAdd = (defaultCategory?: string) => {
     const fallbackCategory = defaultCategory || (sections.length > 0 ? sections[0].id : 'momo');
+    const isNoSizeCategory = fallbackCategory === 'combo' || fallbackCategory === 'summit-meals';
     setEditingItem({
       id: `item-${Date.now()}`,
       name: '',
       image: '',
       category: fallbackCategory,
       is_hidden: false,
+      no_sizes: isNoSizeCategory,
       preparations: { steamed: { small: 0, medium: 0, large: 0 } },
       costs: { steamed: { small: 0, medium: 0, large: 0 } },
       minCoinsPrices: { steamed: { small: 0, medium: 0, large: 0 } },
       recipe: [],
-      sizeRecipes: { small: [], medium: [], large: [] }
+      sizeRecipes: {},
+      variationRecipes: {}
     });
     setIsModalOpen(true);
   };
@@ -420,14 +428,24 @@ const MenuManager: React.FC = () => {
     
     const updatedData = { ...(editingItem[targetField] as any) || {} };
     if (!updatedData[prep]) updatedData[prep] = {};
-    updatedData[prep][size] = numVal;
+    if (editingItem.no_sizes) {
+      SIZES.forEach(s => {
+        updatedData[prep][s] = numVal;
+      });
+    } else {
+      updatedData[prep][size] = numVal;
+    }
 
     setEditingItem({ ...editingItem, [targetField]: updatedData });
   };
 
-  const addRecipeRow = (size?: Size) => {
+  const addRecipeRow = (size?: Size, variationKey?: string) => {
     if (!editingItem) return;
-    if (size) {
+    if (variationKey) {
+      const variationRecipes = { ...(editingItem.variationRecipes || {}) };
+      variationRecipes[variationKey] = [...(variationRecipes[variationKey] || []), { materialId: '', quantity: 1 }];
+      setEditingItem({ ...editingItem, variationRecipes });
+    } else if (size) {
       const sizeRecipes = { ...(editingItem.sizeRecipes || { small: [], medium: [], large: [] }) };
       sizeRecipes[size] = [...(sizeRecipes[size] || []), { materialId: '', quantity: 1 }];
       setEditingItem({ ...editingItem, sizeRecipes });
@@ -438,9 +456,15 @@ const MenuManager: React.FC = () => {
     }
   };
 
-  const updateRecipeRow = (index: number, field: keyof RecipeRequirement, value: string | number, size?: Size) => {
+  const updateRecipeRow = (index: number, field: keyof RecipeRequirement, value: string | number, size?: Size, variationKey?: string) => {
     if (!editingItem) return;
-    if (size) {
+    if (variationKey) {
+      const variationRecipes = { ...(editingItem.variationRecipes || {}) };
+      const currentVarRecipe = [...(variationRecipes[variationKey] || [])];
+      currentVarRecipe[index] = { ...currentVarRecipe[index], [field]: value };
+      variationRecipes[variationKey] = currentVarRecipe;
+      setEditingItem({ ...editingItem, variationRecipes });
+    } else if (size) {
       const sizeRecipes = { ...(editingItem.sizeRecipes || {}) };
       const currentSizeRecipe = [...(sizeRecipes[size] || [])];
       currentSizeRecipe[index] = { ...currentSizeRecipe[index], [field]: value };
@@ -454,9 +478,13 @@ const MenuManager: React.FC = () => {
     }
   };
 
-  const removeRecipeRow = (index: number, size?: Size) => {
+  const removeRecipeRow = (index: number, size?: Size, variationKey?: string) => {
     if (!editingItem) return;
-    if (size) {
+    if (variationKey) {
+      const variationRecipes = { ...(editingItem.variationRecipes || {}) };
+      variationRecipes[variationKey] = (variationRecipes[variationKey] || []).filter((_, i) => i !== index);
+      setEditingItem({ ...editingItem, variationRecipes });
+    } else if (size) {
       const sizeRecipes = { ...(editingItem.sizeRecipes || {}) };
       sizeRecipes[size] = (sizeRecipes[size] || []).filter((_, i) => i !== index);
       setEditingItem({ ...editingItem, sizeRecipes });
@@ -488,8 +516,14 @@ const MenuManager: React.FC = () => {
     );
   }
 
-  const renderRecipeSection = (rows: RecipeRequirement[], size?: Size) => (
+  const renderRecipeSection = (rows: RecipeRequirement[], size?: Size, variationKey?: string) => (
     <div className="grid grid-cols-1 gap-4">
+      {rows.length === 0 && (
+        <div className="text-center py-6 border-2 border-dashed border-brand-stone/40 rounded-2xl">
+          <p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">No ingredients mapped</p>
+          <p className="text-[8px] text-stone-400">Click + Add to attach raw materials</p>
+        </div>
+      )}
       {rows.map((row, idx) => {
         const mat = centralStock.find(m => m.id === row.materialId);
         return (
@@ -497,7 +531,7 @@ const MenuManager: React.FC = () => {
             <select 
               className="w-full bg-transparent text-[10px] font-black outline-none appearance-none cursor-pointer" 
               value={row.materialId} 
-              onChange={e => updateRecipeRow(idx, 'materialId', e.target.value, size)}
+              onChange={e => updateRecipeRow(idx, 'materialId', e.target.value, size, variationKey)}
             >
               <option value="">Select Material...</option>
               {centralStock.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
@@ -506,13 +540,14 @@ const MenuManager: React.FC = () => {
               <div className="flex items-center gap-2">
                 <input 
                   type="number" 
+                  step="any"
                   className="w-16 bg-white rounded-lg p-2 text-center font-black text-[10px]" 
                   value={row.quantity} 
-                  onChange={e => updateRecipeRow(idx, 'quantity', parseFloat(e.target.value) || 0, size)} 
+                  onChange={e => updateRecipeRow(idx, 'quantity', parseFloat(e.target.value) || 0, size, variationKey)} 
                 />
                 <span className="text-[9px] font-black text-brand-brown/30 uppercase tracking-widest">{mat?.unit || 'qty'}</span>
               </div>
-              <button onClick={() => removeRecipeRow(idx, size)} className="text-brand-red p-1.5 hover:bg-red-50 rounded-full transition-all">
+              <button onClick={() => removeRecipeRow(idx, size, variationKey)} className="text-brand-red p-1.5 hover:bg-red-50 rounded-full transition-all">
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
               </button>
             </div>
@@ -724,7 +759,7 @@ const MenuManager: React.FC = () => {
                       <div className="mb-3 px-1">
                         <h3 className="text-sm font-black text-brand-brown leading-tight mb-1 truncate" title={item.name}>{item.name}</h3>
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          {(item.recipe?.length || 0) > 0 || Object.keys(item.sizeRecipes || {}).length > 0 ? (
+                          {(item.recipe?.length || 0) > 0 || Object.keys(item.sizeRecipes || {}).length > 0 || Object.keys(item.variationRecipes || {}).length > 0 ? (
                               <span className="text-[7px] font-bold text-emerald-600 uppercase tracking-widest flex items-center gap-1">
                                 <span className="w-1 h-1 bg-emerald-600 rounded-full animate-pulse" />
                                 Tracked
@@ -878,6 +913,41 @@ const MenuManager: React.FC = () => {
                   </div>
                 </div>
 
+                {/* No Size Variations Control (Combos, Meals) */}
+                <div className="bg-brand-stone/20 p-4 rounded-2xl border border-brand-stone/50 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-black uppercase text-brand-brown tracking-wider block">Single / Flat Price</span>
+                      <span className="text-[8px] text-brand-brown/60 font-semibold block">Disable size variations (Combos & Meals)</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setEditingItem({ ...editingItem, no_sizes: !editingItem.no_sizes })}
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                        editingItem.no_sizes ? 'bg-emerald-600' : 'bg-stone-300'
+                      }`}
+                      title={editingItem.no_sizes ? "No Sizes (Flat Price)" : "Multi-Size Options (S, M, L)"}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                          editingItem.no_sizes ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <div className="text-[8px] font-black uppercase tracking-wider pt-2 border-t border-brand-stone/40 flex items-center justify-between">
+                    {editingItem.no_sizes ? (
+                      <span className="text-emerald-700 flex items-center gap-1">
+                        <span>✓</span> Flat Item (No S / M / L)
+                      </span>
+                    ) : (
+                      <span className="text-brand-brown/60 flex items-center gap-1">
+                        <span>•</span> Supports Small, Medium, Large
+                      </span>
+                    )}
+                  </div>
+                </div>
+
                 <div className="pt-4">
                   <button onClick={handleSave} className="w-full py-6 bg-brand-brown text-brand-yellow rounded-3xl font-black uppercase tracking-widest shadow-2xl hover:scale-105 transition-transform active:scale-95">Update Global Data</button>
                 </div>
@@ -886,7 +956,14 @@ const MenuManager: React.FC = () => {
               <div className="lg:col-span-3 space-y-10">
                 <div className="bg-white rounded-[2.5rem] border-2 border-brand-stone overflow-hidden shadow-sm">
                    <div className="p-6 bg-brand-brown/5 border-b border-brand-stone flex justify-between items-center">
-                      <h4 className="text-[10px] font-black uppercase tracking-widest text-brand-brown">Variant Pricing Matrix</h4>
+                      <div>
+                        <h4 className="text-[10px] font-black uppercase tracking-widest text-brand-brown">Variant Pricing Matrix</h4>
+                        {editingItem.no_sizes && (
+                          <span className="text-[8px] font-bold text-emerald-700 uppercase tracking-wider block mt-0.5">
+                            Flat pricing active (All sizes stay synced)
+                          </span>
+                        )}
+                      </div>
                       <div className="flex gap-2">
                         {PREP_TYPES.map(prep => (
                             <button 
@@ -970,21 +1047,67 @@ const MenuManager: React.FC = () => {
                       </div>
                       <div className="flex gap-2">
                          <button 
-                           onClick={() => setEditingItem({ ...editingItem, sizeRecipes: {} })}
-                           className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${(!editingItem.sizeRecipes || Object.keys(editingItem.sizeRecipes).length === 0) ? 'bg-emerald-600 text-white shadow-lg' : 'bg-brand-stone/20 text-brand-brown/50'}`}
+                           type="button"
+                           onClick={() => setEditingItem({ ...editingItem, sizeRecipes: {}, variationRecipes: {} })}
+                           className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${(!editingItem.variationRecipes || Object.keys(editingItem.variationRecipes).length === 0) && (!editingItem.sizeRecipes || Object.keys(editingItem.sizeRecipes).length === 0) ? 'bg-emerald-600 text-white shadow-lg' : 'bg-brand-stone/20 text-brand-brown/50'}`}
                          >
                            Global
                          </button>
                          <button 
-                           onClick={() => setEditingItem({ ...editingItem, sizeRecipes: { small: [], medium: [], large: [], ...(editingItem.sizeRecipes || {}) } })}
-                           className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${(editingItem.sizeRecipes && Object.keys(editingItem.sizeRecipes).length > 0) ? 'bg-emerald-600 text-white shadow-lg' : 'bg-brand-stone/20 text-brand-brown/50'}`}
+                           type="button"
+                           onClick={() => setEditingItem({ ...editingItem, variationRecipes: {}, sizeRecipes: { small: [], medium: [], large: [], ...(editingItem.sizeRecipes || {}) } })}
+                           className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${(editingItem.sizeRecipes && Object.keys(editingItem.sizeRecipes).length > 0 && (!editingItem.variationRecipes || Object.keys(editingItem.variationRecipes).length === 0)) ? 'bg-emerald-600 text-white shadow-lg' : 'bg-brand-stone/20 text-brand-brown/50'}`}
                          >
                            Per Size
+                         </button>
+                         <button 
+                           type="button"
+                           onClick={() => {
+                             const prepKeys = Object.keys(editingItem.preparations || {});
+                             const initVar: Record<string, RecipeRequirement[]> = {};
+                             const keys = prepKeys.length > 0 ? prepKeys : ['normal'];
+                             keys.forEach(k => {
+                               initVar[k] = editingItem.variationRecipes?.[k] || [];
+                             });
+                             setEditingItem({ ...editingItem, sizeRecipes: {}, variationRecipes: initVar });
+                           }}
+                           className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${(editingItem.variationRecipes && Object.keys(editingItem.variationRecipes).length > 0) ? 'bg-emerald-600 text-white shadow-lg' : 'bg-brand-stone/20 text-brand-brown/50'}`}
+                         >
+                           Per Variation
                          </button>
                       </div>
                    </div>
                    
-                   {(editingItem.sizeRecipes && Object.keys(editingItem.sizeRecipes).length > 0) ? (
+                   {(editingItem.variationRecipes && Object.keys(editingItem.variationRecipes).length > 0) ? (
+                     <div className="space-y-6">
+                       <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-200 flex items-center justify-between text-[10px] font-black text-emerald-800 uppercase tracking-widest">
+                         <span>✨ Dedicated ingredient deduction recipe configured per variation</span>
+                         <span className="text-[9px] text-emerald-600 font-bold">{Object.keys(editingItem.variationRecipes).length} Variations Active</span>
+                       </div>
+                       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                         {(Object.keys(editingItem.preparations || {}).length > 0 ? Object.keys(editingItem.preparations || {}) : Object.keys(editingItem.variationRecipes)).map(varKey => (
+                           <div key={varKey} className="bg-white rounded-[3rem] p-8 border-2 border-brand-stone shadow-sm flex flex-col hover:border-brand-yellow transition-all">
+                             <div className="flex justify-between items-center mb-6">
+                               <div className="flex items-center gap-2">
+                                 <span className="w-2 h-2 bg-brand-yellow rounded-full" />
+                                 <h5 className="text-[10px] font-black uppercase text-brand-brown tracking-widest">{formatPrepName(varKey)} Recipe</h5>
+                               </div>
+                               <button 
+                                 type="button"
+                                 onClick={() => addRecipeRow(undefined, varKey)} 
+                                 className="bg-brand-brown text-brand-yellow px-4 py-2 rounded-full text-[8px] font-black uppercase tracking-widest shadow-md hover:scale-105 active:scale-95 transition-all"
+                               >
+                                 + Add
+                               </button>
+                             </div>
+                             <div className="flex-1">
+                               {renderRecipeSection(editingItem.variationRecipes?.[varKey] || [], undefined, varKey)}
+                             </div>
+                           </div>
+                         ))}
+                       </div>
+                     </div>
+                   ) : (editingItem.sizeRecipes && Object.keys(editingItem.sizeRecipes).length > 0) ? (
                      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                        {SIZES.map(size => (
                          <div key={size} className="bg-white rounded-[3rem] p-8 border-2 border-brand-stone shadow-sm flex flex-col hover:border-brand-yellow transition-all">

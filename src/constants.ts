@@ -6,7 +6,8 @@ export const DEFAULT_MENU_SECTIONS: MenuSection[] = [
   { id: 'moburg', name: 'Moburg', icon: '🍔', display_order: 2, is_active: true },
   { id: 'side', name: 'Sides', icon: '🥗', display_order: 3, is_active: true },
   { id: 'drink', name: 'Drinks', icon: '🥤', display_order: 4, is_active: true },
-  { id: 'combo', name: 'Combos', icon: '🍱', display_order: 5, is_active: true }
+  { id: 'combo', name: 'Combos', icon: '🍱', display_order: 5, is_active: true },
+  { id: 'summit-meals', name: 'Summit Meals', icon: '🏔️', display_order: 6, is_active: true }
 ];
 
 export const SIZE_PIECES: Record<string, number> = {
@@ -63,6 +64,9 @@ export const RAW_MATERIALS_LIST = [
   { id: 'spice-oregano', name: 'Oregano Seasoning', unit: 'pkt', category: 'PACKET' },
   { id: 'spice-chilli-flakes', name: 'Chilli Flakes', unit: 'pkt', category: 'PACKET' },
   { id: 'spice-peri-peri', name: 'Peri Peri Spice Mix', unit: 'pkt', category: 'PACKET' },
+  { id: 'pkt-popcorn', name: 'Chicken Popcorn (Bulk)', unit: 'pkt', category: 'PACKET' },
+  { id: 'chicken-strips-raw', name: 'Chicken Strips (Bulk)', unit: 'pcs', category: 'MOMO' },
+  { id: 'chicken-wings-raw', name: 'Chicken Wings (Bulk)', unit: 'pcs', category: 'MOMO' },
 ];
 
 export const MENU_ITEMS: MenuItem[] = [
@@ -71,13 +75,14 @@ export const MENU_ITEMS: MenuItem[] = [
     name: 'Momomaya Must Try Platter',
     image: 'https://images.picxy.com/cache/2021/5/26/f33738dc75574a81b72c0d8c164b4a77.jpg',
     category: 'combo',
+    no_sizes: true,
     preparations: {
-      normal: { small: 70, medium: 85, large: 100 },
-      'pan-fried': { small: 80, medium: 95, large: 110 },
+      normal: { small: 85, medium: 85, large: 85 },
+      'pan-fried': { small: 95, medium: 95, large: 95 },
     },
     costs: {
-      normal: { small: 28, medium: 34, large: 40 },
-      'pan-fried': { small: 32, medium: 38, large: 44 },
+      normal: { small: 34, medium: 34, large: 34 },
+      'pan-fried': { small: 38, medium: 38, large: 38 },
     },
     recipe: [{ materialId: 'momo-veg', quantity: 1 }] // Default logic
   },
@@ -193,13 +198,14 @@ export const MENU_ITEMS: MenuItem[] = [
     name: 'Cheese Lovers Combo',
     image: 'https://patelcafenrestro.com/wp-content/uploads/2024/08/DM-2024-08-06T163007.734.png',
     category: 'combo',
+    no_sizes: true,
     preparations: {
-      normal: { small: 75, medium: 100, large: 120 },
-      'pan-fried': { small: 85, medium: 110, large: 130 },
+      normal: { small: 110, medium: 110, large: 110 },
+      'pan-fried': { small: 120, medium: 120, large: 120 },
     },
     costs: {
-      normal: { small: 30, medium: 45, large: 60 },
-      'pan-fried': { small: 33, medium: 48, large: 63 },
+      normal: { small: 45, medium: 45, large: 45 },
+      'pan-fried': { small: 48, medium: 48, large: 48 },
     },
     recipe: [{ materialId: 'momo-chicken-cheese', quantity: 1 }]
   },
@@ -272,6 +278,48 @@ export const MENU_ITEMS: MenuItem[] = [
     recipe: [{ materialId: 'pkt-mayo', quantity: 0.1 }] // Linked to bulk pkt
   },
   {
+    id: 'add-fries',
+    name: 'Add Fries',
+    image: 'https://images.unsplash.com/photo-1576107232684-1279f3908594?w=800&auto=format&fit=crop&q=80',
+    category: 'side',
+    preparations: {
+      normal: { small: 39, medium: 39, large: 39 },
+    },
+    costs: {
+      normal: { small: 12, medium: 12, large: 12 },
+    },
+    recipe: [{ materialId: 'pkt-fries', quantity: 0.25 }]
+  },
+  {
+    id: 'add-mojito',
+    name: 'Add Mojito',
+    image: 'https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=800&auto=format&fit=crop&q=80',
+    category: 'side',
+    preparations: {
+      normal: { small: 39, medium: 39, large: 39 },
+    },
+    costs: {
+      normal: { small: 10, medium: 10, large: 10 },
+    },
+    recipe: [
+      { materialId: 'syrup-mint-mojito', quantity: 0.05 },
+      { materialId: 'soda-water', quantity: 1 }
+    ]
+  },
+  {
+    id: 'add-popcorn',
+    name: 'Add Chicken Popcorn',
+    image: 'https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?w=800&auto=format&fit=crop&q=80',
+    category: 'side',
+    preparations: {
+      normal: { small: 39, medium: 39, large: 39 },
+    },
+    costs: {
+      normal: { small: 16, medium: 16, large: 16 },
+    },
+    recipe: [{ materialId: 'pkt-popcorn', quantity: 0.25 }]
+  },
+  {
     id: 'campa-cola',
     name: 'Campa Cola',
     image: 'https://m.media-amazon.com/images/I/71u9v8v-WXL._SL1500_.jpg',
@@ -331,6 +379,72 @@ export const MENU_ITEMS: MenuItem[] = [
       { materialId: 'pkt-oil', quantity: 0.05 },
       { materialId: 'burger-buns', quantity: 1 }
     ]
+  },
+  {
+    id: 'momo-summit-meal',
+    name: 'Momo Summit Meal',
+    image: 'https://images.unsplash.com/photo-1534422298391-e4f8c172dddb?w=800&auto=format&fit=crop&q=80',
+    category: 'summit-meals',
+    no_sizes: true,
+    preparations: {
+      tandoori: { small: 149, medium: 149, large: 149 },
+      kurkure: { small: 149, medium: 149, large: 149 },
+      'pan-fried': { small: 139, medium: 139, large: 139 },
+    },
+    costs: {
+      tandoori: { small: 48, medium: 48, large: 48 },
+      kurkure: { small: 48, medium: 48, large: 48 },
+      'pan-fried': { small: 44, medium: 44, large: 44 },
+    },
+    recipe: [{ materialId: 'momo-chicken', quantity: 6 }],
+    variationRecipes: {
+      tandoori: [
+        { materialId: 'momo-chicken', quantity: 6 },
+        { materialId: 'sauce-tandoori', quantity: 0.05 },
+        { materialId: 'spice-momo-masala', quantity: 0.02 },
+        { materialId: 'pkg-momo-box', quantity: 1 }
+      ],
+      kurkure: [
+        { materialId: 'momo-chicken', quantity: 6 },
+        { materialId: 'momo-kurkure', quantity: 6 },
+        { materialId: 'spice-peri-peri', quantity: 0.02 },
+        { materialId: 'pkg-momo-box', quantity: 1 }
+      ],
+      'pan-fried': [
+        { materialId: 'momo-chicken', quantity: 6 },
+        { materialId: 'pkt-butter', quantity: 0.25 },
+        { materialId: 'sauce-red-chutney', quantity: 0.05 },
+        { materialId: 'pkg-momo-box', quantity: 1 }
+      ]
+    }
+  },
+  {
+    id: 'momo-chicken-meal',
+    name: 'Momo Chicken Meal',
+    image: 'https://images.unsplash.com/photo-1562967914-608f82629710?w=800&auto=format&fit=crop&q=80',
+    category: 'summit-meals',
+    no_sizes: true,
+    preparations: {
+      strips: { small: 169, medium: 169, large: 169 },
+      wings: { small: 169, medium: 169, large: 169 },
+    },
+    costs: {
+      strips: { small: 55, medium: 55, large: 55 },
+      wings: { small: 55, medium: 55, large: 55 },
+    },
+    recipe: [{ materialId: 'chicken-strips-raw', quantity: 3 }],
+    variationRecipes: {
+      strips: [
+        { materialId: 'chicken-strips-raw', quantity: 3 },
+        { materialId: 'pkt-mayo', quantity: 0.05 },
+        { materialId: 'pkg-momo-box', quantity: 1 }
+      ],
+      wings: [
+        { materialId: 'chicken-wings-raw', quantity: 3 },
+        { materialId: 'pkt-mayo', quantity: 0.05 },
+        { materialId: 'pkg-momo-box', quantity: 1 }
+      ]
+    }
   }
 ];
 
@@ -369,3 +483,73 @@ export const GIFT_CAMPA_COLA: OrderItem = {
   cost: 0,
   quantity: 1,
 };
+
+export const ADD_FRIES_ORDER_ITEM: OrderItem = {
+  id: 'add-fries',
+  menuItemId: 'add-fries',
+  name: 'Add Fries',
+  price: 39,
+  cost: 12,
+  quantity: 1,
+};
+
+export const ADD_MOJITO_ORDER_ITEM: OrderItem = {
+  id: 'add-mojito',
+  menuItemId: 'add-mojito',
+  name: 'Add Mojito',
+  price: 39,
+  cost: 10,
+  quantity: 1,
+};
+
+export const ADD_POPCORN_ORDER_ITEM: OrderItem = {
+  id: 'add-popcorn',
+  menuItemId: 'add-popcorn',
+  name: 'Add Chicken Popcorn',
+  price: 39,
+  cost: 16,
+  quantity: 1,
+};
+
+export const POPUP_SIDE_ADDONS: {
+  id: string;
+  menuItemId: string;
+  name: string;
+  price: number;
+  cost: number;
+  icon: string;
+  image: string;
+  tagline: string;
+}[] = [
+  {
+    id: 'add-fries',
+    menuItemId: 'add-fries',
+    name: 'Add Fries',
+    price: 39,
+    cost: 12,
+    icon: '🍟',
+    image: 'https://images.unsplash.com/photo-1576107232684-1279f3908594?w=800&auto=format&fit=crop&q=80',
+    tagline: 'Crispy golden hot salted fries'
+  },
+  {
+    id: 'add-mojito',
+    menuItemId: 'add-mojito',
+    name: 'Add Mojito',
+    price: 39,
+    cost: 10,
+    icon: '🍹',
+    image: 'https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=800&auto=format&fit=crop&q=80',
+    tagline: 'Chilled refreshing mint lime mojito'
+  },
+  {
+    id: 'add-popcorn',
+    menuItemId: 'add-popcorn',
+    name: 'Add Chicken Popcorn',
+    price: 39,
+    cost: 16,
+    icon: '🍗',
+    image: 'https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?w=800&auto=format&fit=crop&q=80',
+    tagline: 'Crispy seasoned bite-sized chicken popcorn'
+  }
+];
+
