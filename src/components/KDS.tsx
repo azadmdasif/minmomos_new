@@ -32,11 +32,10 @@ const KDS: React.FC = () => {
       })
       .subscribe();
 
-    // 2. Polling Fallback. Realtime (above) delivers live updates instantly, so this timer is only
-    // a safety net for missed events. Kept at 60s to minimise egress (was 10s).
+    // 2. Polling Fallback (Every 10 seconds)
     pollIntervalRef.current = window.setInterval(() => {
       fetchPending();
-    }, 60000);
+    }, 10000);
 
     return () => {
       supabase.removeChannel(channel);
