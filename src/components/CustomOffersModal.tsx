@@ -374,7 +374,7 @@ export const CustomOffersModal: React.FC<CustomOffersModalProps> = ({ isOpen, on
               <div className="flex-1 overflow-y-auto space-y-4 pr-1">
                 {offers.map(offer => {
                   const giftMatch = offer.freeItemName ? menuItems.find(m => m.name === offer.freeItemName) : undefined;
-                  const isFallbackImg = !giftMatch?.image;
+                  const isFallbackImg = !giftMatch?.image || !giftMatch.image.trim();
                   const isDiscount = offer.offerType === 'discount';
 
                   return (
@@ -396,7 +396,7 @@ export const CustomOffersModal: React.FC<CustomOffersModalProps> = ({ isOpen, on
                           ) : isFallbackImg ? (
                             <span className="text-lg">🎁</span>
                           ) : (
-                            <img src={giftMatch?.image} alt={offer.freeItemName} className="w-full h-full object-cover" />
+                            <img src={giftMatch!.image.trim()} alt={offer.freeItemName} className="w-full h-full object-cover" />
                           )}
                         </div>
 

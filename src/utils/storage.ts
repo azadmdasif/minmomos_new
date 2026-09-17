@@ -1,8 +1,7 @@
 
-import { CompletedOrder, OrderItem, PaymentMethod, OrderType, OrderStatus, RawMaterial, User, Station, CentralMaterial, MaterialCategory, MenuItem, Size, StockAllocation, Customer } from '../types';
+import { CompletedOrder, OrderItem, PaymentMethod, OrderType, OrderStatus, RawMaterial, User, Station, CentralMaterial, MaterialCategory, MenuItem, MenuSection, Size, StockAllocation, Customer, RecipeRequirement } from '../types';
 import { supabase } from './supabase';
-import { RAW_MATERIALS_LIST } from '../constants';
-import { capPaymentHistory, uploadImageIfDataUrl } from './imageStorage';
+import { RAW_MATERIALS_LIST, MENU_ITEMS, DEFAULT_MENU_SECTIONS } from '../constants';
 
 const AUTH_KEY = 'minmomos-auth-user';
 
@@ -97,17 +96,54 @@ export function getISTISOString(): string {
 
 // --- MENU MANAGEMENT ---
 
+const HIDDEN_MENU_ITEMS_LOCAL_KEY = 'minmomos_hidden_menu_items';
+
+export function getLocalHiddenItemIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(HIDDEN_MENU_ITEMS_LOCAL_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        return new Set(arr);
+      }
+    }
+  } catch (e) {
+    console.error("Error reading hidden menu items cache:", e);
+  }
+  return new Set<string>();
+}
+
+export function setLocalItemHidden(id: string, isHidden: boolean): void {
+  try {
+    const current = getLocalHiddenItemIds();
+    if (isHidden) {
+      current.add(id);
+    } else {
+      current.delete(id);
+    }
+    localStorage.setItem(HIDDEN_MENU_ITEMS_LOCAL_KEY, JSON.stringify(Array.from(current)));
+  } catch (e) {
+    console.error("Error setting hidden menu item cache:", e);
+  }
+}
+
 export async function fetchMenuItems(): Promise<{ data: MenuItem[], error: any }> {
   const { data, error } = await supabase.from('menu_items').select('*').order('name');
+  const localHidden = getLocalHiddenItemIds();
   const mappedData = data?.map(item => ({
     ...item,
-    minCoinsPrices: item.min_coins_prices || item.minCoinsPrices || {}
+    minCoinsPrices: item.min_coins_prices || item.minCoinsPrices || {},
+    is_hidden: item.is_hidden !== undefined ? Boolean(item.is_hidden) : localHidden.has(item.id)
   })) || [];
   return { data: mappedData, error };
 }
 
 export async function upsertMenuItem(item: MenuItem): Promise<void> {
-  const payload = {
+  if (item.id) {
+    setLocalItemHidden(item.id, Boolean(item.is_hidden));
+  }
+
+  const payload: any = {
     id: item.id,
     name: item.name,
     image: item.image,
@@ -116,11 +152,25 @@ export async function upsertMenuItem(item: MenuItem): Promise<void> {
     preparations: item.preparations,
     costs: item.costs,
     recipe: item.recipe,
-    sizeRecipes: item.sizeRecipes 
+    sizeRecipes: item.sizeRecipes,
+    is_hidden: Boolean(item.is_hidden)
   };
   
   const { error } = await supabase.from('menu_items').upsert(payload);
-  if (error) throw error;
+  if (error) {
+    // If is_hidden column does not exist in the database table yet, retry without is_hidden so it saves smoothly
+    if (error.message?.includes('is_hidden') || error.code === '42703' || error.code === 'PGRST204') {
+      delete payload.is_hidden;
+      const { error: retryError } = await supabase.from('menu_items').upsert(payload);
+      if (retryError) throw retryError;
+    } else {
+      throw error;
+    }
+  }
+}
+
+export async function toggleMenuItemHidden(item: MenuItem, isHidden: boolean): Promise<void> {
+  return upsertMenuItem({ ...item, is_hidden: isHidden });
 }
 
 export async function deleteMenuItem(id: string): Promise<void> {
@@ -139,6 +189,122 @@ export async function deleteMenuItem(id: string): Promise<void> {
   }
 }
 
+// --- MENU SECTIONS / CATEGORIES MANAGEMENT ---
+
+const MENU_SECTIONS_LOCAL_KEY = 'minmomos_menu_sections';
+
+export function getLocalMenuSections(): MenuSection[] {
+  try {
+    const raw = localStorage.getItem(MENU_SECTIONS_LOCAL_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.error("Error reading local menu sections:", e);
+  }
+  return DEFAULT_MENU_SECTIONS;
+}
+
+export function setLocalMenuSections(sections: MenuSection[]): void {
+  try {
+    localStorage.setItem(MENU_SECTIONS_LOCAL_KEY, JSON.stringify(sections));
+  } catch (e) {
+    console.error("Error writing local menu sections:", e);
+  }
+}
+
+export async function fetchMenuSections(): Promise<{ data: MenuSection[], error: any }> {
+  try {
+    const { data, error } = await supabase
+      .from('menu_sections')
+      .select('*')
+      .order('display_order', { ascending: true });
+
+    if (error) {
+      console.warn("Notice: Could not fetch from supabase menu_sections table (using local storage fallback):", error.message);
+      return { data: getLocalMenuSections(), error: null };
+    }
+
+    if (data && data.length > 0) {
+      setLocalMenuSections(data);
+      return { data, error: null };
+    } else {
+      // Table is empty, seed defaults
+      const local = getLocalMenuSections();
+      try {
+        await supabase.from('menu_sections').upsert(DEFAULT_MENU_SECTIONS);
+      } catch (seedErr) {
+        console.warn("Could not auto-seed default menu_sections into Supabase:", seedErr);
+      }
+      return { data: local, error: null };
+    }
+  } catch (err: any) {
+    console.warn("Error in fetchMenuSections:", err);
+    return { data: getLocalMenuSections(), error: null };
+  }
+}
+
+export async function upsertMenuSection(section: MenuSection): Promise<void> {
+  const current = getLocalMenuSections();
+  const existingIdx = current.findIndex(s => s.id === section.id);
+  let updated: MenuSection[];
+  if (existingIdx >= 0) {
+    updated = [...current];
+    updated[existingIdx] = { ...updated[existingIdx], ...section };
+  } else {
+    updated = [...current, section];
+  }
+  setLocalMenuSections(updated);
+
+  // Sync to Supabase
+  try {
+    const payload = {
+      id: section.id,
+      name: section.name,
+      icon: section.icon || '🍽️',
+      display_order: section.display_order ?? updated.length,
+      is_active: section.is_active ?? true
+    };
+    const { error } = await supabase.from('menu_sections').upsert(payload);
+    if (error) {
+      console.warn("Supabase upsert menu_sections error (local cache updated successfully):", error.message);
+    }
+  } catch (err) {
+    console.warn("Supabase upsert menu_sections exception:", err);
+  }
+}
+
+export async function deleteMenuSection(id: string): Promise<void> {
+  const current = getLocalMenuSections();
+  const updated = current.filter(s => s.id !== id);
+  setLocalMenuSections(updated);
+
+  try {
+    const { error } = await supabase.from('menu_sections').delete().eq('id', id);
+    if (error) {
+      console.warn("Supabase delete menu_sections error (local cache updated):", error.message);
+    }
+  } catch (err) {
+    console.warn("Supabase delete menu_sections exception:", err);
+  }
+}
+
+export async function reassignItemsCategory(fromCategory: string, toCategory: string): Promise<void> {
+  try {
+    const { data: items } = await fetchMenuItems();
+    const affected = items.filter(i => i.category === fromCategory);
+    for (const item of affected) {
+      await upsertMenuItem({ ...item, category: toCategory });
+    }
+  } catch (err) {
+    console.error("Error reassigning items category:", err);
+    throw err;
+  }
+}
+
 // --- PROCUREMENT ---
 
 export async function logProcurement(item: any): Promise<void> {
@@ -146,37 +312,11 @@ export async function logProcurement(item: any): Promise<void> {
   if (error) throw error;
 }
 
-// Column list for procurement LIST fetches. Deliberately EXCLUDES `payment_history`,
-// a large append-only jsonb blob (up to ~400KB per row) that was the single biggest
-// source of Supabase egress. It is fetched on demand per-row via getProcurementPaymentHistory().
-export const PROCUREMENT_LIST_COLUMNS =
-  'id, item_id, item_name, quantity, unit, total_cost, vendor, date, is_voided, void_reason, is_paid, paid_at, paid_by, payment_notes, payment_mode';
-
-// Fetch the full payment_history for a single procurement, on demand (e.g. when opening
-// the payment modal). Keeps the heavy blob out of list queries.
-export async function getProcurementPaymentHistory(id: string): Promise<any[]> {
-  try {
-    const { data, error } = await supabase
-      .from('procurements')
-      .select('payment_history')
-      .eq('id', id)
-      .single();
-    if (error) {
-      console.error("Error fetching procurement payment history:", error);
-      return [];
-    }
-    return Array.isArray(data?.payment_history) ? data.payment_history : [];
-  } catch (e) {
-    console.error("Error in getProcurementPaymentHistory:", e);
-    return [];
-  }
-}
-
 export async function fetchProcurements(startDate: string, endDate: string): Promise<{ data: any[], error: any }> {
   try {
     const { data, error } = await supabase
       .from('procurements')
-      .select(PROCUREMENT_LIST_COLUMNS)
+      .select('*')
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`)
       .order('date', { ascending: false });
@@ -192,7 +332,7 @@ export async function fetchAllNonVoidedProcurements(): Promise<any[]> {
   try {
     const { data, error } = await supabase
       .from('procurements')
-      .select(PROCUREMENT_LIST_COLUMNS)
+      .select('*')
       .order('date', { ascending: false })
       .limit(300);
     if (error) {
@@ -210,10 +350,10 @@ export async function getFinancialSpending(startDate: string, endDate: string): 
   try {
     const { data, error } = await supabase
       .from('procurements')
-      .select(PROCUREMENT_LIST_COLUMNS)
+      .select('*')
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`);
-
+    
     if (error) {
       console.error("Financial fetch error:", error);
       return [];
@@ -391,14 +531,52 @@ export const getItemSubcategory = (name: string, id: string, category?: string, 
 
 export function mapSubcategoryToDebitCategory(subcat: string): string {
   const s = subcat.toLowerCase().trim();
+  const sClean = s.replace(/[-_]/g, ' ');
+
+  // 1. Check if user configured custom subcategory mappings in Manage Categories & Mappings
+  try {
+    const saved = localStorage.getItem('custom_ledger_categories');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      const mappings: Record<string, string[]> = parsed.mappings || {};
+
+      // Check if explicitly unmapped
+      const unmappedList = mappings['__unmapped__'] || [];
+      const isExplicitlyUnmapped = unmappedList.some((subId: string) => {
+        const sub = subId.toLowerCase().trim();
+        return sub === s || sub.replace(/[-_]/g, ' ') === sClean;
+      });
+      if (isExplicitlyUnmapped) {
+        return 'others';
+      }
+
+      // Check configured ledger categories
+      for (const [ledgerCat, mappedSubcats] of Object.entries(mappings)) {
+        if (ledgerCat !== '__unmapped__' && Array.isArray(mappedSubcats)) {
+          const match = mappedSubcats.some(subId => {
+            const sub = subId.toLowerCase().trim();
+            const subClean = sub.replace(/[-_]/g, ' ');
+            return sub === s || subClean === sClean || (sub === 'others-ingredient' && s === 'others');
+          });
+          if (match) {
+            return ledgerCat;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Error reading custom ledger category mappings:", e);
+  }
+
+  // 2. Built-in defaults
   if (s === 'momo') return 'momo';
   if (s === 'buns') return 'burger buns';
   if (s === 'cola' || s === 'drinks' || s === 'syrups') return 'soft drinks';
   if (s === 'packaging') return 'packaginf'; // exact name in global ledger categories list
   if (s === 'veggies') return 'veggies';
   if (s === 'spices') return 'grocery';
-  if (s === 'oil-butter') return 'grocery';
-  if (s === 'fries') return 'grocery';
+  if (s === 'oil-butter' || s === 'oil butter') return 'grocery';
+  if (s === 'fries' || s === 'french fries') return 'grocery';
   if (s === 'sauces') return 'grocery';
   return 'others';
 }
@@ -719,8 +897,6 @@ export async function updateProcurementPayment(
   billUrl?: string | null
 ): Promise<void> {
   try {
-    // Bound the audit array so a row can never balloon from repeated edits.
-    const cappedHistory = capPaymentHistory(paymentHistory);
     const { error } = await supabase
       .from('procurements')
       .update({
@@ -729,7 +905,7 @@ export async function updateProcurementPayment(
         paid_by: paidBy,
         payment_notes: paymentNotes,
         payment_mode: paymentMode,
-        payment_history: cappedHistory
+        payment_history: paymentHistory
       })
       .eq('id', id);
 
@@ -814,10 +990,6 @@ export async function bulkPayProcurements(
     const totalSelectedAmount = procs.reduce((sum, p) => sum + (p.total_cost || 0), 0);
     const vendorName = procs[0].vendor || 'Local Market';
 
-    // Upload the bulk bill image to Storage once and reuse the short URL across all rows,
-    // so payment_history never stores a base64 blob.
-    const billImageUrl = await uploadImageIfDataUrl(billUrl, 'procurement-bills/bulk');
-
     for (const proc of procs) {
       const nextHistory = Array.isArray(proc.payment_history) ? [...proc.payment_history] : [];
       nextHistory.push({
@@ -830,7 +1002,7 @@ export async function bulkPayProcurements(
         reason: 'Bulk Vendor Payment',
         fund_source: fundSource,
         subcategory: subcategory,
-        bill_image: billImageUrl || undefined
+        bill_image: billUrl || undefined
       });
 
       const { error: updateErr } = await supabase
@@ -841,7 +1013,7 @@ export async function bulkPayProcurements(
           paid_by: paidBy,
           payment_notes: paymentNotes,
           payment_mode: paymentMode,
-          payment_history: capPaymentHistory(nextHistory)
+          payment_history: nextHistory
         })
         .eq('id', proc.id);
 
@@ -873,7 +1045,7 @@ export async function bulkPayProcurements(
       fundSource,
       paymentNotes,
       ids,
-      billImageUrl
+      billUrl
     );
 
   } catch (err: any) {
@@ -948,14 +1120,6 @@ export async function voidAllocation(id: string, reason: string, performedBy: st
 
 // --- ORDERING & INVENTORY DEDUCTION ---
 
-// Explicit column set for order history fetches, matching exactly what mapDatabaseOrderToType
-// reads. Replaces `select('*, items:order_items(*)')` so we stop shipping every column of every
-// order + order_item over the wire (the Analytics screen was the dominant egress source).
-export const ORDER_SELECT_WITH_ITEMS =
-  'id, bill_number, type, status, total, date, payment_method, branch_name, customer_phone, ' +
-  'customer_id, manual_total, manual_discount, cashier_id, cashier_name, deletion_info, ' +
-  'items:order_items ( id, order_id, menu_item_id, name, price, cost, quantity, paid_with_coins, coins_price )';
-
 function mapDatabaseOrderToType(o: any): CompletedOrder {
   // Supabase might return items under 'order_items' or 'items' depending on alias/join
   const rawItems = o.order_items || o.items || o.order_item || [];
@@ -987,6 +1151,131 @@ function mapDatabaseOrderToType(o: any): CompletedOrder {
       coinsPrice: i.coins_price
     }))
   };
+}
+
+export function resolveItemActiveRecipe(
+  item: { name: string; menuItemId?: string; menu_item_id?: string; id?: string; paidWithCoins?: boolean; price?: number },
+  menuItems: MenuItem[]
+): { menuDetail: MenuItem | null; size: Size; activeRecipe: RecipeRequirement[] } {
+  const rawId = item.id || '';
+  const menuItemId = item.menuItemId || item.menu_item_id || '';
+  const rawName = item.name || '';
+  const rawPrice = item.price ?? 0;
+  
+  // 1. Skip pure monetary discount records that contain no physical consumable items
+  if (
+    rawId === 'loyalty-discount' || 
+    rawId === 'welcome-discount' ||
+    rawId.startsWith('promo-discount-') ||
+    rawId.startsWith('custom-discount-') ||
+    (menuItemId === 'discount' && !rawName.toLowerCase().includes('free') && !rawName.toLowerCase().includes('gift') && rawPrice < 0)
+  ) {
+    return { menuDetail: null, size: 'medium', activeRecipe: [] };
+  }
+
+  // 2. Find menu item definition by ID
+  let menuDetail = menuItems?.find(m => m.id === menuItemId);
+
+  // Extract clean base name without leading emojis, tags (Free, Gift, Promo, Redeemed), or prep prefixes
+  const cleanName = rawName
+    .replace(/^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\s]+/gu, '')
+    .replace(/\b(Free|Gift|Promo|Redeemed|Celebratory|Student Promo|Offer:?|Special)\b/gi, '')
+    .replace(/\s*\([^)]*\)/g, '')
+    .replace(/\s*\[[^\]]*\]/g, '')
+    .replace(/^(Steamed|Fried|Pan Fried|Pan-Fried|Peri-Peri|Peri peri|Normal)\s+/i, '')
+    .trim()
+    .toLowerCase();
+
+  // Find menu item definition by clean name
+  if (!menuDetail && cleanName) {
+    menuDetail = menuItems?.find(m => {
+      const mName = m.name.toLowerCase();
+      return mName === cleanName || mName.includes(cleanName) || cleanName.includes(mName);
+    });
+  }
+
+  // Fallback to constants.ts MENU_ITEMS if not found in dynamic menu list
+  if (!menuDetail) {
+    menuDetail = MENU_ITEMS.find(m => m.id === menuItemId || m.name.toLowerCase() === cleanName || cleanName.includes(m.name.toLowerCase()));
+  }
+
+  // 3. Determine portion size
+  let size: Size = 'medium';
+  const nameLower = rawName.toLowerCase();
+  if (nameLower.includes('small') || rawId.includes('small') || rawId === 'gift-campa-cola' || nameLower.includes('campa cola (gift)')) {
+    size = 'small';
+  } else if (nameLower.includes('large') || rawId.includes('large')) {
+    size = 'large';
+  } else {
+    size = 'medium';
+  }
+
+  // 4. Resolve recipe requirements
+  let activeRecipe: RecipeRequirement[] = [];
+
+  if (menuDetail) {
+    const sizeRecipe = menuDetail.sizeRecipes?.[size];
+    if (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) {
+      activeRecipe = sizeRecipe;
+    } else {
+      const anySize = (menuDetail.sizeRecipes?.medium?.length ? menuDetail.sizeRecipes.medium : null) ||
+                      (menuDetail.sizeRecipes?.small?.length ? menuDetail.sizeRecipes.small : null) ||
+                      (menuDetail.sizeRecipes?.large?.length ? menuDetail.sizeRecipes.large : null);
+      if (anySize && anySize.length > 0) {
+        activeRecipe = anySize;
+      }
+    }
+
+    if (activeRecipe.length === 0 && menuDetail.recipe && Array.isArray(menuDetail.recipe) && menuDetail.recipe.length > 0) {
+      activeRecipe = menuDetail.recipe;
+    }
+  }
+
+  // 5. Fallback recipes for built-in catalog items if no database recipe exists
+  if (activeRecipe.length === 0) {
+    if (nameLower.includes('mojito')) {
+      activeRecipe = [
+        { materialId: 'soda-water', quantity: 1 },
+        { materialId: 'syrup-mint-mojito', quantity: 0.05 }
+      ];
+    } else if (nameLower.includes('campa cola') || menuItemId === 'campa-cola' || rawId === 'gift-campa-cola') {
+      activeRecipe = [{ materialId: 'campa-cola-small', quantity: 1 }];
+    } else if (nameLower.includes('fries') || menuItemId === 'fries') {
+      activeRecipe = [{ materialId: 'pkt-fries', quantity: 0.25 }];
+    } else if (nameLower.includes('mayo') || menuItemId === 'tandoori-mayonnaise') {
+      activeRecipe = [{ materialId: 'pkt-mayo', quantity: 0.1 }];
+    } else if (nameLower.includes('moburg') || menuItemId === 'classic-moburg') {
+      activeRecipe = [
+        { materialId: 'momo-veg', quantity: 1 },
+        { materialId: 'burger-buns', quantity: 1 }
+      ];
+    } else if (nameLower.includes('chicken cheese') || nameLower.includes('cheese lava')) {
+      const qty = size === 'small' ? 4 : size === 'large' ? 8 : 6;
+      activeRecipe = [{ materialId: 'momo-chicken-cheese', quantity: qty }];
+    } else if (nameLower.includes('corn cheese')) {
+      const qty = size === 'small' ? 4 : size === 'large' ? 8 : 6;
+      activeRecipe = [{ materialId: 'momo-corn-cheese', quantity: qty }];
+    } else if (nameLower.includes('chicken')) {
+      const qty = size === 'small' ? 4 : size === 'large' ? 8 : 6;
+      activeRecipe = [{ materialId: 'momo-chicken', quantity: qty }];
+    } else if (nameLower.includes('paneer')) {
+      const qty = size === 'small' ? 4 : size === 'large' ? 8 : 6;
+      activeRecipe = [{ materialId: 'momo-paneer', quantity: qty }];
+    } else if (nameLower.includes('veg') || nameLower.includes('platter')) {
+      const qty = size === 'small' ? 4 : size === 'large' ? 8 : 6;
+      activeRecipe = [{ materialId: 'momo-veg', quantity: qty }];
+    }
+  }
+
+  // Ensure all requirements point to valid material IDs
+  activeRecipe = activeRecipe.map(req => {
+    if (req.materialId === 'campa-cola-medium' || req.materialId === 'campa-cola-large') {
+      return { ...req, materialId: 'campa-cola-small' };
+    }
+    return req;
+  }).filter(req => req.materialId && req.quantity > 0);
+
+  return { menuDetail: menuDetail || null, size, activeRecipe };
 }
 
 export async function saveOrder(
@@ -1080,8 +1369,7 @@ export async function saveOrder(
       };
       
       if (item.menuItemId && 
-          !item.menuItemId.includes('discount') && 
-          !item.menuItemId.includes('promo') &&
+          item.menuItemId !== 'discount' && 
           item.menuItemId !== 'registration') {
         row.menu_item_id = item.menuItemId;
       }
@@ -1114,35 +1402,10 @@ export async function saveOrder(
     }
 
     const { data: menuItems } = await fetchMenuItems();
+    const availableMenuItems = menuItems || [];
 
     for (const item of orderItems) {
-      if (!item.menuItemId || item.menuItemId === 'discount') continue;
-
-      let menuDetail = menuItems?.find(m => m.id === item.menuItemId);
-      if (!menuDetail) {
-        // Robust Fallback: Try matching by name if item.menuItemId doesn't map directly
-        const baseName = item.name.replace(/^(Steamed|Fried|Pan Fried|Pan-Fried|Peri-Peri|Peri peri|Normal)\s+/i, '').split(' (')[0].trim();
-        menuDetail = menuItems?.find(m => m.name.toLowerCase() === baseName.toLowerCase() || m.name.toLowerCase() === item.name.toLowerCase());
-      }
-
-      if (!menuDetail) {
-        console.warn(`Deduction Skip: Menu item details not found for ID: ${item.menuItemId} (Name: ${item.name})`);
-        continue;
-      }
-
-      // Determine size robustly from name suffix
-      let size: Size = 'medium';
-      const nameLower = item.name.toLowerCase();
-      if (nameLower.includes('(small)') || nameLower.includes('small') || item.id === 'gift-campa-cola' || nameLower.includes('campa cola (gift)')) size = 'small';
-      else if (nameLower.includes('(large)') || nameLower.includes('large')) size = 'large';
-      else if (nameLower.includes('(medium)') || nameLower.includes('medium')) size = 'medium';
-
-      // Only deduct the stock based on size specific recipe for each item as specified by menu.
-      const sizeRecipe = menuDetail.sizeRecipes?.[size];
-      let activeRecipe = (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) ? sizeRecipe : [];
-      if (activeRecipe.length === 0 && menuDetail.recipe && Array.isArray(menuDetail.recipe) && menuDetail.recipe.length > 0) {
-        activeRecipe = menuDetail.recipe;
-      }
+      const { menuDetail, size, activeRecipe } = resolveItemActiveRecipe(item, availableMenuItems);
       
       if (activeRecipe.length > 0) {
         for (const requirement of activeRecipe) {
@@ -1216,8 +1479,8 @@ export async function saveOrder(
             }
           }
         }
-      } else {
-        console.info(`No size-specific recipe defined for item: ${menuDetail.name} (Size: ${size}). Stock not deducted.`);
+      } else if (menuDetail) {
+        console.info(`No recipe defined for item: ${menuDetail.name} (Size: ${size}). Stock not deducted.`);
       }
     }
 
@@ -1883,7 +2146,7 @@ export async function getOrdersForDateRange(startDate: string, endDate: string):
     
     const { data, error } = await supabase
       .from('orders')
-      .select(ORDER_SELECT_WITH_ITEMS)
+      .select(`*, items:order_items (*)`)
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`)
       .is('deletion_info', null)
@@ -1918,9 +2181,9 @@ export async function getOrdersForDateRange(startDate: string, endDate: string):
 }
 
 export async function getOrderByBillNumber(billNumber: number): Promise<CompletedOrder | null> {
-  const { data }: { data: any } = await supabase
+  const { data } = await supabase
     .from('orders')
-    .select(ORDER_SELECT_WITH_ITEMS)
+    .select(`*, items:order_items (*)`)
     .eq('bill_number', billNumber)
     .maybeSingle();
   
@@ -1950,11 +2213,7 @@ export async function getOrdersByItemName(itemName: string, startDate?: string, 
   // Note: !inner makes it an inner join, filtering orders that have at least one matching item
   let query = supabase
     .from('orders')
-    .select(
-      'id, bill_number, type, status, total, date, payment_method, branch_name, customer_phone, ' +
-      'customer_id, manual_total, manual_discount, cashier_id, cashier_name, deletion_info, ' +
-      'items:order_items!inner ( id, order_id, menu_item_id, name, price, cost, quantity, paid_with_coins, coins_price )'
-    )
+    .select(`*, items:order_items!inner(*)`)
     .is('deletion_info', null);
 
   // Apply each word as an AND ilike filter for better flexibility
@@ -1980,8 +2239,8 @@ export async function getOrdersByItemName(itemName: string, startDate?: string, 
   if (!ordersData) return [];
   
   // Return mapped orders
-  const results = await Promise.all((ordersData as any[]).map(async (o: any) => {
-    // When using !inner filter on joined items, Supabase might only return the MATCHING items
+  const results = await Promise.all(ordersData.map(async (o) => {
+    // When using !inner filter on joined items, Supabase might only return the MATCHING items 
     // in the items array. To ensure the bill shows ALL items, we re-fetch if needed.
     // Or better, we always re-fetch items for these specifically found orders to be 100% sure.
     const { data: fullItems } = await supabase
@@ -2029,7 +2288,7 @@ export async function getDeletedOrdersForDateRange(startDate: string, endDate: s
     
     const { data, error } = await supabase
       .from('orders')
-      .select(ORDER_SELECT_WITH_ITEMS)
+      .select(`*, items:order_items (*)`)
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`)
       .not('deletion_info', 'is', null)
@@ -2095,33 +2354,18 @@ export async function deleteOrderByBillNumber(billNumber: number, reason: string
     // REVERSE STOCK DEDUCTION
     try {
       const { data: menuItems } = await fetchMenuItems();
+      const availableMenuItems = menuItems || [];
       const branchName = order.branch_name;
 
       for (const item of (order.order_items as any[] || [])) {
-        // 2. Handle Regular Recipe Reversal
-        let menuDetail = menuItems?.find(m => m.id === item.menu_item_id);
-        
-        // Robust Fallback: If menu_item_id is null, try matching by name
-        if (!menuDetail) {
-          const baseName = item.name.replace(/^(Steamed|Fried|Pan Fried|Pan-Fried|Peri-Peri|Peri peri|Normal)\s+/i, '').split(' (')[0].trim();
-          menuDetail = menuItems?.find(m => m.name.toLowerCase() === baseName.toLowerCase() || m.name.toLowerCase() === item.name.toLowerCase());
-        }
-
-        if (!menuDetail) continue;
-
-        // Determine size robustly from name suffix
-        let size: Size = 'medium';
-        const nameLower = item.name.toLowerCase();
-        if (nameLower.includes('(small)') || nameLower.includes('small') || item.id === 'gift-campa-cola' || nameLower.includes('campa cola (gift)')) size = 'small';
-        else if (nameLower.includes('(large)') || nameLower.includes('large')) size = 'large';
-        else if (nameLower.includes('(medium)') || nameLower.includes('medium')) size = 'medium';
-
-        // Only reverse size-specific recipes as specified by menu
-        const sizeRecipe = menuDetail.sizeRecipes?.[size];
-        let activeRecipe = (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) ? sizeRecipe : [];
-        if (activeRecipe.length === 0 && menuDetail.recipe && Array.isArray(menuDetail.recipe) && menuDetail.recipe.length > 0) {
-          activeRecipe = menuDetail.recipe;
-        }
+        const { activeRecipe } = resolveItemActiveRecipe({
+          id: item.id,
+          name: item.name,
+          menuItemId: item.menu_item_id,
+          menu_item_id: item.menu_item_id,
+          paidWithCoins: item.paid_with_coins,
+          price: item.price
+        }, availableMenuItems);
         
         if (activeRecipe.length > 0) {
           for (const requirement of activeRecipe) {
@@ -2656,16 +2900,16 @@ export async function fetchCustomerHistory(phone: string): Promise<CompletedOrde
 
   // Fetch orders matching the normalized phone (last 10 digits) using ilike for robustness
   // This helps catch formats like +91, 0, or just the 10 digits
-  const { data }: { data: any } = await supabase
+  const { data } = await supabase
     .from('orders')
-    .select(ORDER_SELECT_WITH_ITEMS)
+    .select(`*, items:order_items (*)`)
     .ilike('customer_phone', `%${normalized}`)
     .is('deletion_info', null)
     .order('date', { ascending: false });
   
   if (!data) return [];
 
-  const results = await Promise.all((data as any[]).map(async (o: any) => {
+  const results = await Promise.all(data.map(async (o) => {
     if (!o.items || o.items.length === 0) {
        const { data: fallbackItems } = await supabase.from('order_items').select('*').eq('order_id', o.id);
        if (fallbackItems && fallbackItems.length > 0) o.items = fallbackItems;

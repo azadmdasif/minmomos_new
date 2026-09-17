@@ -1,12 +1,12 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { MenuItem as MenuItemType, OrderItem, OrderType, PaymentMethod, User as UserType } from '../types';
+import { MenuItem as MenuItemType, OrderItem, OrderType, PaymentMethod, User as UserType, MenuSection } from '../types';
 import Menu from './Menu';
 import Bill from './Bill';
 import VariantSelectionModal from './VariantSelectionModal';
 import BillPreviewModal from './BillPreviewModal';
 import CrossSellModal from './CrossSellModal';
-import { saveOrder, peekNextBillNumber, fetchMenuItems } from '../utils/storage';
+import { saveOrder, peekNextBillNumber, fetchMenuItems, fetchMenuSections, getLocalMenuSections } from '../utils/storage';
 import { 
   useCouponForCustomer, 
   syncFreeItemClaimsFromSupabaseForCustomer, 
@@ -21,19 +21,15 @@ import { printerService } from '../utils/bluetoothPrinter';
 import { CustomOffersModal } from './CustomOffersModal';
 
 
-const CATEGORIES = [
-  { id: 'momo', label: 'Momos', icon: '♨️' },
-  { id: 'moburg', label: 'Moburg', icon: '🍔' },
-  { id: 'side', label: 'Sides', icon: '🥗' },
-  { id: 'drink', label: 'Drinks', icon: '🥤' },
-  { id: 'combo', label: 'Combos', icon: '🍱' }
-];
-
 const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, user }) => {
   const UPSELL_ITEM_ID = 'item-1778060358624';
   const [menuItems, setMenuItems] = useState<MenuItemType[]>([]);
+  const [sections, setSections] = useState<MenuSection[]>(getLocalMenuSections());
   const [order, setOrder] = useState<OrderItem[]>([]);
-  const [activeCategory, setActiveCategory] = useState<string>('momo');
+  const [activeCategory, setActiveCategory] = useState<string>(() => {
+    const local = getLocalMenuSections();
+    return local[0]?.id || 'momo';
+  });
   const [selectedItem, setSelectedItem] = useState<MenuItemType | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isOffersOpen, setIsOffersOpen] = useState(false);
@@ -51,12 +47,20 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
 
   useEffect(() => {
     const loadData = async () => {
-      const [mResponse] = await Promise.all([
-        fetchMenuItems()
+      const [mResponse, sResponse] = await Promise.all([
+        fetchMenuItems(),
+        fetchMenuSections()
       ]);
       
       if (mResponse.data) {
         setMenuItems(mResponse.data);
+      }
+      if (sResponse.data && sResponse.data.length > 0) {
+        setSections(sResponse.data);
+        setActiveCategory(prev => {
+          const exists = sResponse.data.some(s => s.id === prev);
+          return exists ? prev : (sResponse.data[0]?.id || 'momo');
+        });
       }
     };
     loadData();
@@ -224,7 +228,7 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
     const addedInThisBatch = itemsToAdd.some(item => item.menuItemId === UPSELL_ITEM_ID);
 
     if (hasQualifyingItem && !alreadyInOrder && !addedInThisBatch) {
-      const upsell = menuItems.find(m => m.id === UPSELL_ITEM_ID);
+      const upsell = menuItems.find(m => m.id === UPSELL_ITEM_ID && !m.is_hidden);
       if (upsell) {
         setUpsellItem(upsell);
         setShowUpsellModal(true);
@@ -353,6 +357,7 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
   };
 
   const filteredItems = menuItems.filter(item => {
+    if (item.is_hidden) return false;
     if (item.category !== activeCategory) return false;
     
     // Check if any variant has a price > 0
@@ -366,7 +371,7 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
       {/* Category Picker */}
       <div className="w-full lg:w-32 bg-white border-b lg:border-r border-stone-200 flex lg:flex-col p-3 gap-3 shadow-sm z-10 overflow-x-auto lg:overflow-visible no-scrollbar">
         <div className="hidden lg:block text-[10px] font-black uppercase text-stone-400 tracking-widest text-center mb-2">Menu</div>
-        {CATEGORIES.map(cat => (
+        {sections.filter(s => s.is_active !== false).map(cat => (
           <button
             key={cat.id}
             onClick={() => setActiveCategory(cat.id)}
@@ -374,8 +379,8 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
               activeCategory === cat.id ? 'bg-brand-yellow border-brand-yellow text-brand-brown shadow-lg' : 'bg-white border-stone-100 text-stone-400 hover:border-brand-yellow/30'
             }`}
           >
-            <span className="text-lg lg:text-xl mb-1">{cat.icon}</span>
-            <span className="text-[8px] lg:text-[9px] font-black uppercase tracking-tighter text-center leading-none">{cat.label}</span>
+            <span className="text-lg lg:text-xl mb-1">{cat.icon || '🍽️'}</span>
+            <span className="text-[8px] lg:text-[9px] font-black uppercase tracking-tighter text-center leading-none truncate max-w-full px-1">{cat.name}</span>
           </button>
         ))}
       </div>
@@ -408,7 +413,21 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
                )}
              </div>
           </div>
-          <Menu menuItems={filteredItems} onSelectItem={setSelectedItem} />
+          {filteredItems.length > 0 ? (
+            <Menu menuItems={filteredItems} onSelectItem={setSelectedItem} />
+          ) : (
+            <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-stone-200 shadow-sm my-6">
+              <div className="text-5xl mb-3">
+                {sections.find(s => s.id === activeCategory)?.icon || '🍽️'}
+              </div>
+              <h3 className="text-lg font-black text-brand-brown uppercase italic">
+                No items in {sections.find(s => s.id === activeCategory)?.name || 'this section'}
+              </h3>
+              <p className="text-xs font-semibold text-stone-400 mt-2 max-w-sm mx-auto">
+                No menu items are currently configured for this section. You can add items or reassign them in Menu Control.
+              </p>
+            </div>
+          )}
         </div>
       </div>
 

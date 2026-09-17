@@ -1,5 +1,13 @@
 
-import { MenuItem, OrderItem, DiningTable } from './types';
+import { MenuItem, OrderItem, DiningTable, MenuSection } from './types';
+
+export const DEFAULT_MENU_SECTIONS: MenuSection[] = [
+  { id: 'momo', name: 'Momos', icon: '♨️', display_order: 1, is_active: true },
+  { id: 'moburg', name: 'Moburg', icon: '🍔', display_order: 2, is_active: true },
+  { id: 'side', name: 'Sides', icon: '🥗', display_order: 3, is_active: true },
+  { id: 'drink', name: 'Drinks', icon: '🥤', display_order: 4, is_active: true },
+  { id: 'combo', name: 'Combos', icon: '🍱', display_order: 5, is_active: true }
+];
 
 export const SIZE_PIECES: Record<string, number> = {
   small: 4,
@@ -277,8 +285,8 @@ export const MENU_ITEMS: MenuItem[] = [
     recipe: [{ materialId: 'campa-cola-small', quantity: 1 }],
     sizeRecipes: {
       small: [{ materialId: 'campa-cola-small', quantity: 1 }],
-      medium: [{ materialId: 'campa-cola-medium', quantity: 1 }],
-      large: [{ materialId: 'campa-cola-large', quantity: 1 }]
+      medium: [{ materialId: 'campa-cola-small', quantity: 1 }],
+      large: [{ materialId: 'campa-cola-small', quantity: 1 }]
     }
   },
   {

@@ -2,7 +2,16 @@
 export type PreparationType = 'steamed' | 'fried' | 'normal' | 'peri-peri' | 'pan-fried';
 export type Size = 'small' | 'medium' | 'large';
 export type PaymentMethod = 'Cash' | 'UPI' | 'Card';
-export type Category = 'momo' | 'side' | 'drink' | 'combo' | 'moburg';
+export type Category = 'momo' | 'side' | 'drink' | 'combo' | 'moburg' | string;
+
+export interface MenuSection {
+  id: string;
+  name: string;
+  icon?: string;
+  display_order?: number;
+  is_active?: boolean;
+  created_at?: string;
+}
 export type OrderType = 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
 export type OrderStatus = 'ORDERED' | 'PREPARING' | 'READY' | 'SERVED' | 'COMPLETED' | 'CANCELLED' | 'REVIEW_COLLECTED' | 'REVIEW_DENIED';
 export type UserRole = 'ADMIN' | 'STORE_MANAGER' | 'CASHIER' | 'COFOUNDER';
@@ -103,6 +112,7 @@ export interface MenuItem {
   name: string;
   image: string;
   category: Category;
+  is_hidden?: boolean;
   minCoinsPrices?: {
     [key in PreparationType]?: {
       [key in Size]?: number;

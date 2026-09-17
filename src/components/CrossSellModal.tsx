@@ -65,7 +65,7 @@ const CrossSellModal: React.FC<CrossSellModalProps> = ({ isOpen, onClose, upsell
         </div>
 
         <div className="aspect-video bg-brand-cream rounded-2xl mb-8 overflow-hidden border border-brand-stone">
-          <img src={upsellItem.image || 'https://via.placeholder.com/400?text=Combo+Offer'} className="w-full h-full object-cover" alt="Combo" />
+          <img src={upsellItem.image && upsellItem.image.trim() !== '' ? upsellItem.image.trim() : 'https://via.placeholder.com/400?text=Combo+Offer'} className="w-full h-full object-cover" alt="Combo" />
         </div>
 
         <div className="grid grid-cols-2 gap-4">

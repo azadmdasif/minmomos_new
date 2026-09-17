@@ -13,14 +13,26 @@ const MenuItem: React.FC<MenuItemProps> = ({ item, onSelectItem }) => {
     return Math.min(...prices as number[]);
   }, [item]);
 
+  const hasValidImage = Boolean(item.image && item.image.trim() !== '');
+
   return (
     <button 
       className="bg-white rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 text-left overflow-hidden group border border-stone-200"
       onClick={() => onSelectItem(item)}
     >
-      <div className="relative aspect-video overflow-hidden">
-        <img src={item.image} alt={item.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
-        <div className="absolute top-2 left-2">
+      <div className="relative aspect-video overflow-hidden bg-brand-cream/60 flex items-center justify-center">
+        {hasValidImage ? (
+          <img 
+            src={item.image.trim()} 
+            alt={item.name} 
+            className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" 
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center bg-stone-100 text-stone-300 text-3xl">
+            🍽️
+          </div>
+        )}
+        <div className="absolute top-2 left-2 z-10">
           <span className="px-2 py-0.5 rounded-full bg-brand-brown/40 backdrop-blur-sm text-white text-[10px] font-black uppercase tracking-widest">
             {item.category}
           </span>

@@ -180,7 +180,13 @@ const VariantSelectionModal: React.FC<VariantSelectionModalProps> = ({ item, onC
       >
         <div className="p-6">
           <h2 className="text-2xl font-bold mb-2">{item.name}</h2>
-          <img src={item.image} alt={item.name} className="w-full h-48 object-cover rounded-md mb-4"/>
+          {item.image && item.image.trim() !== '' ? (
+            <img src={item.image.trim()} alt={item.name} className="w-full h-48 object-cover rounded-md mb-4"/>
+          ) : (
+            <div className="w-full h-36 bg-brand-stone/20 rounded-md mb-4 flex items-center justify-center text-4xl text-brand-brown/40">
+              🍽️
+            </div>
+          )}
 
           {!isSingleVariant && (
             <>

@@ -29,6 +29,25 @@
   display: block;
 }
 
+.thin-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+  display: block;
+}
+
+.thin-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+
+.thin-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
 .custom-scrollbar::-webkit-scrollbar-track {
   background: #FDFBF5; 
   border-radius: 6px;

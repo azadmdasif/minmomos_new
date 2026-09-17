@@ -6,7 +6,8 @@ import {
   getISTDateString, 
   fetchAllNonVoidedProcurements,
   getOrdersForDateRange,
-  getItemSubcategory
+  getItemSubcategory,
+  resolveItemActiveRecipe
 } from '../utils/storage';
 import { 
   RefreshCw, 
@@ -23,7 +24,7 @@ import {
   TrendingUp,
   Info
 } from 'lucide-react';
-import { CompletedOrder, RecipeRequirement } from '../types';
+import { CompletedOrder } from '../types';
 
 interface ConsumptionReportProps {
   orders?: CompletedOrder[];
@@ -285,23 +286,15 @@ export const ConsumptionReport: React.FC<ConsumptionReportProps> = ({
     // 5. Category A Consumption (MOMO auto-deduct recipe-based sales)
     filteredOrders.forEach(order => {
       order.items.forEach(item => {
-        if (!item.menuItemId || item.menuItemId === 'discount') return;
+        const { size, activeRecipe } = resolveItemActiveRecipe({
+          id: item.id,
+          name: item.name,
+          menuItemId: item.menuItemId,
+          paidWithCoins: item.paidWithCoins,
+          price: item.price
+        }, menuItems);
 
-        let menuDetail = menuItems.find(m => m.id === item.menuItemId);
-        if (!menuDetail) {
-          const baseName = item.name.replace(/^(Steamed|Fried|Pan Fried|Pan-Fried|Peri-Peri|Peri peri|Normal)\s+/i, '').split(' (')[0].trim();
-          menuDetail = menuItems.find(m => m.name.toLowerCase() === baseName.toLowerCase() || m.name.toLowerCase() === item.name.toLowerCase());
-        }
-
-        if (menuDetail) {
-          const size = ((item as any).size || 'medium').toLowerCase();
-          const sizeRecipe = menuDetail.sizeRecipes?.[size];
-          let activeRecipe: RecipeRequirement[] = (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) ? sizeRecipe : [];
-          
-          if (activeRecipe.length === 0 && menuDetail.recipe && Array.isArray(menuDetail.recipe) && menuDetail.recipe.length > 0) {
-            activeRecipe = menuDetail.recipe;
-          }
-
+        if (activeRecipe.length > 0) {
           activeRecipe.forEach(req => {
             const materialId = req.materialId;
             const recipeQty = req.quantity || 0;
