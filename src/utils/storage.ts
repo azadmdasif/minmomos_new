@@ -27,6 +27,29 @@ export function isStudentFreeMojitoOrder(order: CompletedOrder): boolean {
   return isZeroValue && hasStudentMojito;
 }
 
+export function isStudentCustomer(customer: { note?: string | null } | null | undefined): boolean {
+  if (!customer || !customer.note) return false;
+  return customer.note === 'STUDENT' || customer.note.startsWith('STUDENT|');
+}
+
+export function isOrderFromStudent(order: CompletedOrder, studentPhoneSet?: Set<string>): boolean {
+  if (!order) return false;
+  if (isStudentFreeMojitoOrder(order)) return true;
+  if (order.items?.some(item => 
+    item.id === 'student-mojito-gift' || 
+    (item.name && item.name.includes('Student Promo')) || 
+    item.menuItemId === 'promo-mojito' ||
+    (item.id === 'loyalty-discount' && item.name?.includes('Student'))
+  )) {
+    return true;
+  }
+  if (order.customerPhone && studentPhoneSet) {
+    const norm = normalizePhone(order.customerPhone);
+    if (studentPhoneSet.has(norm)) return true;
+  }
+  return false;
+}
+
 // --- TIMEZONE HELPERS ---
 export function getISTDate(date?: string | number | Date): Date {
   if (date) return new Date(date);
@@ -214,6 +237,10 @@ export async function upsertMenuItem(item: MenuItem): Promise<void> {
       throw error;
     }
   }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('menu-items-updated'));
+  }
 }
 
 export async function toggleMenuItemHidden(item: MenuItem, isHidden: boolean): Promise<void> {
@@ -233,6 +260,10 @@ export async function deleteMenuItem(id: string): Promise<void> {
       throw new Error("Cannot delete this item because it has been used in previous orders. To keep historical records accurate, deletion is restricted. You can try renamed it to '(Retired)' instead.");
     }
     throw new Error(error.message);
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('menu-items-updated'));
   }
 }
 
@@ -265,6 +296,9 @@ export function getLocalMenuSections(): MenuSection[] {
 export function setLocalMenuSections(sections: MenuSection[]): void {
   try {
     localStorage.setItem(MENU_SECTIONS_LOCAL_KEY, JSON.stringify(sections));
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('menu-sections-updated'));
+    }
   } catch (e) {
     console.error("Error writing local menu sections:", e);
   }
@@ -2742,6 +2776,7 @@ export interface CohortOrder {
   order_date: string;
   joined_date: string;
   bill_number: number;
+  is_student?: boolean;
 }
 
 export async function fetchCohortRawData(): Promise<CohortOrder[]> {
@@ -2756,7 +2791,7 @@ export async function fetchCohortRawData(): Promise<CohortOrder[]> {
     const to = from + customerPageSize - 1;
     const { data, error } = await supabase
       .from('customers')
-      .select('phone, created_at')
+      .select('phone, created_at, note')
       .range(from, to);
 
     if (error || !data || data.length === 0) {
@@ -2772,9 +2807,14 @@ export async function fetchCohortRawData(): Promise<CohortOrder[]> {
   }
 
   const joinDateMap: Record<string, string> = {};
+  const studentPhoneSet = new Set<string>();
   customersData?.forEach(c => {
     if (c.phone) {
-      joinDateMap[normalizePhone(c.phone)] = c.created_at;
+      const p = normalizePhone(c.phone);
+      joinDateMap[p] = c.created_at;
+      if (c.note === 'STUDENT' || (typeof c.note === 'string' && c.note.startsWith('STUDENT|'))) {
+        studentPhoneSet.add(p);
+      }
     }
   });
 
@@ -2829,7 +2869,8 @@ export async function fetchCohortRawData(): Promise<CohortOrder[]> {
       customer_phone: phone,
       order_date: o.date,
       joined_date: joinDateMap[phone] || fallbackJoinDates[phone] || o.date,
-      bill_number: o.bill_number
+      bill_number: o.bill_number,
+      is_student: studentPhoneSet.has(phone)
     });
   });
 

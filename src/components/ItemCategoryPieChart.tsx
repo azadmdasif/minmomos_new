@@ -1,14 +1,19 @@
 
 import React, { useMemo, useState } from 'react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend } from 'recharts';
-import { CompletedOrder } from '../types';
+import { CompletedOrder, MenuItem, MenuSection } from '../types';
 import { PieChart as PieChartIcon, TrendingUp, DollarSign } from 'lucide-react';
+import { resolveCategoryName } from '../utils/categoryHelper';
+import { isDiscountOrNonProductItem } from './ItemSalesReport';
 
 interface ItemCategoryPieChartProps {
   orders: CompletedOrder[];
   title?: string;
   colorTheme?: string;
   disabled?: boolean;
+  groupMode?: 'item' | 'category';
+  menuItems?: MenuItem[];
+  menuSections?: MenuSection[];
 }
 
 const COLORS = [
@@ -27,28 +32,47 @@ const getBaseName = (name: string): string => {
     .trim();
 };
 
-const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders, title, colorTheme, disabled }) => {
+const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ 
+  orders, 
+  title, 
+  colorTheme, 
+  disabled,
+  groupMode = 'item',
+  menuItems = [],
+  menuSections = []
+}) => {
   const [viewMode, setViewMode] = useState<'revenue' | 'profit'>('revenue');
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   const chartData = useMemo(() => {
     const categoryMap = new Map<string, { name: string; revenue: number; profit: number; quantity: number }>();
 
-    orders.forEach(order => {
-      order.items.forEach(item => {
-        const baseName = getBaseName(item.name);
-        const revenue = item.price * item.quantity;
-        const cost = (item.cost ?? 0) * item.quantity;
-        const profit = revenue - cost;
-        const quantity = item.quantity;
+    const safeOrders = Array.isArray(orders) ? orders : [];
+    safeOrders.forEach(order => {
+      const items = Array.isArray(order?.items) ? order.items : [];
+      items.forEach(item => {
+        if (isDiscountOrNonProductItem(item)) return;
 
-        const existing = categoryMap.get(baseName);
+        const quantity = Number(item.quantity) || 0;
+        if (quantity <= 0) return;
+
+        const groupKey = groupMode === 'category'
+          ? resolveCategoryName(item, menuItems, menuSections)
+          : getBaseName(item.name || '');
+
+        const price = Number(item.price) || 0;
+        const cost = Number(item.cost ?? 0) || 0;
+        const revenue = price * quantity;
+        const profit = revenue - (cost * quantity);
+
+        const existing = categoryMap.get(groupKey);
         if (existing) {
           existing.revenue += revenue;
           existing.profit += profit;
           existing.quantity += quantity;
         } else {
-          categoryMap.set(baseName, {
-            name: baseName,
+          categoryMap.set(groupKey, {
+            name: groupKey,
             revenue,
             profit,
             quantity
@@ -67,14 +91,14 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders, tit
       }))
       .filter(item => item.value > 0)
       .sort((a, b) => b.value - a.value);
-  }, [orders, viewMode]);
+  }, [orders, viewMode, groupMode, menuItems, menuSections]);
 
   const totalValue = useMemo(() => {
     return chartData.reduce((acc, curr) => acc + curr.value, 0);
   }, [chartData]);
 
   return (
-    <div className={`bg-white rounded-[3rem] shadow-xl p-8 border border-brand-stone h-full flex flex-col transition-all lg:hover:scale-[1.01] ${disabled ? 'opacity-40 grayscale pointer-events-none' : ''}`}>
+    <div className={`bg-white rounded-[3rem] shadow-xl p-8 border border-brand-stone h-full flex flex-col transition-all min-w-0 lg:hover:scale-[1.01] ${disabled ? 'opacity-40 grayscale pointer-events-none' : ''}`}>
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-8">
         <div>
           <div className="flex items-center gap-2 mb-1">
@@ -89,13 +113,16 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders, tit
                )}
              </h3>
           </div>
-          <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest">Rev/Prof share by item category</p>
+          <p className="text-[10px] font-bold text-brand-brown/40 uppercase tracking-widest">
+            {groupMode === 'category' ? 'Rev/Prof share by menu category' : 'Rev/Prof share by item'}
+          </p>
         </div>
 
         <div className="flex items-center gap-2 bg-brand-brown/5 p-1 rounded-2xl border border-brand-stone/30 self-start">
           <button 
+            type="button"
             onClick={() => setViewMode('revenue')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all cursor-pointer ${
               viewMode === 'revenue' ? 'bg-brand-brown text-brand-yellow shadow-md' : 'text-brand-brown/40 hover:bg-brand-brown/10'
             }`}
           >
@@ -103,8 +130,9 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders, tit
             Rev
           </button>
           <button 
+            type="button"
             onClick={() => setViewMode('profit')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all cursor-pointer ${
               viewMode === 'profit' ? 'bg-brand-red text-white shadow-md' : 'text-brand-brown/40 hover:bg-brand-brown/10'
             }`}
           >
@@ -114,10 +142,10 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders, tit
         </div>
       </div>
 
-      <div className="flex-1 min-h-[350px] relative">
+      <div className="flex-1 min-h-[350px] relative min-w-0">
         {chartData.length > 0 ? (
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280} className="relative z-10">
+            <PieChart onMouseLeave={() => setHoveredIndex(null)}>
               <Pie
                 data={chartData}
                 cx="50%"
@@ -127,12 +155,23 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders, tit
                 paddingAngle={5}
                 dataKey="value"
                 stroke="none"
+                isAnimationActive={false}
+                onMouseEnter={(_, index) => setHoveredIndex(index)}
+                onMouseLeave={() => setHoveredIndex(null)}
               >
                 {chartData.map((_, index) => (
-                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  <Cell 
+                    key={`cell-${index}`} 
+                    fill={COLORS[index % COLORS.length]} 
+                    className="transition-opacity duration-200 cursor-pointer"
+                    opacity={hoveredIndex === null || hoveredIndex === index ? 1 : 0.45}
+                  />
                 ))}
               </Pie>
               <Tooltip 
+                wrapperStyle={{ zIndex: 50, pointerEvents: 'none' }}
+                allowEscapeViewBox={{ x: true, y: true }}
+                offset={15}
                 content={({ active, payload }) => {
                   if (active && payload && payload.length) {
                     const data = payload[0].payload;
@@ -170,14 +209,20 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders, tit
                     const valA = a.payload?.value ?? 0;
                     const valB = b.payload?.value ?? 0;
                     return valB - valA;
-                  });                  return (
+                  });
+                  return (
                     <div className="flex flex-wrap justify-center gap-x-6 gap-y-3 mt-8 px-4 overflow-y-auto max-h-[140px] no-scrollbar">
                       {sortedPayload.map((entry: any, index: number) => {
                         const itemData = entry.payload;
                         const itemValue = itemData?.value ?? 0;
                         const percentage = totalValue > 0 ? ((itemValue / totalValue) * 100).toFixed(1) : '0';
                         return (
-                          <div key={`legend-${index}`} className="flex items-center gap-3 group cursor-pointer relative">
+                          <div 
+                            key={`legend-${index}`} 
+                            className="flex items-center gap-3 group cursor-pointer relative"
+                            onMouseEnter={() => setHoveredIndex(index)}
+                            onMouseLeave={() => setHoveredIndex(null)}
+                          >
                             <div className="w-2.5 h-2.5 rounded-full transition-transform group-hover:scale-125 shadow-sm" style={{ backgroundColor: entry.color }} />
                             <div className="flex flex-col">
                               <span className="text-[10px] font-black text-brand-brown uppercase tracking-tight leading-none group-hover:text-brand-red transition-colors">
@@ -224,7 +269,11 @@ const ItemCategoryPieChart: React.FC<ItemCategoryPieChartProps> = ({ orders, tit
           </div>
         )}
 
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[60px] text-center pointer-events-none">
+        <div 
+          className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[60px] text-center pointer-events-none transition-opacity duration-200 z-0 ${
+            hoveredIndex !== null ? 'opacity-0' : 'opacity-100'
+          }`}
+        >
            <p className="text-[8px] font-black text-brand-brown/30 uppercase tracking-[0.2em] mb-1">Total {viewMode === 'revenue' ? 'Rev' : 'Prof'}</p>
            <p className="text-2xl font-black text-brand-brown tracking-tighter italic">₹{totalValue.toLocaleString()}</p>
         </div>

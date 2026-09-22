@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats, updateOrderStatus, isStudentFreeMojitoOrder } from '../utils/storage';
+import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats, updateOrderStatus, isStudentFreeMojitoOrder, isStudentCustomer, isOrderFromStudent } from '../utils/storage';
 import {
   generateItemNormalizationMap,
   getFilteredOrders,
@@ -26,6 +26,7 @@ import CohortRetentionChart from './CohortRetentionChart';
 import CohortCompositionChart from './CohortCompositionChart';
 import { CustomerHistogram } from './CustomerHistogram';
 import { OrderIntervalChart } from './OrderIntervalChart';
+import { StudentIntelligenceModal } from './StudentIntelligenceModal';
 import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star, Users, TrendingUp as TrendingUpIcon, Gift, DollarSign, ShoppingBag, Download, RefreshCw, GraduationCap, Copy } from 'lucide-react';
 
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
@@ -378,11 +379,15 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [customerSortOrder, setCustomerSortOrder] = useState<'asc' | 'desc'>('desc');
   const [customerClassFilter, setCustomerClassFilter] = useState<'ALL' | 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY' | 'UNCLASSIFIED'>('ALL');
   const [customerTypeFilter, setCustomerTypeFilter] = useState<'ALL' | 'STUDENT' | 'REGULAR'>('ALL');
+  const [segmentFilter, setSegmentFilter] = useState<'ALL' | 'STUDENT' | 'REGULAR'>('ALL');
+  const [isStudentScorecardOpen, setIsStudentScorecardOpen] = useState(false);
   const [customerOrderStats, setCustomerOrderStats] = useState<Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }>>({});
   const [minLtv, setMinLtv] = useState<string>('');
   const [maxLtv, setMaxLtv] = useState<string>('');
   const [minOrders, setMinOrders] = useState<string>('');
   const [maxOrders, setMaxOrders] = useState<string>('');
+  const [customerJoinedStart, setCustomerJoinedStart] = useState<string>('');
+  const [customerJoinedEnd, setCustomerJoinedEnd] = useState<string>('');
   const [customerActivityStart, setCustomerActivityStart] = useState<string>('');
   const [customerActivityEnd, setCustomerActivityEnd] = useState<string>('');
   const [selectedDayInsights, setSelectedDayInsights] = useState<number | null>(null);
@@ -446,6 +451,184 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     }
   };
 
+  // 🎓 Centralized Student Identification Sets & Memos for Global Segment Analysis
+  const studentPhoneSet = useMemo(() => {
+    const set = new Set<string>();
+    customers.forEach(c => {
+      if (isStudentCustomer(c)) {
+        set.add(normalizePhone(c.phone));
+      }
+    });
+    return set;
+  }, [customers]);
+
+  const checkIsOrderStudent = useCallback((o: CompletedOrder) => {
+    return isOrderFromStudent(o, studentPhoneSet);
+  }, [studentPhoneSet]);
+
+  const displayOrders = useMemo(() => {
+    if (segmentFilter === 'STUDENT') {
+      return orders.filter(o => checkIsOrderStudent(o));
+    }
+    if (segmentFilter === 'REGULAR') {
+      return orders.filter(o => !checkIsOrderStudent(o));
+    }
+    return orders;
+  }, [orders, segmentFilter, checkIsOrderStudent]);
+
+  const displayChartOrders = useMemo(() => {
+    if (segmentFilter === 'STUDENT') {
+      return chartOrders.filter(o => checkIsOrderStudent(o));
+    }
+    if (segmentFilter === 'REGULAR') {
+      return chartOrders.filter(o => !checkIsOrderStudent(o));
+    }
+    return chartOrders;
+  }, [chartOrders, segmentFilter, checkIsOrderStudent]);
+
+  const displayCustomers = useMemo(() => {
+    if (segmentFilter === 'STUDENT') {
+      return customers.filter(c => isStudentCustomer(c));
+    }
+    if (segmentFilter === 'REGULAR') {
+      return customers.filter(c => !isStudentCustomer(c));
+    }
+    return customers;
+  }, [customers, segmentFilter]);
+
+  const displayCohortData = useMemo(() => {
+    if (segmentFilter === 'STUDENT') {
+      return cohortRawData.filter(d => d.is_student);
+    }
+    if (segmentFilter === 'REGULAR') {
+      return cohortRawData.filter(d => !d.is_student);
+    }
+    return cohortRawData;
+  }, [cohortRawData, segmentFilter]);
+
+  const studentSegmentMetrics = useMemo(() => {
+    let studentRevenue = 0;
+    let regularRevenue = 0;
+    let totalPeriodRevenue = 0;
+
+    let studentPaidOrders = 0;
+    let studentFreePromoOrders = 0;
+    let regularOrders = 0;
+
+    let studentCogs = 0;
+    let regularCogs = 0;
+
+    let studentDineInCount = 0;
+    let studentTakeawayCount = 0;
+    let studentDeliveryCount = 0;
+
+    const itemMap = new Map<string, { quantity: number; revenue: number }>();
+
+    orders.forEach(order => {
+      const isStudent = checkIsOrderStudent(order);
+      const orderCogs = order.items.reduce((acc, item) => acc + (item.cost ?? 0) * item.quantity, 0);
+      const orderRev = order.type === 'DELIVERY' && order.manualTotal != null ? order.manualTotal : order.total;
+
+      totalPeriodRevenue += orderRev;
+
+      if (isStudent) {
+        if (isStudentFreeMojitoOrder(order)) {
+          studentFreePromoOrders++;
+        } else {
+          studentPaidOrders++;
+        }
+        studentRevenue += orderRev;
+        studentCogs += orderCogs;
+
+        if (order.type === 'DINE_IN') studentDineInCount++;
+        else if (order.type === 'TAKEAWAY') studentTakeawayCount++;
+        else if (order.type === 'DELIVERY') studentDeliveryCount++;
+
+        order.items.forEach(item => {
+          const prev = itemMap.get(item.name) || { quantity: 0, revenue: 0 };
+          itemMap.set(item.name, {
+            quantity: prev.quantity + item.quantity,
+            revenue: prev.revenue + (item.price * item.quantity)
+          });
+        });
+      } else {
+        regularOrders++;
+        regularRevenue += orderRev;
+        regularCogs += orderCogs;
+      }
+    });
+
+    const studentTotalOrders = studentPaidOrders + studentFreePromoOrders;
+    const totalOrdersCount = studentTotalOrders + regularOrders;
+
+    const studentAov = studentPaidOrders > 0 ? Math.round(studentRevenue / studentPaidOrders) : 0;
+    const regularAov = regularOrders > 0 ? Math.round(regularRevenue / regularOrders) : 0;
+    const overallAov = (studentPaidOrders + regularOrders) > 0 ? Math.round(totalPeriodRevenue / (studentPaidOrders + regularOrders)) : 0;
+
+    const studentGrossProfit = studentRevenue - studentCogs;
+    const studentGrossMargin = studentRevenue > 0 ? (studentGrossProfit / studentRevenue) * 100 : 0;
+
+    const studentRevenueShare = totalPeriodRevenue > 0 ? (studentRevenue / totalPeriodRevenue) * 100 : 0;
+    const studentOrdersShare = totalOrdersCount > 0 ? (studentTotalOrders / totalOrdersCount) * 100 : 0;
+
+    const studentCustomers = customers.filter(c => isStudentCustomer(c));
+    const regularCustomers = customers.filter(c => !isStudentCustomer(c));
+
+    const totalEnrolledStudents = studentCustomers.length;
+    const totalRegularCustomers = regularCustomers.length;
+
+    const newStudentEnrolments = studentCustomers.filter(c => {
+      if (!c.joinedDate) return false;
+      const d = getISTDateString(c.joinedDate);
+      return d >= startDate && d <= endDate;
+    }).length;
+
+    const repeatStudents = studentCustomers.filter(c => (c.totalOrders ?? 0) > 1).length;
+    const studentRetentionRate = totalEnrolledStudents > 0 ? (repeatStudents / totalEnrolledStudents) * 100 : 0;
+
+    const repeatRegular = regularCustomers.filter(c => (c.totalOrders ?? 0) > 1).length;
+    const regularRetentionRate = totalRegularCustomers > 0 ? (repeatRegular / totalRegularCustomers) * 100 : 0;
+
+    const topStudentItems = Array.from(itemMap.entries())
+      .map(([name, data]) => ({ name, quantity: data.quantity, revenue: data.revenue }))
+      .sort((a, b) => b.quantity - a.quantity)
+      .slice(0, 5);
+
+    const studentOrderModeTotal = studentDineInCount + studentTakeawayCount + studentDeliveryCount;
+    const studentDineInPct = studentOrderModeTotal > 0 ? (studentDineInCount / studentOrderModeTotal) * 100 : 0;
+    const studentTakeawayPct = studentOrderModeTotal > 0 ? (studentTakeawayCount / studentOrderModeTotal) * 100 : 0;
+    const studentDeliveryPct = studentOrderModeTotal > 0 ? (studentDeliveryCount / studentOrderModeTotal) * 100 : 0;
+
+    return {
+      totalAllCustomers: customers.length,
+      totalEnrolledStudents,
+      totalRegularCustomers,
+      newStudentEnrolments,
+      totalPeriodRevenue,
+      studentRevenue,
+      studentRevenueShare,
+      regularRevenue,
+      studentOrders: studentTotalOrders,
+      studentPaidOrders,
+      studentFreePromoOrders,
+      regularOrders,
+      studentOrdersShare,
+      studentAov,
+      regularAov,
+      overallAov,
+      studentGrossProfit,
+      studentCogs,
+      studentGrossMargin,
+      studentRetentionRate,
+      regularRetentionRate,
+      repeatStudents,
+      studentDineInPct,
+      studentTakeawayPct,
+      studentDeliveryPct,
+      topStudentItems
+    };
+  }, [orders, customers, startDate, endDate, checkIsOrderStudent]);
+
   // Helper to extract unique branches from dataset dynamically
   const uniqueBranches = useMemo(() => {
     const branches = new Set<string>();
@@ -499,6 +682,14 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         if (!isNaN(maxVal) && val > maxVal) return false;
       }
 
+      // Segment Filter (Student vs Regular)
+      if (segmentFilter === 'STUDENT' && !checkIsOrderStudent(o)) {
+        return false;
+      }
+      if (segmentFilter === 'REGULAR' && checkIsOrderStudent(o)) {
+        return false;
+      }
+
       return true;
     });
 
@@ -519,7 +710,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     });
 
     return result;
-  }, [activeTab, orders, deletedOrders, revSearchQuery, revTypeFilter, revBranchFilter, revMinAmount, revMaxAmount, revSortField, revSortOrder]);
+  }, [activeTab, orders, deletedOrders, revSearchQuery, revTypeFilter, revBranchFilter, revMinAmount, revMaxAmount, revSortField, revSortOrder, segmentFilter, checkIsOrderStudent]);
 
   // Computed Stock Adjustments filtered and sorted
   const filteredAndSortedAdjustments = useMemo(() => {
@@ -561,13 +752,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   }, [adjustments, adjSearchQuery, adjBranchFilter, adjSortField, adjSortOrder]);
 
   const behaviorData = useMemo(() => {
-    if (!orders.length || !cohortRawData.length) return null;
+    if (!displayOrders.length || !displayCohortData.length) return null;
 
     // 1. Unique customers in the selected period
     const periodUids = new Set<string>();
     const periodOrdersByUid: Record<string, CompletedOrder[]> = {};
     
-    orders.forEach(o => {
+    displayOrders.forEach(o => {
       const uid = o.customerPhone || 'GUEST';
       if (uid === 'GUEST') return; // Exclude non-registered for sequence precision if preferred, but following "unique customers"
       periodUids.add(uid);
@@ -579,7 +770,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
     // 2. Map all historical orders to sequence numbers for every customer
     const historicalOrdersByUid: Record<string, CohortOrder[]> = {};
-    cohortRawData.forEach(o => {
+    displayCohortData.forEach(o => {
       const uid = normalizePhone(o.customer_phone);
       if (!uid || uid === 'GUEST') return;
       
@@ -621,7 +812,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     let matchedOrders = 0;
     const processedBillNumbers = new Set<string | number>();
 
-    orders.forEach(o => {
+    displayOrders.forEach(o => {
       const rev = o.type === 'DELIVERY' && o.manualTotal != null ? o.manualTotal : o.total;
       const uid = normalizePhone(o.customerPhone);
       const bNum = Number(o.billNumber);
@@ -676,7 +867,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         customers: stats.count,
         revenue: stats.totalRevenue,
         aov: stats.count > 0 ? stats.totalRevenue / stats.count : 0,
-        orders: orders.filter(o => {
+        orders: displayOrders.filter(o => {
           const oUid = normalizePhone(o.customerPhone);
           if (!oUid || oUid === 'GUEST') return false;
           const hist = historicalOrdersByUid[oUid];
@@ -694,7 +885,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         customers: sequenceStats['Other'].count,
         revenue: sequenceStats['Other'].totalRevenue,
         aov: sequenceStats['Other'].count > 0 ? sequenceStats['Other'].totalRevenue / sequenceStats['Other'].count : 0,
-        orders: orders.filter(o => {
+        orders: displayOrders.filter(o => {
            const oUid = normalizePhone(o.customerPhone);
            if (!oUid || oUid === 'GUEST') return false;
            const hist = historicalOrdersByUid[oUid];
@@ -713,7 +904,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       avgSpendPerUser: uniqueCustomerCount > 0 ? matchedRevenue / uniqueCustomerCount : 0,
       composition: compositionStats
     };
-  }, [orders, cohortRawData]);
+  }, [displayOrders, displayCohortData]);
 
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [orderToDelete, setOrderToDelete] = useState<CompletedOrder | null>(null);
@@ -1306,7 +1497,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
     const breakdown: Record<PaymentMethod, number> = { 'Cash': 0, 'UPI': 0, 'Card': 0 };
 
-    orders.forEach(order => {
+    displayOrders.forEach(order => {
       const orderCogs = order.items.reduce((acc, item) => acc + (item.cost ?? 0) * item.quantity, 0);
 
       if (isStudentFreeMojitoOrder(order)) {
@@ -1411,14 +1602,17 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       
       studentOrdersCount
     };
-  }, [orders]);
+  }, [displayOrders]);
 
   const comparisonData = useMemo(() => {
     if (!isAdmin) return [];
     const groups: Record<string, { revenue: number, orders: number, profit: number }> = {};
     const visibleRaw = allOrdersRaw.filter(o => {
       const d = getISTDateString(o.date);
-      return d >= startDate && d <= endDate;
+      if (d < startDate || d > endDate) return false;
+      if (segmentFilter === 'STUDENT' && !checkIsOrderStudent(o)) return false;
+      if (segmentFilter === 'REGULAR' && checkIsOrderStudent(o)) return false;
+      return true;
     });
 
     visibleRaw.forEach(order => {
@@ -1433,17 +1627,17 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       groups[groupKey].profit += (roundedTotal - Math.round(orderCogs));
     });
     return Object.entries(groups).map(([name, stats]) => ({ name, ...stats })).sort((a, b) => b.revenue - a.revenue);
-  }, [isAdmin, allOrdersRaw, startDate, endDate, compareBy]);
+  }, [isAdmin, allOrdersRaw, startDate, endDate, compareBy, segmentFilter, checkIsOrderStudent]);
 
   const customerOverview = useMemo(() => {
-    const totalCount = customers.length;
-    const totalLTV = customers.reduce((acc, c) => acc + (c.totalSpent || 0), 0);
+    const totalCount = displayCustomers.length;
+    const totalLTV = displayCustomers.reduce((acc, c) => acc + (c.totalSpent || 0), 0);
     const avgLTV = totalCount > 0 ? totalLTV / totalCount : 0;
-    const repeatCount = customers.filter(c => (c.totalOrders || 0) > 1).length;
+    const repeatCount = displayCustomers.filter(c => (c.totalOrders || 0) > 1).length;
     const retentionRate = totalCount > 0 ? (repeatCount / totalCount) * 100 : 0;
     
     // New customers in range
-    const newInRange = customers.filter(c => {
+    const newInRange = displayCustomers.filter(c => {
       if (!c.joinedDate) return false;
       const d = getISTDateString(c.joinedDate);
       return d >= startDate && d <= endDate;
@@ -1456,7 +1650,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       retentionRate,
       newInRange
     };
-  }, [customers, startDate, endDate]);
+  }, [displayCustomers, startDate, endDate]);
 
   const realBalance = useMemo(() => {
     if (!activeCustomer) return 0;
@@ -1478,7 +1672,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       }
     }
 
-    orders.forEach(o => {
+    displayOrders.forEach(o => {
       const day = getISTDay(o.date);
       const hour = getISTHour(o.date);
       if (heatmap[day] && heatmap[day][hour]) {
@@ -1521,16 +1715,17 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       busiestDay: days[busiestDayIdx],
       days
     };
-  }, [orders]);
+  }, [displayOrders]);
 
   const filteredCustomers = useMemo(() => {
     let filtered = customers.filter(c => c.phone.includes(customerSearchTerm));
     
-    // Type Filter (Student / Regular)
-    if (customerTypeFilter === 'STUDENT') {
-      filtered = filtered.filter(c => c.note === 'STUDENT' || c.note?.startsWith('STUDENT|'));
-    } else if (customerTypeFilter === 'REGULAR') {
-      filtered = filtered.filter(c => c.note !== 'STUDENT' && !c.note?.startsWith('STUDENT|'));
+    // Type Filter (Student / Regular) - respect either customerTypeFilter or global segmentFilter
+    const effectiveTypeFilter = segmentFilter !== 'ALL' ? segmentFilter : customerTypeFilter;
+    if (effectiveTypeFilter === 'STUDENT') {
+      filtered = filtered.filter(c => isStudentCustomer(c));
+    } else if (effectiveTypeFilter === 'REGULAR') {
+      filtered = filtered.filter(c => !isStudentCustomer(c));
     }
     
     // Classification Filter
@@ -1558,6 +1753,17 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     if (maxLtv) filtered = filtered.filter(c => (c.totalSpent ?? 0) <= Number(maxLtv));
     if (minOrders) filtered = filtered.filter(c => (c.totalOrders ?? 0) >= Number(minOrders));
     if (maxOrders) filtered = filtered.filter(c => (c.totalOrders ?? 0) <= Number(maxOrders));
+
+    // Joined Between Dates Filter
+    if (customerJoinedStart || customerJoinedEnd) {
+      filtered = filtered.filter(c => {
+        if (!c.joinedDate) return false;
+        const d = getISTDateString(c.joinedDate);
+        const startMatch = customerJoinedStart ? d >= customerJoinedStart : true;
+        const endMatch = customerJoinedEnd ? d <= customerJoinedEnd : true;
+        return startMatch && endMatch;
+      });
+    }
 
     // Ordered Between Dates Filter
     if (customerActivityStart || customerActivityEnd) {
@@ -1589,7 +1795,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
       return customerSortOrder === 'desc' ? valB - valA : valA - valB;
     });
-  }, [customers, customerSearchTerm, customerSortField, customerSortOrder, minLtv, maxLtv, minOrders, maxOrders, customerActivityStart, customerActivityEnd, allOrdersRaw, customerClassFilter, customerTypeFilter, customerOrderStats]);
+  }, [customers, customerSearchTerm, customerSortField, customerSortOrder, minLtv, maxLtv, minOrders, maxOrders, customerJoinedStart, customerJoinedEnd, customerActivityStart, customerActivityEnd, allOrdersRaw, customerClassFilter, customerTypeFilter, customerOrderStats, segmentFilter]);
 
   return (
     <div className="p-4 lg:p-8 h-full bg-brand-cream overflow-y-auto no-scrollbar pb-24 lg:pb-8">
@@ -1853,6 +2059,75 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
               {searchMessage}
            </div>
         )}
+
+        {/* Compact Segment Toggle */}
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] font-black uppercase tracking-widest text-brand-brown/40">Segment:</span>
+            <div className="inline-flex bg-brand-brown/5 p-1 rounded-xl border border-brand-stone">
+              <button
+                type="button"
+                onClick={() => setSegmentFilter('ALL')}
+                className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                  segmentFilter === 'ALL'
+                    ? 'bg-brand-brown text-brand-yellow shadow-sm'
+                    : 'text-brand-brown/50 hover:text-brand-brown hover:bg-white/50'
+                }`}
+              >
+                <span>All</span>
+                <span className="ml-1 opacity-75 text-[8px]">
+                  ({studentSegmentMetrics.totalAllCustomers})
+                </span>
+              </button>
+              
+              <button
+                type="button"
+                onClick={() => setSegmentFilter(segmentFilter === 'STUDENT' ? 'ALL' : 'STUDENT')}
+                className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer ${
+                  segmentFilter === 'STUDENT'
+                    ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/20'
+                    : 'text-indigo-700 hover:bg-indigo-50'
+                }`}
+              >
+                <GraduationCap className="w-3 h-3" />
+                <span>Students</span>
+                <span className={`px-1 py-0.2 rounded-full text-[8px] font-bold ${
+                  segmentFilter === 'STUDENT' ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-700'
+                }`}>
+                  {studentSegmentMetrics.totalEnrolledStudents}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSegmentFilter(segmentFilter === 'REGULAR' ? 'ALL' : 'REGULAR')}
+                className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer ${
+                  segmentFilter === 'REGULAR'
+                    ? 'bg-brand-brown text-white shadow-sm'
+                    : 'text-brand-brown/50 hover:text-brand-brown hover:bg-white/50'
+                }`}
+              >
+                <Users className="w-3 h-3" />
+                <span>Regular</span>
+                <span className="ml-0.5 opacity-75 text-[8px]">
+                  ({studentSegmentMetrics.totalRegularCustomers})
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setIsStudentScorecardOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-violet-600 text-white rounded-xl text-[9px] font-black uppercase tracking-widest shadow-sm hover:from-indigo-700 hover:to-violet-700 active:scale-95 transition-all cursor-pointer"
+          >
+            <GraduationCap className="w-3.5 h-3.5 text-amber-300" />
+            <span>Student Hub</span>
+            <span className="bg-white/20 px-1.5 py-0.5 rounded text-[8px] font-bold text-white">
+              {studentSegmentMetrics.studentRevenueShare.toFixed(1)}%
+            </span>
+          </button>
+        </div>
         
         <div className="flex flex-wrap rounded-2xl lg:rounded-[2rem] overflow-hidden border-2 lg:border-4 border-brand-brown shadow-xl mb-10">
           <button onClick={() => setReportView('revenue')} className={`flex-1 min-w-[33%] lg:min-w-0 py-3 lg:py-4 text-[10px] font-black uppercase tracking-widest transition-all ${reportView === 'revenue' ? 'bg-brand-brown text-brand-yellow' : 'bg-white text-brand-brown/40 hover:bg-brand-brown/5'}`}>Revenue</button>
@@ -1894,16 +2169,16 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
             </div>
 
             {/* 1. Main Line Chart */}
-            <PerformanceChart orders={chartOrders} customers={customers} startDate={startDate} endDate={endDate} analysisBasis={analysisBasis} />
+            <PerformanceChart orders={displayChartOrders} customers={displayCustomers} startDate={startDate} endDate={endDate} analysisBasis={analysisBasis} />
 
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
               <RevenueBreakdownChart 
-                orders={orders} 
-                customers={customers} 
+                orders={displayOrders} 
+                customers={displayCustomers} 
                 analysisBasis={analysisBasis} 
                 compositionData={behaviorData?.composition}
               />
-              <OrderModeChart orders={orders} analysisBasis={analysisBasis} />
+              <OrderModeChart orders={displayOrders} analysisBasis={analysisBasis} />
             </div>
 
             {/* 2. Insight Summary Cards */}
@@ -2356,7 +2631,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
             </div>
 
-            <TimeWiseRevenueChart orders={orders} />
+            <TimeWiseRevenueChart orders={displayOrders} />
             
             <div className="bg-white rounded-2xl lg:rounded-[3rem] p-4 lg:p-10 shadow-xl border border-brand-stone overflow-x-auto">
               <div className="flex flex-col gap-6 mb-6">
@@ -2931,6 +3206,34 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                     </div>
 
                     <div className="space-y-1">
+                      <p className="text-[8px] font-black uppercase text-brand-brown/30 tracking-widest ml-1">Joined Between Dates</p>
+                      <div className="flex items-center gap-1">
+                        <input 
+                          type="date" 
+                          value={customerJoinedStart} 
+                          onChange={e => setCustomerJoinedStart(e.target.value)}
+                          className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
+                        />
+                        <span className="text-brand-brown/20">-</span>
+                        <input 
+                          type="date" 
+                          value={customerJoinedEnd} 
+                          onChange={e => setCustomerJoinedEnd(e.target.value)}
+                          className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none"
+                        />
+                        {(customerJoinedStart || customerJoinedEnd) && (
+                          <button 
+                            onClick={() => { setCustomerJoinedStart(''); setCustomerJoinedEnd(''); }}
+                            className="p-2 bg-brand-red/10 text-brand-red rounded-lg hover:bg-brand-red/20 transition-colors cursor-pointer"
+                            title="Clear joined dates"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
                       <p className="text-[8px] font-black uppercase text-brand-brown/30 tracking-widest ml-1">Ordered Between Dates</p>
                       <div className="flex items-center gap-1">
                         <input 
@@ -2949,7 +3252,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         {(customerActivityStart || customerActivityEnd) && (
                           <button 
                             onClick={() => { setCustomerActivityStart(''); setCustomerActivityEnd(''); }}
-                            className="p-2 bg-brand-red/10 text-brand-red rounded-lg"
+                            className="p-2 bg-brand-red/10 text-brand-red rounded-lg hover:bg-brand-red/20 transition-colors cursor-pointer"
+                            title="Clear ordered dates"
                           >
                             <X className="w-3 h-3" />
                           </button>
@@ -3737,14 +4041,14 @@ BENEFITS:
                       <CustomerHistogram customers={filteredCustomers} />
 
                       <CohortRetentionChart 
-                        data={cohortRawData} 
+                        data={displayCohortData} 
                         onSelectPeriod={(key) => {
                           setCompositionPeriod(key);
                         }}
                         selectedPeriodKey={compositionPeriod}
                       />
 
-                      <OrderIntervalChart data={cohortRawData} />
+                      <OrderIntervalChart data={displayCohortData} />
 
                       {compositionPeriod && (
                         <div className="space-y-4">
@@ -3831,7 +4135,7 @@ BENEFITS:
           </div>
         )}
 
-        {reportView === 'itemSales' && <ItemSalesReport orders={orders} />}
+        {reportView === 'itemSales' && <ItemSalesReport orders={displayOrders} />}
       </div>
       
       <DeleteBillModal isOpen={isDeleteModalOpen} onClose={() => setIsDeleteModalOpen(false)} onConfirm={confirmDelete} billNumber={orderToDelete?.billNumber || null} />
@@ -4148,6 +4452,20 @@ BENEFITS:
           </div>
         </div>
       )}
+
+      {/* Student Intelligence Hub Modal */}
+      <StudentIntelligenceModal
+        isOpen={isStudentScorecardOpen}
+        onClose={() => setIsStudentScorecardOpen(false)}
+        metrics={studentSegmentMetrics}
+        startDate={startDate}
+        endDate={endDate}
+        segmentFilter={segmentFilter}
+        onSelectSegment={(seg: 'ALL' | 'STUDENT' | 'REGULAR') => {
+          setSegmentFilter(seg);
+          setIsStudentScorecardOpen(false);
+        }}
+      />
     </div>
   );
 };
