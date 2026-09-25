@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats, updateOrderStatus, isStudentFreeMojitoOrder, isStudentCustomer, isOrderFromStudent } from '../utils/storage';
 import {
   generateItemNormalizationMap,
@@ -297,7 +297,7 @@ interface AnalyticsProps {
   user: User;
 }
 
-type DatePreset = 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'last7' | 'last14' | 'last30' | 'thisMonth' | 'lastMonth' | 'custom';
+type DatePreset = 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | 'last7' | 'last14' | 'last30' | 'last90' | 'thisMonth' | 'lastMonth' | 'custom';
 type ActiveTab = 'active' | 'deleted' | 'adjustments';
 type ReportView = 'revenue' | 'trends' | 'itemSales' | 'comparison' | 'profitability' | 'customers';
 
@@ -306,6 +306,12 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   
   const [startDate, setStartDate] = useState<string>(getTodaysDateString());
   const [endDate, setEndDate] = useState<string>(getTodaysDateString());
+  const [customStart, setCustomStart] = useState<string>(getTodaysDateString());
+  const [customEnd, setCustomEnd] = useState<string>(getTodaysDateString());
+  const [isOrdersLoading, setIsOrdersLoading] = useState<boolean>(false);
+  const ordersCacheRef = useRef<Map<string, CompletedOrder[]>>(new Map());
+  const deletedOrdersCacheRef = useRef<Map<string, CompletedOrder[]>>(new Map());
+
   const [activePreset, setActivePreset] = useState<DatePreset>('today');
   const [activeTab, setActiveTab] = useState<ActiveTab>('active');
   const [reportView, setReportView] = useState<ReportView>('revenue');
@@ -927,52 +933,79 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     setCustomerOrderStats(stats);
   }, [isAdmin, user.stationName, user.role]);
 
-  const fetchOrders = useCallback(async () => {
-    // Expand start date by 32 days to ensure 30-day SMA is accurate for the start of the visible range
-    const expandedStart = getHistoricalStartDate(startDate, 32);
-    const fetchedOrders = await getOrdersForDateRange(expandedStart, endDate);
-
-    setAllOrdersRaw(fetchedOrders);
-    
-    // Filter by store - Managers only see their own
-    const storeToFilter = isAdmin ? selectedStore : (user.stationName || 'All');
-    
-    // Process Chart Data (Historical + Visible range, Station Filtered)
-    const stationFiltered = storeToFilter === 'All' 
-      ? fetchedOrders 
-      : fetchedOrders.filter(o => o.branchName === storeToFilter);
-    setChartOrders(stationFiltered);
-
-    // Process View Data (Visible range ONLY, Station Filtered)
-    const inRange = stationFiltered.filter(o => {
-      const d = getISTDateString(o.date);
-      return d >= startDate && d <= endDate;
-    });
+  const fetchOrders = useCallback(async (forceRefresh = false) => {
+    setIsOrdersLoading(true);
+    try {
+      // Expand start date by 32 days to ensure 30-day SMA is accurate for the start of the visible range
+      const expandedStart = getHistoricalStartDate(startDate, 32);
+      const cacheKey = `${expandedStart}_${endDate}`;
       
-    setOrders([...inRange].sort((a, b) => b.billNumber - a.billNumber));
+      let fetchedOrders: CompletedOrder[];
+      if (!forceRefresh && ordersCacheRef.current.has(cacheKey)) {
+        fetchedOrders = ordersCacheRef.current.get(cacheKey)!;
+      } else {
+        fetchedOrders = await getOrdersForDateRange(expandedStart, endDate);
+        ordersCacheRef.current.set(cacheKey, fetchedOrders);
+      }
+
+      setAllOrdersRaw(fetchedOrders);
+      
+      // Filter by store - Managers only see their own
+      const storeToFilter = isAdmin ? selectedStore : (user.stationName || 'All');
+      
+      // Process Chart Data (Historical + Visible range, Station Filtered)
+      const stationFiltered = storeToFilter === 'All' 
+        ? fetchedOrders 
+        : fetchedOrders.filter(o => o.branchName === storeToFilter);
+      setChartOrders(stationFiltered);
+
+      // Process View Data (Visible range ONLY, Station Filtered)
+      const inRange = stationFiltered.filter(o => {
+        const d = getISTDateString(o.date);
+        return d >= startDate && d <= endDate;
+      });
+        
+      setOrders([...inRange].sort((a, b) => b.billNumber - a.billNumber));
+    } catch (err) {
+      console.error("Failed to fetch orders:", err);
+    } finally {
+      setIsOrdersLoading(false);
+    }
   }, [startDate, endDate, selectedStore, isAdmin, user.stationName]);
 
   const fetchFinanceData = useCallback(async () => {
     // Relocated to ledger statements
   }, []);
 
-  const fetchDeletedOrders = useCallback(async () => {
-    const expandedStart = getHistoricalStartDate(startDate, 32);
-    const fetchedOrders = await getDeletedOrdersForDateRange(expandedStart, endDate);
-    
-    // Filter by store - Managers only see their own
-    const storeToFilter = isAdmin ? selectedStore : (user.stationName || 'All');
-    const stationFiltered = storeToFilter === 'All' 
-      ? fetchedOrders 
-      : fetchedOrders.filter(o => o.branchName === storeToFilter);
+  const fetchDeletedOrders = useCallback(async (forceRefresh = false) => {
+    try {
+      const expandedStart = getHistoricalStartDate(startDate, 32);
+      const cacheKey = `${expandedStart}_${endDate}`;
+      
+      let fetchedOrders: CompletedOrder[];
+      if (!forceRefresh && deletedOrdersCacheRef.current.has(cacheKey)) {
+        fetchedOrders = deletedOrdersCacheRef.current.get(cacheKey)!;
+      } else {
+        fetchedOrders = await getDeletedOrdersForDateRange(expandedStart, endDate);
+        deletedOrdersCacheRef.current.set(cacheKey, fetchedOrders);
+      }
+      
+      // Filter by store - Managers only see their own
+      const storeToFilter = isAdmin ? selectedStore : (user.stationName || 'All');
+      const stationFiltered = storeToFilter === 'All' 
+        ? fetchedOrders 
+        : fetchedOrders.filter(o => o.branchName === storeToFilter);
 
-    // Process View Data (Visible range ONLY)
-    const inVisibleRange = stationFiltered.filter(o => {
-      const d = getISTDateString(o.date);
-      return d >= startDate && d <= endDate;
-    });
-    
-    setDeletedOrders([...inVisibleRange].sort((a, b) => b.billNumber - a.billNumber));
+      // Process View Data (Visible range ONLY)
+      const inVisibleRange = stationFiltered.filter(o => {
+        const d = getISTDateString(o.date);
+        return d >= startDate && d <= endDate;
+      });
+      
+      setDeletedOrders([...inVisibleRange].sort((a, b) => b.billNumber - a.billNumber));
+    } catch (err) {
+      console.error("Failed to fetch deleted orders:", err);
+    }
   }, [startDate, endDate, selectedStore, isAdmin, user.stationName]);
 
   const fetchAdjustments = useCallback(async () => {
@@ -1275,6 +1308,12 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
   const handlePresetChange = (preset: DatePreset) => {
     setActivePreset(preset);
+    if (preset === 'custom') {
+      setCustomStart(startDate);
+      setCustomEnd(endDate);
+      return;
+    }
+
     const today = getISTDate();
     let start = getISTDate();
     let end = getISTDate();
@@ -1308,6 +1347,12 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         start = monthAgo;
         end = today;
         break;
+      case 'last90':
+        const threeMonthsAgo = getISTDate();
+        threeMonthsAgo.setDate(today.getDate() - 89);
+        start = threeMonthsAgo;
+        end = today;
+        break;
       case 'thisMonth':
         const tmStart = new Date(today.getFullYear(), today.getMonth(), 1);
         start = new Date(getDateString(tmStart));
@@ -1339,8 +1384,12 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         end = lastSun;
         break;
     }
-    setStartDate(getDateString(start));
-    setEndDate(getDateString(end));
+    const sStr = getDateString(start);
+    const eStr = getDateString(end);
+    setStartDate(sStr);
+    setEndDate(eStr);
+    setCustomStart(sStr);
+    setCustomEnd(eStr);
   };
 
   useEffect(() => {
@@ -1879,16 +1928,44 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 bg-white/50 p-2 rounded-2xl lg:rounded-3xl border border-brand-stone">
-              {(['today', 'yesterday', 'thisWeek', 'lastWeek', 'last7', 'last14', 'last30', 'thisMonth', 'lastMonth', 'custom'] as DatePreset[]).map(p => (
-                <button key={p} onClick={() => handlePresetChange(p)} className={`px-3 lg:px-4 py-2 text-[8px] lg:text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${activePreset === p ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/10'}`}>{p}</button>
+              {(['today', 'yesterday', 'thisWeek', 'lastWeek', 'last7', 'last14', 'last30', 'last90', 'thisMonth', 'lastMonth', 'custom'] as DatePreset[]).map(p => (
+                <button key={p} onClick={() => handlePresetChange(p)} className={`px-3 lg:px-4 py-2 text-[8px] lg:text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${activePreset === p ? 'bg-brand-brown text-brand-yellow shadow-lg' : 'text-brand-brown/40 hover:bg-brand-brown/10'}`}>
+                  {p === 'last90' ? '90 Days' : p}
+                </button>
               ))}
               {activePreset === 'custom' && (
                 <div className="flex items-center gap-2 pl-2 lg:pl-4 border-l border-brand-stone ml-2">
-                  <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="bg-transparent text-[8px] lg:text-[10px] font-black uppercase p-1 outline-none" />
+                  <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} className="bg-transparent text-[8px] lg:text-[10px] font-black uppercase p-1 outline-none" />
                   <span className="text-brand-brown/20">-</span>
-                  <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="bg-transparent text-[8px] lg:text-[10px] font-black uppercase p-1 outline-none" />
+                  <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} className="bg-transparent text-[8px] lg:text-[10px] font-black uppercase p-1 outline-none" />
+                  <button 
+                    onClick={() => {
+                      if (customStart && customEnd) {
+                        setStartDate(customStart);
+                        setEndDate(customEnd);
+                      }
+                    }}
+                    className="bg-brand-brown text-brand-yellow px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-md cursor-pointer"
+                  >
+                    Apply
+                  </button>
                 </div>
               )}
+              <button
+                onClick={() => {
+                  ordersCacheRef.current.clear();
+                  deletedOrdersCacheRef.current.clear();
+                  fetchOrders(true);
+                  fetchDeletedOrders(true);
+                  fetchAdjustments();
+                }}
+                disabled={isOrdersLoading}
+                className="flex items-center gap-1.5 px-3 py-2 text-[8px] lg:text-[10px] font-black uppercase tracking-widest rounded-xl text-brand-brown/60 hover:text-brand-brown hover:bg-brand-brown/10 transition-all ml-auto disabled:opacity-50 cursor-pointer"
+                title="Reload fresh data from database"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isOrdersLoading ? 'animate-spin' : ''}`} />
+                <span>{isOrdersLoading ? 'Loading...' : 'Refresh'}</span>
+              </button>
             </div>
 
             {isAdmin && (

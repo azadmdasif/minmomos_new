@@ -2277,7 +2277,7 @@ export async function resetAllStockToZero(
 }
 
 export async function getOrdersForDateRange(startDate: string, endDate: string): Promise<CompletedOrder[]> {
-  let allData: any[] = [];
+  let allOrders: any[] = [];
   let page = 0;
   const pageSize = 1000;
   let hasMore = true;
@@ -2286,9 +2286,10 @@ export async function getOrdersForDateRange(startDate: string, endDate: string):
     const from = page * pageSize;
     const to = from + pageSize - 1;
     
+    // Select order fields directly without nested join to prevent PostgREST statement timeout (>3s) on large ranges (>60d)
     const { data, error } = await supabase
       .from('orders')
-      .select(`*, items:order_items (*)`)
+      .select('id, bill_number, total, payment_method, branch_name, type, status, table_id, customer_phone, date, manual_total, manual_discount, customer_id, cashier_id, cashier_name, deletion_info')
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`)
       .is('deletion_info', null)
@@ -2296,9 +2297,10 @@ export async function getOrdersForDateRange(startDate: string, endDate: string):
       .range(from, to);
 
     if (error || !data || data.length === 0) {
+      if (error) console.error("Error querying orders for range:", error);
       hasMore = false;
     } else {
-      allData = allData.concat(data);
+      allOrders = allOrders.concat(data);
       if (data.length < pageSize) {
         hasMore = false;
       } else {
@@ -2307,17 +2309,43 @@ export async function getOrdersForDateRange(startDate: string, endDate: string):
     }
   }
 
-  // For orders missing items, try a fallback fetch (though this is more common for single orders due to RLS/join limits)
-  const results = await Promise.all(allData.map(async (o) => {
-    // If Supabase didn't join items (aliased as 'items' now)
-    if (!o.items || o.items.length === 0) {
-       const { data: fallbackItems } = await supabase.from('order_items').select('*').eq('order_id', o.id);
-       if (fallbackItems && fallbackItems.length > 0) {
-         o.items = fallbackItems;
-       }
+  if (allOrders.length === 0) {
+    return [];
+  }
+
+  // Efficient batch fetching of essential order_items columns in chunks of 200 order IDs
+  const orderIds = allOrders.map(o => o.id);
+  const chunkSize = 200;
+  const chunkPromises = [];
+  for (let i = 0; i < orderIds.length; i += chunkSize) {
+    const chunk = orderIds.slice(i, i + chunkSize);
+    chunkPromises.push(
+      supabase
+        .from('order_items')
+        .select('id, order_id, name, price, quantity, cost')
+        .in('order_id', chunk)
+    );
+  }
+
+  const chunkResults = await Promise.all(chunkPromises);
+  const itemsByOrderId = new Map<string, any[]>();
+  for (const res of chunkResults) {
+    if (res.data) {
+      for (const item of res.data) {
+        const arr = itemsByOrderId.get(item.order_id);
+        if (arr) {
+          arr.push(item);
+        } else {
+          itemsByOrderId.set(item.order_id, [item]);
+        }
+      }
     }
+  }
+
+  const results = allOrders.map(o => {
+    o.items = itemsByOrderId.get(o.id) || [];
     return mapDatabaseOrderToType(o);
-  }));
+  });
 
   return results;
 }
@@ -2419,7 +2447,7 @@ export async function getMatchingMenuItems(term: string): Promise<string[]> {
 }
 
 export async function getDeletedOrdersForDateRange(startDate: string, endDate: string): Promise<CompletedOrder[]> {
-  let allData: any[] = [];
+  let allOrders: any[] = [];
   let page = 0;
   const pageSize = 1000;
   let hasMore = true;
@@ -2430,7 +2458,7 @@ export async function getDeletedOrdersForDateRange(startDate: string, endDate: s
     
     const { data, error } = await supabase
       .from('orders')
-      .select(`*, items:order_items (*)`)
+      .select('id, bill_number, total, payment_method, branch_name, type, status, table_id, customer_phone, date, manual_total, manual_discount, customer_id, cashier_id, cashier_name, deletion_info')
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`)
       .not('deletion_info', 'is', null)
@@ -2438,9 +2466,10 @@ export async function getDeletedOrdersForDateRange(startDate: string, endDate: s
       .range(from, to);
 
     if (error || !data || data.length === 0) {
+      if (error) console.error("Error querying deleted orders:", error);
       hasMore = false;
     } else {
-      allData = allData.concat(data);
+      allOrders = allOrders.concat(data);
       if (data.length < pageSize) {
         hasMore = false;
       } else {
@@ -2449,13 +2478,42 @@ export async function getDeletedOrdersForDateRange(startDate: string, endDate: s
     }
   }
 
-  const results = await Promise.all(allData.map(async (o) => {
-    if (!o.items || o.items.length === 0) {
-       const { data: fallbackItems } = await supabase.from('order_items').select('*').eq('order_id', o.id);
-       if (fallbackItems && fallbackItems.length > 0) o.items = fallbackItems;
+  if (allOrders.length === 0) {
+    return [];
+  }
+
+  const orderIds = allOrders.map(o => o.id);
+  const chunkSize = 200;
+  const chunkPromises = [];
+  for (let i = 0; i < orderIds.length; i += chunkSize) {
+    const chunk = orderIds.slice(i, i + chunkSize);
+    chunkPromises.push(
+      supabase
+        .from('order_items')
+        .select('id, order_id, name, price, quantity, cost')
+        .in('order_id', chunk)
+    );
+  }
+
+  const chunkResults = await Promise.all(chunkPromises);
+  const itemsByOrderId = new Map<string, any[]>();
+  for (const res of chunkResults) {
+    if (res.data) {
+      for (const item of res.data) {
+        const arr = itemsByOrderId.get(item.order_id);
+        if (arr) {
+          arr.push(item);
+        } else {
+          itemsByOrderId.set(item.order_id, [item]);
+        }
+      }
     }
+  }
+
+  const results = allOrders.map(o => {
+    o.items = itemsByOrderId.get(o.id) || [];
     return mapDatabaseOrderToType(o);
-  }));
+  });
 
   return results;
 }

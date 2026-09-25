@@ -60,6 +60,53 @@ const pruneLargeDataUrl = (val?: string): string | undefined => {
   return val;
 };
 
+// Upload base64 photos to Supabase Storage ('receipts' bucket) to prevent Postgres column bloating and massive egress
+const uploadBase64ToStorage = async (base64Data?: string, branch?: string, date?: string, type?: string): Promise<string | undefined> => {
+  if (!base64Data) return base64Data;
+  if (!base64Data.startsWith('data:')) {
+    return base64Data; // Already a URL or empty
+  }
+  try {
+    const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) return base64Data;
+    const contentType = matches[1];
+    const b64Payload = matches[2];
+    const byteCharacters = atob(b64Payload);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    const ext = contentType.includes('png') ? 'png' : 'jpg';
+    const cleanBranch = (branch || 'branch').replace(/[^a-zA-Z0-9]/g, '_');
+    const safeDate = date || getISTDateString();
+    const safeType = type || 'photo';
+    const fileName = `daily_ops/${cleanBranch}/${safeDate}/${safeType}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('receipts')
+      .upload(fileName, byteArray, {
+        contentType,
+        cacheControl: '31536000',
+        upsert: true
+      });
+
+    if (uploadError) {
+      console.error('Failed to upload daily operations photo to Supabase storage:', uploadError);
+      return base64Data;
+    }
+
+    const { data: publicUrlData } = supabase.storage
+      .from('receipts')
+      .getPublicUrl(fileName);
+
+    return publicUrlData?.publicUrl || base64Data;
+  } catch (err) {
+    console.error('Error in uploadBase64ToStorage:', err);
+    return base64Data;
+  }
+};
+
 const serializeRecordsForLocalStorage = (records: DailyOperationRecord[]): string => {
   const sanitized = records.map(r => ({
     ...r,
@@ -211,7 +258,8 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
 
     const handleSyncOnVisible = () => {
       if (document.visibilityState === 'visible') {
-        loadAllRecords();
+        // Scope visibility/focus sync to just today's record for the current branch to eliminate heavy egress
+        syncTodayRecord();
         loadEmployees();
         fetchTodaySales();
       }
@@ -243,16 +291,77 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
     }
   }, [activeRecord?.status, activeRecord?.branchName, activeRecord?.date]);
 
-  // Load all operational records from local storage & Supabase
-  const loadAllRecords = async () => {
-    setIsSyncing(true);
-    let records: DailyOperationRecord[] = [];
-
-    // 1. Try fetching from Supabase
+  // Scoped sync for today's record for current branch on focus/visibility change (prevents re-downloading entire table)
+  const syncTodayRecord = async () => {
+    if (!currentBranch || currentBranch === 'All Stations' || currentBranch === 'all') return;
     try {
       const { data, error } = await supabase
         .from('daily_operations')
         .select('*')
+        .eq('branch_name', currentBranch)
+        .eq('date', todayDate)
+        .maybeSingle();
+
+      if (error) throw error;
+      if (data) {
+        const item = data;
+        const freshRecord: DailyOperationRecord = {
+          id: item.id,
+          date: item.date,
+          branchName: item.branch_name,
+          managerName: item.manager_name,
+          status: item.status as DailyOpStatus,
+          openingTime: item.opening_time,
+          openingGps: item.opening_gps,
+          openingPhoto: item.opening_photo,
+          attendance: item.attendance || [],
+          openingCash: Number(item.opening_cash || 0),
+          openingCashDiscrepancyReason: item.opening_cash_discrepancy_reason || '',
+          openingInventory: item.opening_inventory || [],
+          openingSopChecklist: item.opening_sop_checklist || [],
+          openingSopTime: item.opening_sop_time,
+          openingSopPhotos: item.opening_sop_photos || [],
+          events: item.events || [],
+          googleReviewsCount: Number(item.google_reviews_count || 0),
+          managerNotes: item.manager_notes || '',
+          closingSopChecklist: item.closing_sop_checklist || [],
+          closingSopTime: item.closing_sop_time,
+          closingCash: Number(item.closing_cash || 0),
+          closingUpi: Number(item.closing_upi || 0),
+          closingDiscrepancyReason: item.closing_discrepancy_reason || '',
+          closingTime: item.closing_time,
+          closingPhoto: item.closing_photo,
+          createdAt: item.created_at
+        };
+        setActiveRecord(freshRecord);
+        setAllRecords(prev => {
+          const updated = prev.map(r => (r.branchName === freshRecord.branchName && r.date === freshRecord.date) ? freshRecord : r);
+          if (!updated.some(r => r.branchName === freshRecord.branchName && r.date === freshRecord.date)) {
+            updated.push(freshRecord);
+          }
+          return updated.sort((a, b) => b.date.localeCompare(a.date));
+        });
+      }
+    } catch (e) {
+      console.warn("Could not sync today's record for branch:", e);
+    }
+  };
+
+  // Load operational records from local storage & Supabase (capped to past 90 days)
+  const loadAllRecords = async () => {
+    setIsSyncing(true);
+    let records: DailyOperationRecord[] = [];
+
+    // 1. Try fetching from Supabase (capped to last 90 days to prevent unbounded data growth)
+    try {
+      const ninetyDaysAgo = new Date();
+      ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+      const minDateStr = getISTDateString(ninetyDaysAgo);
+
+      const { data, error } = await supabase
+        .from('daily_operations')
+        .select('*')
+        .gte('date', minDateStr)
         .order('date', { ascending: false });
 
       if (error) throw error;
@@ -399,12 +508,53 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
 
   // Save operational record to local and cloud
   const saveRecord = async (updated: DailyOperationRecord) => {
-    setActiveRecord(updated);
+    // 1. Upload any base64 photos to Supabase Storage ('receipts' bucket) to prevent Postgres column bloating and high DB egress
+    let openingPhoto = updated.openingPhoto;
+    if (openingPhoto && openingPhoto.startsWith('data:')) {
+      openingPhoto = await uploadBase64ToStorage(openingPhoto, updated.branchName, updated.date, 'opening');
+    }
 
-    // Save to local storage first
-    const updatedAll = allRecords.map(r => (r.branchName === updated.branchName && r.date === updated.date) ? updated : r);
-    if (!updatedAll.some(r => r.branchName === updated.branchName && r.date === updated.date)) {
-      updatedAll.push(updated);
+    let closingPhoto = updated.closingPhoto;
+    if (closingPhoto && closingPhoto.startsWith('data:')) {
+      closingPhoto = await uploadBase64ToStorage(closingPhoto, updated.branchName, updated.date, 'closing');
+    }
+
+    let openingSopPhotos = updated.openingSopPhotos;
+    if (Array.isArray(openingSopPhotos) && openingSopPhotos.some(p => p && p.startsWith('data:'))) {
+      openingSopPhotos = (await Promise.all(
+        openingSopPhotos.map((p, idx) => 
+          p && p.startsWith('data:') ? uploadBase64ToStorage(p, updated.branchName, updated.date, `sop_${idx}`) : Promise.resolve(p)
+        )
+      )) as string[];
+    }
+
+    let events = updated.events;
+    if (Array.isArray(events) && events.some(ev => ev.details?.photo && ev.details.photo.startsWith('data:'))) {
+      events = await Promise.all(
+        events.map(async (ev, idx) => {
+          if (ev.details?.photo && ev.details.photo.startsWith('data:')) {
+            const url = await uploadBase64ToStorage(ev.details.photo, updated.branchName, updated.date, `event_${idx}`);
+            return { ...ev, details: { ...ev.details, photo: url || ev.details.photo } };
+          }
+          return ev;
+        })
+      );
+    }
+
+    const cleanedRecord: DailyOperationRecord = {
+      ...updated,
+      openingPhoto,
+      closingPhoto,
+      openingSopPhotos,
+      events
+    };
+
+    setActiveRecord(cleanedRecord);
+
+    // Save to local storage
+    const updatedAll = allRecords.map(r => (r.branchName === cleanedRecord.branchName && r.date === cleanedRecord.date) ? cleanedRecord : r);
+    if (!updatedAll.some(r => r.branchName === cleanedRecord.branchName && r.date === cleanedRecord.date)) {
+      updatedAll.push(cleanedRecord);
     }
     setAllRecords(updatedAll);
     safeSetLocalStorage('minmomos-daily-operations', serializeRecordsForLocalStorage(updatedAll));
@@ -413,40 +563,40 @@ export default function DailyOperations({ user }: DailyOperationsProps) {
     // Upsert to Supabase
     try {
       const payload = {
-        date: updated.date,
-        branch_name: updated.branchName,
-        manager_name: updated.managerName,
-        status: updated.status,
-        opening_time: updated.openingTime,
-        opening_gps: updated.openingGps,
-        opening_photo: updated.openingPhoto,
-        attendance: updated.attendance,
-        opening_cash: updated.openingCash,
-        opening_cash_discrepancy_reason: updated.openingCashDiscrepancyReason,
-        opening_inventory: updated.openingInventory,
-        opening_sop_checklist: updated.openingSopChecklist,
-        opening_sop_time: updated.openingSopTime,
-        opening_sop_photos: updated.openingSopPhotos,
-        events: updated.events,
-        google_reviews_count: updated.googleReviewsCount,
-        manager_notes: updated.managerNotes,
-        closing_sop_checklist: updated.closingSopChecklist,
-        closing_sop_time: updated.closingSopTime,
-        closing_cash: updated.closingCash,
-        closing_upi: updated.closingUpi,
-        closing_discrepancy_reason: updated.closingDiscrepancyReason,
-        closing_time: updated.closingTime,
-        closing_photo: updated.closingPhoto
+        date: cleanedRecord.date,
+        branch_name: cleanedRecord.branchName,
+        manager_name: cleanedRecord.managerName,
+        status: cleanedRecord.status,
+        opening_time: cleanedRecord.openingTime,
+        opening_gps: cleanedRecord.openingGps,
+        opening_photo: cleanedRecord.openingPhoto,
+        attendance: cleanedRecord.attendance,
+        opening_cash: cleanedRecord.openingCash,
+        opening_cash_discrepancy_reason: cleanedRecord.openingCashDiscrepancyReason,
+        opening_inventory: cleanedRecord.openingInventory,
+        opening_sop_checklist: cleanedRecord.openingSopChecklist,
+        opening_sop_time: cleanedRecord.openingSopTime,
+        opening_sop_photos: cleanedRecord.openingSopPhotos,
+        events: cleanedRecord.events,
+        google_reviews_count: cleanedRecord.googleReviewsCount,
+        manager_notes: cleanedRecord.managerNotes,
+        closing_sop_checklist: cleanedRecord.closingSopChecklist,
+        closing_sop_time: cleanedRecord.closingSopTime,
+        closing_cash: cleanedRecord.closingCash,
+        closing_upi: cleanedRecord.closingUpi,
+        closing_discrepancy_reason: cleanedRecord.closingDiscrepancyReason,
+        closing_time: cleanedRecord.closingTime,
+        closing_photo: cleanedRecord.closingPhoto
       };
 
       // Find existing supabase row ID to overwrite if exists
-      let existingId = updated.id;
+      let existingId = cleanedRecord.id;
       if (!existingId) {
         const { data } = await supabase
           .from('daily_operations')
           .select('id')
-          .eq('branch_name', updated.branchName)
-          .eq('date', updated.date)
+          .eq('branch_name', cleanedRecord.branchName)
+          .eq('date', cleanedRecord.date)
           .maybeSingle();
         if (data) existingId = data.id;
       }

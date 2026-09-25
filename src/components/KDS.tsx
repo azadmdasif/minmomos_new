@@ -32,10 +32,12 @@ const KDS: React.FC = () => {
       })
       .subscribe();
 
-    // 2. Polling Fallback (Every 10 seconds)
+    // 2. Polling Fallback (Infrequent 60s safety net alongside realtime to minimize egress)
     pollIntervalRef.current = window.setInterval(() => {
-      fetchPending();
-    }, 10000);
+      if (document.visibilityState === 'visible') {
+        fetchPending();
+      }
+    }, 60000);
 
     return () => {
       supabase.removeChannel(channel);

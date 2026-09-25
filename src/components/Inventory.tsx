@@ -562,10 +562,12 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
           else console.error("Procurements error", e);
         }
 
-        // Fetch Procurements for Vendors Tab using separate range
+        // Fetch Procurements for Vendors Tab using separate range (capped to last 365 days instead of 2020-2030 unbounded decade)
         try {
-          const vStart = vendorDatePreset === 'all' ? '2020-01-01' : vendorStartDate;
-          const vEnd = vendorDatePreset === 'all' ? '2030-12-31' : vendorEndDate;
+          const oneYearAgo = new Date();
+          oneYearAgo.setDate(oneYearAgo.getDate() - 365);
+          const vStart = vendorDatePreset === 'all' ? getISTDateString(oneYearAgo) : vendorStartDate;
+          const vEnd = vendorDatePreset === 'all' ? getISTDateString() : vendorEndDate;
           const vpRes = await fetchProcurements(vStart, vEnd);
           setVendorProcurements(vpRes.data || []);
         } catch (e: any) {
@@ -627,7 +629,12 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
 
   useEffect(() => {
     fetchData();
-    pollIntervalRef.current = window.setInterval(() => fetchData(true), 15000);
+    // Polling safety fallback lengthened to 60s and only runs when tab is visible to eliminate redundant egress
+    pollIntervalRef.current = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchData(true);
+      }
+    }, 60000);
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     };
