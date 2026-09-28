@@ -755,6 +755,28 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
     }
   };
 
+  const handleRestoreDeletedRecord = async (record: any) => {
+    const val = (parseFloat(record.credit_cash) || 0) + (parseFloat(record.credit_bank) || 0) + (parseFloat(record.debit_cash) || 0) + (parseFloat(record.debit_bank) || 0);
+    const confirmed = window.confirm(`Restore entry dated ${record.date} (₹${val.toLocaleString('en-IN')}) back to the active ledger sheet?`);
+    if (!confirmed) return;
+
+    try {
+      const { error } = await supabase
+        .from('finance_ledger')
+        .update({
+          is_deleted: false,
+          delete_reason: '',
+          deleted_at: null
+        })
+        .eq('id', record.id);
+      if (error) throw error;
+      await loadSheetRows();
+      await loadDeletedRecords();
+    } catch (err: any) {
+      alert("Failed to restore entry: " + err.message);
+    }
+  };
+
   // Calculations from sheet
   const [openingCash, setOpeningCash] = useState<number>(0);
   const [openingBank, setOpeningBank] = useState<number>(0);
@@ -5429,6 +5451,7 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                                 <th className="py-3 px-4">Original Entry Detail (Category: notes)</th>
                                 <th className="py-3 px-4 text-right">Value Voided</th>
                                 <th className="py-3 px-4">Proper Reason of Void</th>
+                                <th className="py-3 px-4 text-center">Action</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-zinc-100">
@@ -5463,6 +5486,15 @@ export const FinanceLedger: React.FC<FinanceLedgerProps> = ({ user }) => {
                                     </td>
                                     <td className="py-3 px-4 font-medium text-amber-700 bg-amber-500/5 max-w-[220px]" title={reason}>
                                       {reason}
+                                    </td>
+                                    <td className="py-3 px-4 text-center whitespace-nowrap">
+                                      <button
+                                        onClick={() => handleRestoreDeletedRecord(r)}
+                                        className="px-3 py-1.5 text-[10px] font-black uppercase tracking-wider bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:scale-105 active:scale-95 border border-emerald-300 rounded-lg transition-all cursor-pointer shadow-xs"
+                                        title="Restore this entry back to the active ledger sheet"
+                                      >
+                                        Restore
+                                      </button>
                                     </td>
                                   </tr>
                                 );

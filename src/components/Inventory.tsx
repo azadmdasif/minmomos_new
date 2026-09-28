@@ -200,6 +200,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [newItemSubcategory, setNewItemSubcategory] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSeeding, setIsSeeding] = useState(false);
+  const [isSavingBulkPayment, setIsSavingBulkPayment] = useState(false);
+  const [isSavingSinglePayment, setIsSavingSinglePayment] = useState(false);
 
   // Vendor states
   const [vendors, setVendors] = useState<Vendor[]>([]);
@@ -1107,7 +1109,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   };
 
   const handleSaveBulkPayment = async () => {
-    if (bulkPaymentIds.length === 0) return;
+    if (bulkPaymentIds.length === 0 || isSavingBulkPayment) return;
+    setIsSavingBulkPayment(true);
     try {
       let cashAmt: number | undefined;
       let upiAmt: number | undefined;
@@ -1144,6 +1147,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
       await fetchData();
     } catch (err: any) {
       alert("Failed to record bulk payment: " + err.message);
+    } finally {
+      setIsSavingBulkPayment(false);
     }
   };
 
@@ -1276,7 +1281,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   };
 
   const handleSavePaymentDetails = async () => {
-    if (!selectedProcurementForPayment) return;
+    if (!selectedProcurementForPayment || isSavingSinglePayment) return;
+    setIsSavingSinglePayment(true);
     const p = selectedProcurementForPayment;
 
     try {
@@ -1420,6 +1426,8 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
       await fetchData();
     } catch (err: any) {
       alert("Failed to update payment details: " + err.message);
+    } finally {
+      setIsSavingSinglePayment(false);
     }
   };
 
@@ -4227,11 +4235,17 @@ NOTIFY pgrst, 'reload schema';`}
                 </button>
                 <button 
                   onClick={handleSavePaymentDetails} 
-                  className={`py-4 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all ${
+                  disabled={isSavingSinglePayment}
+                  className={`py-4 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all flex items-center justify-center gap-2 ${
+                    isSavingSinglePayment ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
+                  } ${
                     paymentMode === 'UNPAY' ? 'bg-brand-red hover:bg-red-700' : 'bg-brand-brown text-brand-yellow hover:scale-102'
                   }`}
                 >
-                  {paymentMode === 'PAY' ? 'Confirm Payment' : paymentMode === 'EDIT' ? 'Save Changes' : 'Confirm Reversal'}
+                  {isSavingSinglePayment 
+                    ? (paymentMode === 'UNPAY' ? 'Reversing Payment...' : 'Saving to Ledger...')
+                    : (paymentMode === 'PAY' ? 'Confirm Payment' : paymentMode === 'EDIT' ? 'Save Changes' : 'Confirm Reversal')
+                  }
                 </button>
               </div>
             </div>
@@ -4496,16 +4510,20 @@ NOTIFY pgrst, 'reload schema';`}
               {/* Action buttons */}
               <div className="grid grid-cols-2 gap-3 pt-2">
                 <button 
-                  onClick={() => { setIsBulkPaymentModalOpen(false); }} 
-                  className="py-4 bg-white text-brand-brown rounded-2xl font-black uppercase tracking-widest text-[10px] border border-brand-stone hover:bg-brand-stone/10 cursor-pointer"
+                  onClick={() => { if (!isSavingBulkPayment) setIsBulkPaymentModalOpen(false); }} 
+                  disabled={isSavingBulkPayment}
+                  className="py-4 bg-white text-brand-brown rounded-2xl font-black uppercase tracking-widest text-[10px] border border-brand-stone hover:bg-brand-stone/10 cursor-pointer disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button 
                   onClick={handleSaveBulkPayment} 
-                  className="py-4 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all bg-brand-brown text-brand-yellow hover:scale-[1.02] cursor-pointer"
+                  disabled={isSavingBulkPayment}
+                  className={`py-4 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all bg-brand-brown text-brand-yellow flex items-center justify-center gap-2 ${
+                    isSavingBulkPayment ? 'opacity-60 cursor-not-allowed' : 'hover:scale-[1.02] cursor-pointer'
+                  }`}
                 >
-                  Confirm Bulk Payment
+                  {isSavingBulkPayment ? 'Recording Payment to Ledger...' : 'Confirm Bulk Payment'}
                 </button>
               </div>
             </div>

@@ -725,7 +725,10 @@ export async function logCombinedVendorPaymentToFinance(
   }
 
   const { error } = await supabase.from('finance_ledger').insert(rec);
-  if (error) console.error("Failed to insert combined bill into finance_ledger:", error);
+  if (error) {
+    console.error("Failed to insert combined bill into finance_ledger:", error);
+    throw error;
+  }
 }
 
 export async function logLedgerDebitForProcurement(
@@ -782,7 +785,10 @@ export async function logLedgerDebitForProcurement(
   }
 
   const { error } = await supabase.from('finance_ledger').insert(rec);
-  if (error) console.error("Failed to insert into finance_ledger:", error);
+  if (error) {
+    console.error("Failed to insert into finance_ledger:", error);
+    throw error;
+  }
 }
 
 export async function logDailyIncomeToLedger(
@@ -1014,7 +1020,7 @@ export async function updateProcurementPayment(
 
     // Handle Global Ledger Sync
     if (isPaid && paidAt && paymentMode) {
-      // First, delete any pre-existing ledger items for this procurement to avoid duplicates on re-save
+      // First, delete any active pre-existing ledger items for this procurement to avoid duplicates on re-save
       await supabase
         .from('finance_ledger')
         .update({
@@ -1022,7 +1028,8 @@ export async function updateProcurementPayment(
           deleted_at: new Date().toISOString(),
           delete_reason: 'Payment Updated/Replaced'
         })
-        .or(`debit_cash_details.like.%[ProcID: ${id}]%,debit_bank_details.like.%[ProcID: ${id}]%`);
+        .eq('is_deleted', false)
+        .or(`debit_cash_details.like.%[ProcID: ${id}]%,debit_bank_details.like.%[ProcID: ${id}]%,debit_cash_details.like.%${id}%,debit_bank_details.like.%${id}%`);
 
       // Fetch procurement details to log to ledger
       const { data: proc } = await supabase.from('procurements').select('*').eq('id', id).single();
@@ -1039,7 +1046,7 @@ export async function updateProcurementPayment(
         );
       }
     } else if (!isPaid) {
-      // Reversal: mark as deleted in ledger
+      // Reversal: mark active ledger entry as deleted in ledger
       await supabase
         .from('finance_ledger')
         .update({
@@ -1047,7 +1054,8 @@ export async function updateProcurementPayment(
           deleted_at: new Date().toISOString(),
           delete_reason: 'Procurement marked unpaid/reversed'
         })
-        .or(`debit_cash_details.like.%[ProcID: ${id}]%,debit_bank_details.like.%[ProcID: ${id}]%`);
+        .eq('is_deleted', false)
+        .or(`debit_cash_details.like.%[ProcID: ${id}]%,debit_bank_details.like.%[ProcID: ${id}]%,debit_cash_details.like.%${id}%,debit_bank_details.like.%${id}%`);
     }
   } catch (err: any) {
     if (err.message === "COLUMN_MISSING") {
@@ -1081,7 +1089,23 @@ export async function bulkPayProcurements(
     const totalSelectedAmount = procs.reduce((sum, p) => sum + (p.total_cost || 0), 0);
     const vendorName = procs[0].vendor || 'Local Market';
 
-    for (const proc of procs) {
+    // 1. Delete any active pre-existing ledger items referencing ANY of these procurements ONCE before batch update.
+    // Avoid running this in a loop for each item, which causes race conditions, duplicate deletions, and slow execution.
+    const cleanConditions = ids.slice(0, 30).map(id => `debit_cash_details.like.%${id}%,debit_bank_details.like.%${id}%`).join(',');
+    if (cleanConditions) {
+      await supabase
+        .from('finance_ledger')
+        .update({
+          is_deleted: true,
+          deleted_at: new Date().toISOString(),
+          delete_reason: 'Payment Updated/Replaced'
+        })
+        .eq('is_deleted', false)
+        .or(cleanConditions);
+    }
+
+    // 2. Update all procurements in parallel
+    const updatePromises = procs.map(proc => {
       const nextHistory = Array.isArray(proc.payment_history) ? [...proc.payment_history] : [];
       nextHistory.push({
         event: 'payment',
@@ -1096,7 +1120,7 @@ export async function bulkPayProcurements(
         bill_image: billUrl || undefined
       });
 
-      const { error: updateErr } = await supabase
+      return supabase
         .from('procurements')
         .update({
           is_paid: true,
@@ -1107,24 +1131,17 @@ export async function bulkPayProcurements(
           payment_history: nextHistory
         })
         .eq('id', proc.id);
+    });
 
-      if (updateErr) throw updateErr;
-
-      // First, delete any pre-existing ledger items for this procurement to avoid duplicates on re-save
-      await supabase
-        .from('finance_ledger')
-        .update({
-          is_deleted: true,
-          deleted_at: new Date().toISOString(),
-          delete_reason: 'Payment Updated/Replaced'
-        })
-        .or(`debit_cash_details.like.%[ProcID: ${proc.id}]%,debit_bank_details.like.%[ProcID: ${proc.id}]%,debit_cash_details.like.%${proc.id}%,debit_bank_details.like.%${proc.id}%`);
+    const updateResults = await Promise.all(updatePromises);
+    for (const res of updateResults) {
+      if (res.error) throw res.error;
     }
 
-    // Determine the consolidated subcategory
+    // 3. Determine the consolidated subcategory
     const finalSubcat = subcategory || getItemSubcategory(procs[0].item_name, procs[0].item_id);
 
-    // Log ONE combined vendor payment debit to the global ledger!
+    // 4. Log ONE combined vendor payment debit to the global ledger!
     await logCombinedVendorPaymentToFinance(
       vendorName,
       finalSubcat,
