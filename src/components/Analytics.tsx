@@ -1607,12 +1607,18 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     const reviewCollectedPercent = inStoreOrdersCount > 0 ? (reviewsCollectedCount / inStoreOrdersCount) * 100 : 0;
     
     const nonStudentTotalOrders = orders.length - studentOrdersCount;
+    const deliveryNetPayout = Math.round(deliveryRevenue * 0.55);
+    const effectiveDeliveryDiscountPercent = deliveryMenuTotal > 0
+      ? ((deliveryMenuTotal - (deliveryRevenue * 0.55)) / deliveryMenuTotal) * 100
+      : 0;
 
     return { 
       totalRevenue: revenue, 
       deliveryRevenue: deliveryRevenue,
       deliveryDiscount: deliveryDiscount,
       deliveryMenuTotal: deliveryMenuTotal,
+      deliveryNetPayout,
+      effectiveDeliveryDiscountPercent,
       totalCogs: combinedCogs,
       grossProfit: combinedProfit,
       profitMargin: combinedRevenue > 0 ? (combinedProfit / combinedRevenue) * 100 : 0,
@@ -2606,16 +2612,45 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                   <h3 className="text-3xl lg:text-4xl font-black tracking-tighter text-white">₹{(financialData.deliveryRevenue ?? 0).toLocaleString()}</h3>
                   <p className="text-[8px] lg:text-[9px] font-bold uppercase tracking-widest mt-1 text-white/40">HOME &amp; APP DELIVERY</p>
                   
-                  {/* In-store equivalent and % relative comparison */}
-                  <div className="mt-4 bg-white/10 rounded-2xl p-3 border border-white/15 flex flex-col gap-0.5">
-                    <p className="text-[8px] font-black uppercase text-white/70 tracking-wider">In-Store Value Equivalent</p>
-                    <div className="flex flex-wrap items-baseline gap-1.5">
-                      <span className="text-base font-black text-[#ffeaa7]">
-                        ₹{(financialData.deliveryMenuTotal ?? 0).toLocaleString()}
-                      </span>
-                      <span className="text-[9px] font-black text-white/80">
-                        ({(financialData.deliveryRevenue > 0 ? ((financialData.deliveryMenuTotal ?? 0) / financialData.deliveryRevenue) * 100 : 0).toFixed(1)}% of Delivery)
-                      </span>
+                  {/* In-store equivalent and effective discount vs offline comparison */}
+                  <div className="mt-4 bg-white/10 rounded-2xl p-3 border border-white/15 flex flex-col gap-2.5">
+                    <div>
+                      <p className="text-[8px] font-black uppercase text-white/70 tracking-wider">In-Store Value Equivalent</p>
+                      <div className="flex flex-wrap items-baseline gap-1.5 mt-0.5">
+                        <span className="text-base font-black text-[#ffeaa7]">
+                          ₹{(financialData.deliveryMenuTotal ?? 0).toLocaleString()}
+                        </span>
+                        <span className="text-[9px] font-black text-white/80">
+                          ({(financialData.deliveryRevenue > 0 ? ((financialData.deliveryMenuTotal ?? 0) / financialData.deliveryRevenue) * 100 : 0).toFixed(1)}% of Delivery)
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Effective Discount relative to Offline Channel assuming 55% sale value */}
+                    <div className="pt-2 border-t border-white/15">
+                      <div className="flex items-center justify-between gap-1">
+                        <p className="text-[8px] font-black uppercase text-white/75 tracking-wider">
+                          Effective Discount vs Offline
+                        </p>
+                        <span className="text-[7.5px] font-bold text-white/60">
+                          @ 55% Sale Value
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-baseline justify-between gap-1.5 mt-0.5">
+                        <div className="flex items-baseline gap-1">
+                          <span className={`text-base font-black tracking-tight ${
+                            (financialData.effectiveDeliveryDiscountPercent ?? 0) >= 0 ? 'text-[#ffeaa7]' : 'text-emerald-300'
+                          }`}>
+                            {Math.abs(financialData.effectiveDeliveryDiscountPercent ?? 0).toFixed(1)}%
+                          </span>
+                          <span className="text-[8px] font-black uppercase text-white/80 tracking-wider">
+                            {(financialData.effectiveDeliveryDiscountPercent ?? 0) >= 0 ? 'Discount' : 'Premium'}
+                          </span>
+                        </div>
+                        <span className="text-[8px] font-semibold text-white/65">
+                          (₹{(financialData.deliveryNetPayout ?? 0).toLocaleString()} realized)
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
