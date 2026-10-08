@@ -150,7 +150,18 @@ export function setLocalItemHidden(id: string, isHidden: boolean): void {
   }
 }
 
-export async function fetchMenuItems(): Promise<{ data: MenuItem[], error: any }> {
+let menuItemsCache: { timestamp: number; data: MenuItem[] } | null = null;
+const MENU_ITEMS_CACHE_TTL = 10 * 60 * 1000;
+
+export function invalidateMenuItemsCache(): void {
+  menuItemsCache = null;
+}
+
+export async function fetchMenuItems(forceRefresh = false): Promise<{ data: MenuItem[], error: any }> {
+  if (!forceRefresh && menuItemsCache && (Date.now() - menuItemsCache.timestamp < MENU_ITEMS_CACHE_TTL)) {
+    return { data: menuItemsCache.data, error: null };
+  }
+
   const { data, error } = await supabase.from('menu_items').select('*').order('name');
   const localHidden = getLocalHiddenItemIds();
   let mappedData = data?.map(item => {
@@ -200,10 +211,15 @@ export async function fetchMenuItems(): Promise<{ data: MenuItem[], error: any }
     });
   }
 
+  if (!error && mappedData.length > 0) {
+    menuItemsCache = { timestamp: Date.now(), data: mappedData };
+  }
+
   return { data: mappedData, error };
 }
 
 export async function upsertMenuItem(item: MenuItem): Promise<void> {
+  invalidateMenuItemsCache();
   if (item.id) {
     setLocalItemHidden(item.id, Boolean(item.is_hidden));
   }
@@ -248,6 +264,7 @@ export async function toggleMenuItemHidden(item: MenuItem, isHidden: boolean): P
 }
 
 export async function deleteMenuItem(id: string): Promise<void> {
+  invalidateMenuItemsCache();
   console.log(`Storage: Attempting to delete menu item with ID: ${id}`);
   const { error } = await supabase
     .from('menu_items')
@@ -398,7 +415,15 @@ export async function reassignItemsCategory(fromCategory: string, toCategory: st
 
 // --- PROCUREMENT ---
 
+let procurementsCache: { timestamp: number; data: any[] } | null = null;
+const PROCUREMENTS_CACHE_TTL = 5 * 60 * 1000;
+
+export function invalidateProcurementsCache(): void {
+  procurementsCache = null;
+}
+
 export async function logProcurement(item: any): Promise<void> {
+  invalidateProcurementsCache();
   const { error } = await supabase.from('procurements').insert(item);
   if (error) throw error;
 }
@@ -407,7 +432,7 @@ export async function fetchProcurements(startDate: string, endDate: string): Pro
   try {
     const { data, error } = await supabase
       .from('procurements')
-      .select('*')
+      .select('id, item_id, item_name, category, unit, quantity, unit_cost, total_cost, vendor, date, payment_status, is_voided')
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`)
       .order('date', { ascending: false });
@@ -419,18 +444,25 @@ export async function fetchProcurements(startDate: string, endDate: string): Pro
   }
 }
 
-export async function fetchAllNonVoidedProcurements(): Promise<any[]> {
+export async function fetchAllNonVoidedProcurements(forceRefresh = false): Promise<any[]> {
   try {
+    if (!forceRefresh && procurementsCache && (Date.now() - procurementsCache.timestamp < PROCUREMENTS_CACHE_TTL)) {
+      return procurementsCache.data;
+    }
+
     const { data, error } = await supabase
       .from('procurements')
-      .select('*')
+      .select('id, item_id, item_name, unit, quantity, unit_cost, total_cost, vendor, date, is_voided')
       .order('date', { ascending: false })
-      .limit(300);
+      .limit(200);
+
     if (error) {
       console.error("Error fetching all non-voided procurements:", error);
       return [];
     }
-    return (data || []).filter((p: any) => p.is_voided !== true);
+    const filtered = (data || []).filter((p: any) => p.is_voided !== true);
+    procurementsCache = { timestamp: Date.now(), data: filtered };
+    return filtered;
   } catch (e) {
     console.error("Error in fetchAllNonVoidedProcurements:", e);
     return [];
@@ -441,7 +473,7 @@ export async function getFinancialSpending(startDate: string, endDate: string): 
   try {
     const { data, error } = await supabase
       .from('procurements')
-      .select('*')
+      .select('id, item_id, total_cost, quantity, date, is_voided')
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`);
     
@@ -457,6 +489,7 @@ export async function getFinancialSpending(startDate: string, endDate: string): 
 }
 
 export async function voidProcurement(id: string, reason: string, performedBy: string = 'SYSTEM'): Promise<void> {
+  invalidateProcurementsCache();
   const { data: p, error: fetchError } = await supabase.from('procurements').select('*').eq('id', id).single();
   if (fetchError || !p) throw new Error("Procurement not found.");
   if (p.is_voided) throw new Error("Already voided.");
@@ -1550,12 +1583,51 @@ export async function saveOrder(
       }
     }
 
-    // 1.5 Update Customer LTV and Total Orders
+    // 1.5 Update Customer LTV, Total Orders, and apply flat 8% MinCoins
     if (customerPhone) {
-        await syncCustomerStats(customerPhone);
+        const normalizedPhone = normalizePhone(customerPhone);
+        
+        const { data: currentCust } = await supabase
+          .from('customers')
+          .select('id, min_coins, ltv, total_orders')
+          .eq('phone', normalizedPhone)
+          .maybeSingle();
+
+        const currentCoins = currentCust?.min_coins != null ? Number(currentCust.min_coins) : 0;
+        
+        const coinsRedeemedInOrder = orderItems.reduce((acc, item) => 
+          acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
+        
+        // Strict validation: MinCoins earned in this bill cannot be used in the same bill!
+        // Customer must have already had enough MinCoins to redeem items.
+        if (coinsRedeemedInOrder > 0 && currentCoins < coinsRedeemedInOrder) {
+          throw new Error(`Insufficient MinCoins balance (${currentCoins} available, ${coinsRedeemedInOrder} required). MinCoins earned in this order can only be used on subsequent orders.`);
+        }
+
+        const cashSpentInOrder = orderItems.reduce((acc, item) => 
+          acc + (item.paidWithCoins ? 0 : item.price * item.quantity), 0);
+        
+        // Every order generates flat 8% mincoin on paid cash amount regardless of tiers
+        const coinsEarnedInOrder = Math.floor(cashSpentInOrder * 0.08);
+
+        // Deduct redeemed coins from existing balance, then add earned coins for next order
+        const newBalance = Math.max(0, currentCoins - coinsRedeemedInOrder) + coinsEarnedInOrder;
+
+        const newLtv = (currentCust?.ltv || 0) + roundedTotal;
+        const newTotalOrders = (currentCust?.total_orders || 0) + 1;
+
+        await supabase
+          .from('customers')
+          .update({
+            min_coins: newBalance,
+            ltv: newLtv,
+            total_orders: newTotalOrders,
+            last_visit: getISTISOString()
+          })
+          .eq('phone', normalizedPhone);
         
         const usesWelcomeDiscount = orderItems.some(i => i.id === 'welcome-discount');
-        if (usesWelcomeDiscount) {
+        if (usesWelcomeDiscount && customerId) {
           await supabase.from('customers').update({ welcome_coupon_used: true }).eq('id', customerId);
         }
     }
@@ -1643,6 +1715,11 @@ export async function saveOrder(
       }
     }
 
+    invalidateOrdersRangeCache();
+    invalidateCustomersCache();
+    invalidateCohortCache();
+    invalidateClassificationCache();
+
     return nextBillNumber;
   } catch (err) {
     console.error("Order Save Failed:", err);
@@ -1650,12 +1727,25 @@ export async function saveOrder(
   }
 }
 
-export async function getStations(): Promise<Station[]> {
+let stationsCache: { timestamp: number; data: Station[] } | null = null;
+const STATIONS_CACHE_TTL = 15 * 60 * 1000;
+
+export function invalidateStationsCache(): void {
+  stationsCache = null;
+}
+
+export async function getStations(forceRefresh = false): Promise<Station[]> {
+  if (!forceRefresh && stationsCache && (Date.now() - stationsCache.timestamp < STATIONS_CACHE_TTL)) {
+    return stationsCache.data;
+  }
   const { data } = await supabase.from('stations').select('*').order('name');
-  return data || [];
+  const result = data || [];
+  stationsCache = { timestamp: Date.now(), data: result };
+  return result;
 }
 
 export async function createStation(name: string, location: string): Promise<void> {
+  invalidateStationsCache();
   const { error } = await supabase.from('stations').insert({ name, location });
   if (error) throw error;
 }
@@ -2293,7 +2383,22 @@ export async function resetAllStockToZero(
   }
 }
 
-export async function getOrdersForDateRange(startDate: string, endDate: string): Promise<CompletedOrder[]> {
+const ordersRangeCache = new Map<string, { timestamp: number; data: CompletedOrder[] }>();
+const deletedOrdersRangeCache = new Map<string, { timestamp: number; data: CompletedOrder[] }>();
+const ORDERS_RANGE_CACHE_TTL = 3 * 60 * 1000;
+
+export function invalidateOrdersRangeCache(): void {
+  ordersRangeCache.clear();
+  deletedOrdersRangeCache.clear();
+}
+
+export async function getOrdersForDateRange(startDate: string, endDate: string, forceRefresh = false): Promise<CompletedOrder[]> {
+  const cacheKey = `${startDate}_${endDate}`;
+  const cached = ordersRangeCache.get(cacheKey);
+  if (!forceRefresh && cached && (Date.now() - cached.timestamp < ORDERS_RANGE_CACHE_TTL)) {
+    return cached.data;
+  }
+
   let allOrders: any[] = [];
   let page = 0;
   const pageSize = 1000;
@@ -2327,6 +2432,7 @@ export async function getOrdersForDateRange(startDate: string, endDate: string):
   }
 
   if (allOrders.length === 0) {
+    ordersRangeCache.set(cacheKey, { timestamp: Date.now(), data: [] });
     return [];
   }
 
@@ -2364,6 +2470,7 @@ export async function getOrdersForDateRange(startDate: string, endDate: string):
     return mapDatabaseOrderToType(o);
   });
 
+  ordersRangeCache.set(cacheKey, { timestamp: Date.now(), data: results });
   return results;
 }
 
@@ -2463,7 +2570,13 @@ export async function getMatchingMenuItems(term: string): Promise<string[]> {
   return Array.from(names).slice(0, 15);
 }
 
-export async function getDeletedOrdersForDateRange(startDate: string, endDate: string): Promise<CompletedOrder[]> {
+export async function getDeletedOrdersForDateRange(startDate: string, endDate: string, forceRefresh = false): Promise<CompletedOrder[]> {
+  const cacheKey = `${startDate}_${endDate}`;
+  const cached = deletedOrdersRangeCache.get(cacheKey);
+  if (!forceRefresh && cached && (Date.now() - cached.timestamp < ORDERS_RANGE_CACHE_TTL)) {
+    return cached.data;
+  }
+
   let allOrders: any[] = [];
   let page = 0;
   const pageSize = 1000;
@@ -2496,6 +2609,7 @@ export async function getDeletedOrdersForDateRange(startDate: string, endDate: s
   }
 
   if (allOrders.length === 0) {
+    deletedOrdersRangeCache.set(cacheKey, { timestamp: Date.now(), data: [] });
     return [];
   }
 
@@ -2532,6 +2646,7 @@ export async function getDeletedOrdersForDateRange(startDate: string, endDate: s
     return mapDatabaseOrderToType(o);
   });
 
+  deletedOrdersRangeCache.set(cacheKey, { timestamp: Date.now(), data: results });
   return results;
 }
 
@@ -2539,33 +2654,51 @@ export async function syncCustomerStats(phone: string): Promise<void> {
   const normalized = normalizePhone(phone);
   if (!normalized) return;
 
+  const { data: dbCust } = await supabase
+    .from('customers')
+    .select('id, min_coins')
+    .eq('phone', normalized)
+    .maybeSingle();
+
   const history = await fetchCustomerHistory(normalized);
   const totalOrders = history.length;
   const totalSpent = history.reduce((acc, o) => acc + (o.manualTotal != null ? o.manualTotal : o.total), 0);
-  const redeemedCoins = await getRedeemedCoins(normalized);
-  const minCoins = calculateTotalMinCoins(totalSpent, redeemedCoins);
   const lastVisit = history.length > 0 ? history[0].date : null;
+
+  const updatePayload: any = { 
+    total_orders: totalOrders,
+    ltv: totalSpent,
+    last_visit: lastVisit
+  };
+
+  // KEEP EVERY USER'S MINCOIN BALANCE AS IT IS!
+  // Never overwrite an existing user's min_coins balance.
+  // Only initialize if min_coins is completely null or undefined in the database.
+  if (dbCust?.min_coins === null || dbCust?.min_coins === undefined) {
+    const redeemedCoins = await getRedeemedCoins(normalized);
+    updatePayload.min_coins = calculateTotalMinCoins(totalSpent, redeemedCoins);
+  }
 
   await supabase
     .from('customers')
-    .update({ 
-      total_orders: totalOrders,
-      ltv: totalSpent,
-      min_coins: minCoins,
-      last_visit: lastVisit
-    })
+    .update(updatePayload)
     .eq('phone', normalized);
 }
 
 export async function deleteOrderByBillNumber(billNumber: number, reason: string): Promise<void> {
   const { data: order } = await supabase
     .from('orders')
-    .select('id, branch_name, customer_id, customer_phone, order_items(name, quantity, menu_item_id)')
+    .select('id, total, manual_total, branch_name, customer_id, customer_phone, order_items(name, price, quantity, paid_with_coins, coins_price, menu_item_id)')
     .eq('bill_number', billNumber)
     .single();
   
   const deletionInfo = { reason, date: getISTISOString() };
   await supabase.from('orders').update({ deletion_info: deletionInfo }).eq('bill_number', billNumber);
+
+  invalidateOrdersRangeCache();
+  invalidateCustomersCache();
+  invalidateCohortCache();
+  invalidateClassificationCache();
 
   if (order) {
     // REVERSE STOCK DEDUCTION
@@ -2622,7 +2755,39 @@ export async function deleteOrderByBillNumber(billNumber: number, reason: string
     }
 
     if (order.customer_phone) {
-      await syncCustomerStats(order.customer_phone);
+      const normalizedPhone = normalizePhone(order.customer_phone);
+      const items = (order.order_items as any[]) || [];
+      
+      const voidRedeemed = items.reduce((acc, item) => 
+        acc + (item.paid_with_coins ? (item.coins_price || 0) * item.quantity : 0), 0);
+      
+      const voidCash = items.reduce((acc, item) => 
+        acc + (item.paid_with_coins ? 0 : item.price * item.quantity), 0);
+      
+      const voidEarned = Math.floor(voidCash * 0.08);
+
+      const { data: cData } = await supabase
+        .from('customers')
+        .select('min_coins, ltv, total_orders')
+        .eq('phone', normalizedPhone)
+        .maybeSingle();
+
+      if (cData) {
+        const currentBal = cData.min_coins != null ? Number(cData.min_coins) : 0;
+        const revertedBalance = Math.max(0, currentBal + voidRedeemed - voidEarned);
+        const orderAmt = order.manual_total != null ? order.manual_total : (order.total || 0);
+        const revertedLtv = Math.max(0, (cData.ltv || 0) - orderAmt);
+        const revertedOrders = Math.max(0, (cData.total_orders || 1) - 1);
+
+        await supabase
+          .from('customers')
+          .update({
+            min_coins: revertedBalance,
+            ltv: revertedLtv,
+            total_orders: revertedOrders
+          })
+          .eq('phone', normalizedPhone);
+      }
     }
   }
 }
@@ -2647,10 +2812,10 @@ export async function updateOrderStatus(orderId: string, status: OrderStatus): P
 
 export const CUSTOMER_TIERS = [
   { name: 'Base Camp', min: 0, rate: 0.08 },
-  { name: 'Camp 1', min: 501, rate: 0.10 },
-  { name: 'Camp 2', min: 2001, rate: 0.12 },
-  { name: 'Camp 3', min: 5001, rate: 0.14 },
-  { name: 'Summit', min: 10001, rate: 0.16 },
+  { name: 'Camp 1', min: 501, rate: 0.08 },
+  { name: 'Camp 2', min: 2001, rate: 0.08 },
+  { name: 'Camp 3', min: 5001, rate: 0.08 },
+  { name: 'Summit', min: 10001, rate: 0.08 },
 ];
 
 export function getTierInfo(spent: number) {
@@ -2665,23 +2830,13 @@ export function getTierInfo(spent: number) {
   return { ...CUSTOMER_TIERS[0], next: CUSTOMER_TIERS[1] };
 }
 
+// Flat 8% MinCoins on orders regardless of tiers
 export function calculateProgressiveEarned(spent: number): number {
-  let total = 0;
-  for (let i = 0; i < CUSTOMER_TIERS.length; i++) {
-    const tier = CUSTOMER_TIERS[i];
-    const nextTier = CUSTOMER_TIERS[i + 1];
-    const upperLimit = nextTier ? nextTier.min : Infinity;
-    
-    if (spent > tier.min) {
-      const amountInThisTier = Math.min(spent, upperLimit) - tier.min;
-      total += amountInThisTier * tier.rate;
-    }
-  }
-  return Math.floor(total);
+  return Math.floor(spent * 0.08);
 }
 
 export function calculateTotalMinCoins(totalSpent: number, redeemedCoins: number) {
-  return Math.max(0, calculateProgressiveEarned(totalSpent) - redeemedCoins);
+  return Math.max(0, Math.floor(totalSpent * 0.08) - redeemedCoins);
 }
 
 // --- CUSTOMER MANAGEMENT ---
@@ -2721,6 +2876,7 @@ export async function getCustomerByPhone(phone: string): Promise<Customer | null
   const lastVisit = history.length > 0 ? history[0].date : dbCust.last_visit;
 
   // 3. Sync the database record if it's lagging (optional background update)
+  // IMPORTANT: Keep dbCust.min_coins as it is without rewriting history!
   if (dbCust.total_orders !== totalOrders || Math.abs((dbCust.ltv || 0) - totalSpent) > 1) {
     supabase.from('customers')
       .update({ total_orders: totalOrders, ltv: totalSpent, last_visit: lastVisit })
@@ -2737,7 +2893,7 @@ export async function getCustomerByPhone(phone: string): Promise<Customer | null
     note: dbCust.note,
     totalOrders: totalOrders,
     totalSpent: totalSpent,
-    minCoins: calculateTotalMinCoins(totalSpent, redeemedCoins),
+    minCoins: dbCust.min_coins !== null && dbCust.min_coins !== undefined ? Number(dbCust.min_coins) : calculateTotalMinCoins(totalSpent, redeemedCoins),
     lastVisit: lastVisit,
     joinedDate: dbCust.created_at,
     welcomeCouponUsed: dbCust.welcome_coupon_used || false,
@@ -2794,6 +2950,7 @@ export async function registerCustomer(phone: string, name: string, isStudent?: 
 
   if (error) throw error;
   
+  invalidateCustomersCache();
   // Sync stats in case they have historical orders linked to this phone
   await syncCustomerStats(normalized);
   
@@ -2815,6 +2972,7 @@ export async function registerCustomer(phone: string, name: string, isStudent?: 
 }
 
 export async function updateCustomer(id: string, updates: Partial<Customer>): Promise<void> {
+  invalidateCustomersCache();
   const { data: customer } = await supabase
     .from('customers')
     .select('phone')
@@ -2854,32 +3012,36 @@ export interface CohortOrder {
   is_student?: boolean;
 }
 
-export async function fetchCohortRawData(): Promise<CohortOrder[]> {
-  // 1. Fetch ALL customers (up to 50k) to get their true join dates in paginated pages
-  let customersData: any[] = [];
-  let customerPage = 0;
-  const customerPageSize = 1000;
-  let hasMoreCustomers = true;
+let cohortCache: { timestamp: number; data: CohortOrder[] } | null = null;
+const COHORT_CACHE_TTL = 15 * 60 * 1000;
 
-  while (hasMoreCustomers && customersData.length < 50000) {
-    const from = customerPage * customerPageSize;
-    const to = from + customerPageSize - 1;
-    const { data, error } = await supabase
-      .from('customers')
-      .select('phone, created_at, note')
-      .range(from, to);
+export function invalidateCohortCache(): void {
+  cohortCache = null;
+}
 
-    if (error || !data || data.length === 0) {
-      hasMoreCustomers = false;
-    } else {
-      customersData = customersData.concat(data);
-      if (data.length < customerPageSize) {
-        hasMoreCustomers = false;
-      } else {
-        customerPage++;
-      }
-    }
+export async function fetchCohortRawData(forceRefresh = false): Promise<CohortOrder[]> {
+  if (!forceRefresh && cohortCache && (Date.now() - cohortCache.timestamp < COHORT_CACHE_TTL)) {
+    return cohortCache.data;
   }
+
+  // 1. Fetch recent non-anonymous orders with customer phone (capped to 4,000 orders)
+  const { data: ordersData, error: ordersErr } = await supabase
+    .from('orders')
+    .select('customer_phone, date, bill_number')
+    .is('deletion_info', null)
+    .not('customer_phone', 'is', null)
+    .order('date', { ascending: false })
+    .limit(4000);
+
+  if (ordersErr) console.error("Cohort orders fetch error:", ordersErr);
+  if (!ordersData || ordersData.length === 0) return [];
+
+  // 2. Fetch customer registry for join dates (capped to 3,000 recent)
+  const { data: customersData } = await supabase
+    .from('customers')
+    .select('phone, created_at, note')
+    .order('created_at', { ascending: false })
+    .limit(3000);
 
   const joinDateMap: Record<string, string> = {};
   const studentPhoneSet = new Set<string>();
@@ -2893,41 +3055,9 @@ export async function fetchCohortRawData(): Promise<CohortOrder[]> {
     }
   });
 
-  // 2. Fetch RECENT orders to see return rate
-  // We fetch last 70,000 orders which should cover several months using paginated fetch
-  let ordersData: any[] = [];
-  let orderPage = 0;
-  const orderPageSize = 1000;
-  let hasMoreOrders = true;
-
-  while (hasMoreOrders && ordersData.length < 70000) {
-    const from = orderPage * orderPageSize;
-    const to = from + orderPageSize - 1;
-    const { data, error } = await supabase
-      .from('orders')
-      .select('customer_phone, date, bill_number')
-      .is('deletion_info', null)
-      .order('date', { ascending: false })
-      .range(from, to);
-
-    if (error || !data || data.length === 0) {
-      hasMoreOrders = false;
-    } else {
-      ordersData = ordersData.concat(data);
-      if (data.length < orderPageSize) {
-        hasMoreOrders = false;
-      } else {
-        orderPage++;
-      }
-    }
-  }
-  
-  if (ordersData.length === 0) return [];
-  
   const results: CohortOrder[] = [];
   const processedOrders = ordersData.filter(o => o.customer_phone);
 
-  // If a customer isn't in the joinDateMap (unregistered?), we find their earliest order in this set
   const fallbackJoinDates: Record<string, string> = {};
   processedOrders.forEach(o => {
     const phone = normalizePhone(o.customer_phone);
@@ -2949,55 +3079,52 @@ export async function fetchCohortRawData(): Promise<CohortOrder[]> {
     });
   });
 
-  return results.reverse();
+  const finalResult = results.reverse();
+  cohortCache = { timestamp: Date.now(), data: finalResult };
+  return finalResult;
 }
 
-export async function fetchCustomerClassificationStats(): Promise<Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }>> {
-  let allOrders: any[] = [];
-  let page = 0;
-  const pageSize = 1000;
-  let hasMore = true;
+let customerClassificationCache: { timestamp: number; data: Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }> } | null = null;
+const CLASSIFICATION_CACHE_TTL = 15 * 60 * 1000;
 
-  while (hasMore && allOrders.length < 10000) {
-    const from = page * pageSize;
-    const to = from + pageSize - 1;
-    const { data, error } = await supabase
-      .from('orders')
-      .select('customer_phone, type')
-      .is('deletion_info', null)
-      .order('date', { ascending: false })
-      .range(from, to);
+export function invalidateClassificationCache(): void {
+  customerClassificationCache = null;
+}
 
-    if (error || !data || data.length === 0) {
-      hasMore = false;
-    } else {
-      allOrders = allOrders.concat(data);
-      if (data.length < pageSize) {
-        hasMore = false;
-      } else {
-        page++;
-      }
-    }
+export async function fetchCustomerClassificationStats(forceRefresh = false): Promise<Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }>> {
+  if (!forceRefresh && customerClassificationCache && (Date.now() - customerClassificationCache.timestamp < CLASSIFICATION_CACHE_TTL)) {
+    return customerClassificationCache.data;
   }
-  
+
+  const { data: allOrders, error } = await supabase
+    .from('orders')
+    .select('customer_phone, type')
+    .is('deletion_info', null)
+    .not('customer_phone', 'is', null)
+    .order('date', { ascending: false })
+    .limit(3000);
+
+  if (error || !allOrders) return customerClassificationCache?.data || {};
+
   const stats: Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }> = {};
-  
+
   allOrders.forEach(o => {
     const rawPhone = o.customer_phone?.toString();
     if (!rawPhone) return;
-    
+
     const normalized = normalizePhone(rawPhone);
     if (!stats[normalized]) {
       stats[normalized] = { DINE_IN: 0, TAKEAWAY: 0, DELIVERY: 0, total: 0 };
     }
-    
+
     stats[normalized].total++;
     const type = o.type?.toUpperCase();
     if (type === 'DINE_IN') stats[normalized].DINE_IN++;
     else if (type === 'TAKEAWAY') stats[normalized].TAKEAWAY++;
     else if (type === 'DELIVERY') stats[normalized].DELIVERY++;
   });
-  
+
+  customerClassificationCache = { timestamp: Date.now(), data: stats };
   return stats;
 }
 
@@ -3046,7 +3173,20 @@ export async function fetchLastOrderPriorityItem(phone: string): Promise<{ name:
   return { name: priorityItem.name, quantity: priorityItem.quantity };
 }
 
-export async function fetchCustomers(branchFilter?: string): Promise<Customer[]> {
+const customersCache = new Map<string, { timestamp: number; data: Customer[] }>();
+const CUSTOMERS_CACHE_TTL = 5 * 60 * 1000;
+
+export function invalidateCustomersCache(): void {
+  customersCache.clear();
+}
+
+export async function fetchCustomers(branchFilter?: string, forceRefresh = false): Promise<Customer[]> {
+  const cacheKey = branchFilter || 'ALL';
+  const cached = customersCache.get(cacheKey);
+  if (!forceRefresh && cached && (Date.now() - cached.timestamp < CUSTOMERS_CACHE_TTL)) {
+    return cached.data;
+  }
+
   let allData: any[] = [];
   let page = 0;
   const pageSize = 1000;
@@ -3072,7 +3212,10 @@ export async function fetchCustomers(branchFilter?: string): Promise<Customer[]>
     }
   }
 
-  if (allData.length === 0) return [];
+  if (allData.length === 0) {
+    customersCache.set(cacheKey, { timestamp: Date.now(), data: [] });
+    return [];
+  }
 
   // Batch query all order_items that were paid with coins and are not deleted to map coins efficiently
   const { data: allRedeemedCoinsData } = await supabase
@@ -3093,11 +3236,41 @@ export async function fetchCustomers(branchFilter?: string): Promise<Customer[]>
     });
   }
 
+  // Fetch real database min_coins and coupons directly from customers table to ensure frozen balances are never lost
+  const custMap: Record<string, { minCoins?: number, couponCode?: string, couponUsed?: boolean }> = {};
+  let custPage = 0;
+  let custHasMore = true;
+  while (custHasMore) {
+    const { data: custBatch } = await supabase
+      .from('customers')
+      .select('id, min_coins, welcome_coupon_code, welcome_coupon_used')
+      .range(custPage * 1000, (custPage + 1) * 1000 - 1);
+    if (!custBatch || custBatch.length === 0) {
+      custHasMore = false;
+    } else {
+      custBatch.forEach((row: any) => {
+        custMap[row.id] = {
+          minCoins: row.min_coins !== null && row.min_coins !== undefined ? Number(row.min_coins) : undefined,
+          couponCode: row.welcome_coupon_code,
+          couponUsed: row.welcome_coupon_used
+        };
+      });
+      if (custBatch.length < 1000) custHasMore = false;
+      else custPage++;
+    }
+  }
+
   const customers = allData.map((c: any) => {
     const totalSpent = Number(c.total_spent || 0);
     const normPhone = normalizePhone(c.phone);
     const redeemedCoins = redeemedCoinsMap[normPhone] || 0;
+    const dbCustomerMeta = custMap[c.id];
     
+    // Priority: Genuine database min_coins balance > RPC column > calculated fallback
+    const resolvedMinCoins = dbCustomerMeta?.minCoins !== undefined 
+      ? dbCustomerMeta.minCoins 
+      : (c.min_coins !== null && c.min_coins !== undefined ? Number(c.min_coins) : calculateTotalMinCoins(totalSpent, redeemedCoins));
+
     return {
       id: c.id,
       phone: c.phone,
@@ -3107,14 +3280,15 @@ export async function fetchCustomers(branchFilter?: string): Promise<Customer[]>
       note: c.note,
       totalOrders: Number(c.total_orders || 0),
       totalSpent: totalSpent,
-      minCoins: calculateTotalMinCoins(totalSpent, redeemedCoins),
+      minCoins: resolvedMinCoins,
       lastVisit: c.last_visit,
       joinedDate: c.joined_date,
-      welcomeCouponUsed: c.welcome_coupon_used || false,
-      welcomeCouponCode: c.welcome_coupon_code
+      welcomeCouponUsed: dbCustomerMeta?.couponUsed ?? c.welcome_coupon_used ?? false,
+      welcomeCouponCode: dbCustomerMeta?.couponCode ?? c.welcome_coupon_code
     };
   });
 
+  customersCache.set(cacheKey, { timestamp: Date.now(), data: customers });
   return customers;
 }
 

@@ -38,14 +38,24 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
   const coinsRequired = orderItems.reduce((acc, item) => acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
   
   // If specific balances are provided (e.g. from historical view), use them.
-  // Otherwise calculate based on Base Camp (8%) logic (for new orders or fallback).
+  // Consistent flat 8% MinCoins logic on paid cash amount
   let initialBalance = customerInitialBalance !== undefined ? customerInitialBalance : (customerCoins || 0);
-  let finalBalance = customerFinalBalance !== undefined ? customerFinalBalance : (Math.max(0, initialBalance - coinsRequired) + Math.floor(total * 0.08));
+  
+  // Rule: MinCoins received in this bill cannot be used in the same bill, must be used in next order.
+  // If coins were redeemed, the customer's initial balance before this order had to be at least coinsRequired.
+  if (coinsRequired > 0 && initialBalance < coinsRequired) {
+    initialBalance = coinsRequired;
+  }
+
+  const cashPaidTotal = orderItems.reduce((acc, item) => acc + (item.paidWithCoins ? 0 : item.price * item.quantity), 0);
+  const coinEarningBase = totalValue !== undefined ? totalValue : cashPaidTotal;
+
   let earnedCoins = earnedCoinsValue !== undefined 
     ? earnedCoinsValue 
-    : (customerFinalBalance !== undefined && customerInitialBalance !== undefined 
-        ? (customerFinalBalance - (customerInitialBalance - coinsRequired))
-        : Math.floor(total * 0.08));
+    : Math.floor(coinEarningBase * 0.08);
+  let finalBalance = customerFinalBalance !== undefined 
+    ? customerFinalBalance 
+    : (Math.max(0, initialBalance - coinsRequired) + earnedCoins);
   
   // Use Intl.DateTimeFormat to ensure consistent IST display regardless of environment timezone
   const istFormatter = new Intl.DateTimeFormat('en-IN', {

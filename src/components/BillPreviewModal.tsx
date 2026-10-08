@@ -5,7 +5,7 @@ import { motion } from 'motion/react';
 import { Send } from 'lucide-react';
 import { OrderItem, PaymentMethod, OrderType, Customer, MenuItem, PreparationType, Size } from '../types';
 import PrintReceipt from './PrintReceipt';
-import { getCustomerByPhone, calculateTotalMinCoins, calculateProgressiveEarned, getTierInfo } from '../utils/storage';
+import { getCustomerByPhone } from '../utils/storage';
 import { POPUP_SIDE_ADDONS } from '../constants';
 
 interface BillPreviewModalProps {
@@ -60,24 +60,29 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
   const totalCashValue = Math.round(rawCashValue);
   const coinsRequired = orderItems.reduce((acc, item) => acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
 
-  const maxRedemptionAllowed = totalCashValue;
-  const isRedemptionOverLimit = coinsRequired > maxRedemptionAllowed;
-  const hasSufficientCoins = (customer?.minCoins || 0) >= coinsRequired;
+  const initialBalance = customer?.minCoins || 0;
+  // Rule: MinCoins earned in this bill cannot be used in the same bill, must be used in the next order.
+  const hasSufficientCoins = initialBalance >= coinsRequired;
+  const isRedemptionOverLimit = coinsRequired > initialBalance;
 
   const eligibleRewards = React.useMemo(() => {
     if (!customer) return [];
     
     // Find all variants in menu items that have a coin price
     const rewards: { menuItem: MenuItem, prep: string, size: string, coins: number }[] = [];
+    const availableCoins = (customer.minCoins || 0) - coinsRequired;
     
+    // If user does not have enough starting coins, cannot redeem
+    if (availableCoins <= 0) return [];
+
     menuItems.forEach(item => {
       if (item.minCoinsPrices) {
         Object.entries(item.minCoinsPrices).forEach(([prep, sizes]) => {
           if (sizes) {
             Object.entries(sizes).forEach(([size, coins]) => {
               if (typeof coins === 'number' && coins > 0) {
-                // Only include if user can afford AND it's within current redemption limit
-                if (coins <= ((customer.minCoins || 0) - coinsRequired) && coins <= (maxRedemptionAllowed - coinsRequired)) {
+                // Only include if user can afford with starting balance
+                if (coins <= availableCoins) {
                   rewards.push({ menuItem: item, prep, size, coins });
                 }
               }
@@ -88,7 +93,7 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
     });
 
     return rewards.sort((a, b) => b.coins - a.coins);
-  }, [customer, menuItems, maxRedemptionAllowed, coinsRequired]);
+  }, [customer, menuItems, coinsRequired]);
 
   if (!isOpen) return null;
 
@@ -118,20 +123,14 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
     onUpdateQuantity(itemId, 0);
   };
 
-  // Consistent logic for balance updates using tiered cashback
-  const previousSpent = customer?.totalSpent || 0;
-  const previousCoins = customer?.minCoins || 0;
+  // From now on: Every order generates FLAT 8% MinCoins regardless of customer tiers
+  const earnedCoins = Math.floor(totalCashValue * 0.08);
+
+  // MinCoins received in this bill cannot be used in the same bill, but are credited for next order:
+  const finalBalance = Math.max(0, initialBalance - coinsRequired) + earnedCoins;
+
   const totalOrdersBefore = customer?.totalOrders || 0;
   const totalOrdersAfter = totalOrdersBefore + 1;
-  
-  // Determine earned based on progressive tiers
-  const totalEarnedBefore = calculateProgressiveEarned(previousSpent);
-  const totalRedeemedBefore = Math.max(0, totalEarnedBefore - previousCoins);
-  
-  const totalEarnedAfter = calculateProgressiveEarned(previousSpent + totalCashValue);
-  
-  const earnedCoins = totalEarnedAfter - totalEarnedBefore;
-  const finalBalance = calculateTotalMinCoins(previousSpent + totalCashValue, totalRedeemedBefore + coinsRequired);
 
   // Next order coupon logic
   let nextOrderCoupon = null;
@@ -143,26 +142,14 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
       nextOrderCoupon = { code: `DISC5-${customerPhone?.slice(-4)}`, discount: '5%', forOrder: 4 };
   }
 
-    // Tier info for messaging
-    const tierDetails = getTierInfo(previousSpent + totalCashValue);
-    const { name: tierBefore } = getTierInfo(previousSpent);
-    const tierAfterName = tierDetails.name;
-    const tierUpgraded = tierBefore !== tierAfterName;
+  const hasCampaGift = orderItems.some(item => item.name.includes('Celebratory Campa Cola (Gift)'));
 
-    let tierMsg = '';
-    if (tierUpgraded) {
-      const cashbackPct = Math.round(tierDetails.rate * 100);
-      tierMsg = `🚀 *RANK UP!* 🚀\nYou've reached *${tierAfterName.toUpperCase()}*! You now get *${cashbackPct}% CASHBACK* on every visit!\n\n`;
+  const handleWhatsAppSend = (useBT: boolean = false) => {
+    if (!customerPhone) return;
+    if (coinsRequired > 0 && !hasSufficientCoins) {
+        alert(`Insufficient MinCoins balance. Required: ${coinsRequired}, Available: ${customer?.minCoins || 0}. Coins earned from this bill can only be used on your next visit.`);
+        return;
     }
-
-    const hasCampaGift = orderItems.some(item => item.name.includes('Celebratory Campa Cola (Gift)'));
-
-    const handleWhatsAppSend = (useBT: boolean = false) => {
-      if (!customerPhone) return;
-      if (coinsRequired > 0 && !hasSufficientCoins) {
-          alert(`Insufficient MinCoins balance. Required: ${coinsRequired}, Available: ${customer?.minCoins || 0}`);
-          return;
-      }
       
       // Format message
       const orderDetails = orderItems
@@ -184,7 +171,7 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
         giftMsg = `\n\n🎁 *CELEBRATION!* 🎁\nYou unlocked a *FREE Celebratory Campa Cola*! Enjoy your treat!`;
       }
 
-      const message = `${tierMsg}*MinMomos Bill #${billNumber || '---'}*
+      const message = `*MinMomos Bill #${billNumber || '---'}*
 --------------------------
 ${orderDetails}
 --------------------------

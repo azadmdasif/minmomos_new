@@ -14,7 +14,7 @@ export interface MenuSection {
 }
 export type OrderType = 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
 export type OrderStatus = 'ORDERED' | 'PREPARING' | 'READY' | 'SERVED' | 'COMPLETED' | 'CANCELLED' | 'REVIEW_COLLECTED' | 'REVIEW_DENIED';
-export type UserRole = 'ADMIN' | 'STORE_MANAGER' | 'CASHIER' | 'COFOUNDER';
+export type UserRole = 'ADMIN' | 'STORE_MANAGER' | 'CASHIER' | 'COFOUNDER' | 'HR';
 export type MaterialCategory = 'MOMO' | 'PACKET' | 'INGREDIENT';
 
 export interface Station {

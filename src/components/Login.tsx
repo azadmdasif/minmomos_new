@@ -47,7 +47,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
       stations = [{ id: user.station_id, name: user.stations?.name }];
     }
 
-    if (user.role === 'ADMIN' || user.role === 'COFOUNDER') {
+    if (user.role === 'ADMIN' || user.role === 'COFOUNDER' || user.role === 'HR') {
       onLogin({
         id: user.id,
         username: user.username,

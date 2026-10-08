@@ -50,7 +50,7 @@ const UserManagement: React.FC<UserManagementProps> = ({ user }) => {
 
   const handleSave = async () => {
     setFormError(null);
-    if (username && password && (role === 'ADMIN' || role === 'COFOUNDER' || selectedStations.length > 0)) {
+    if (username && password && (role === 'ADMIN' || role === 'COFOUNDER' || role === 'HR' || selectedStations.length > 0)) {
       // Check permission
       const isEditingOtherUser = editingUserId !== null && editingUserId !== user?.id;
       const isSuperAdmin = user?.role === 'ADMIN';
@@ -63,8 +63,8 @@ const UserManagement: React.FC<UserManagementProps> = ({ user }) => {
         username, 
         password, 
         role, 
-        station_id: (role === 'ADMIN' || role === 'COFOUNDER') ? undefined : selectedStations[0],
-        station_ids: (role === 'ADMIN' || role === 'COFOUNDER') ? [] : selectedStations
+        station_id: (role === 'ADMIN' || role === 'COFOUNDER' || role === 'HR') ? undefined : selectedStations[0],
+        station_ids: (role === 'ADMIN' || role === 'COFOUNDER' || role === 'HR') ? [] : selectedStations
       };
 
       try {
@@ -273,9 +273,10 @@ const UserManagement: React.FC<UserManagementProps> = ({ user }) => {
                   <option value="CASHIER">Cashier</option>
                   <option value="ADMIN">System Admin</option>
                   <option value="COFOUNDER">Co-Founder</option>
+                  <option value="HR">HR Manager</option>
                 </select>
               </div>
-              {role !== 'ADMIN' && role !== 'COFOUNDER' && (
+              {role !== 'ADMIN' && role !== 'COFOUNDER' && role !== 'HR' && (
                 <div className="space-y-2 max-h-40 overflow-y-auto p-4 bg-brand-stone/20 rounded-2xl border border-brand-stone no-scrollbar">
                   <p className="text-[10px] font-black text-brand-brown/40 uppercase mb-2">Assign Stations</p>
                   {stations.map(s => (

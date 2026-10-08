@@ -1,6 +1,7 @@
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchCustomers, fetchCustomerHistory, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats, updateOrderStatus, isStudentFreeMojitoOrder, isStudentCustomer, isOrderFromStudent } from '../utils/storage';
+import { createPortal } from 'react-dom';
+import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchCustomers, fetchCustomerHistory, getCustomerByPhone, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats, updateOrderStatus, isStudentFreeMojitoOrder, isStudentCustomer, isOrderFromStudent, invalidateOrdersRangeCache, invalidateCustomersCache, invalidateCohortCache, invalidateClassificationCache } from '../utils/storage';
 import {
   generateItemNormalizationMap,
   getFilteredOrders,
@@ -27,7 +28,7 @@ import CohortCompositionChart from './CohortCompositionChart';
 import { CustomerHistogram } from './CustomerHistogram';
 import { OrderIntervalChart } from './OrderIntervalChart';
 import { StudentIntelligenceModal } from './StudentIntelligenceModal';
-import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star, Users, TrendingUp as TrendingUpIcon, Gift, DollarSign, ShoppingBag, Download, RefreshCw, GraduationCap, Copy } from 'lucide-react';
+import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star, Users, TrendingUp as TrendingUpIcon, Gift, DollarSign, ShoppingBag, Download, RefreshCw, GraduationCap, Copy, Printer } from 'lucide-react';
 
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
 
@@ -915,15 +916,15 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [orderToDelete, setOrderToDelete] = useState<CompletedOrder | null>(null);
 
-  const fetchStaticData = useCallback(async () => {
-    const s = isAdmin ? await getStations() : [];
+  const fetchStaticData = useCallback(async (forceRefresh = false) => {
+    const s = isAdmin ? await getStations(forceRefresh) : [];
     
     // Fetch customers for both Admin and Manager
     // Managers only see their own branch customers
     const custFilter = isAdmin ? undefined : user.stationName;
     const [cust, stats] = await Promise.all([
-      fetchCustomers(custFilter),
-      fetchCustomerClassificationStats()
+      fetchCustomers(custFilter, forceRefresh),
+      fetchCustomerClassificationStats(forceRefresh)
     ]);
     
     if (isAdmin) {
@@ -944,7 +945,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       if (!forceRefresh && ordersCacheRef.current.has(cacheKey)) {
         fetchedOrders = ordersCacheRef.current.get(cacheKey)!;
       } else {
-        fetchedOrders = await getOrdersForDateRange(expandedStart, endDate);
+        fetchedOrders = await getOrdersForDateRange(expandedStart, endDate, forceRefresh);
         ordersCacheRef.current.set(cacheKey, fetchedOrders);
       }
 
@@ -986,7 +987,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       if (!forceRefresh && deletedOrdersCacheRef.current.has(cacheKey)) {
         fetchedOrders = deletedOrdersCacheRef.current.get(cacheKey)!;
       } else {
-        fetchedOrders = await getDeletedOrdersForDateRange(expandedStart, endDate);
+        fetchedOrders = await getDeletedOrdersForDateRange(expandedStart, endDate, forceRefresh);
         deletedOrdersCacheRef.current.set(cacheKey, fetchedOrders);
       }
       
@@ -1478,31 +1479,69 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     
     // Calculate historical balance at the time of this order
     if (order.customerPhone) {
-      const history = await fetchCustomerHistory(order.customerPhone);
-      const sortedHistory = [...history].sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-      const orderIndex = sortedHistory.findIndex(h => h.id === order.id);
-      const totalAfter = orderIndex + 1;
+      const [customer, history] = await Promise.all([
+        getCustomerByPhone(order.customerPhone),
+        fetchCustomerHistory(order.customerPhone)
+      ]);
 
-      const orderDate = new Date(order.date).getTime();
-      
-      // Orders strictly before
-      const pastOrders = history.filter(h => new Date(h.date).getTime() < orderDate);
-      const spentBefore = pastOrders.reduce((acc, o) => acc + o.total, 0);
-      const redeemedBefore = pastOrders.reduce((acc, o) => {
-        return acc + o.items.reduce((sum, item) => sum + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
+      // Combine orders so this order is included even if it was voided/deleted
+      const allOrders = [...history];
+      if (!allOrders.some(h => h.id === order.id)) {
+        allOrders.push(order);
+      }
+
+      // Sort chronologically ascending by order date
+      const sortedHistory = allOrders.sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      const targetIdx = sortedHistory.findIndex(h => h.id === order.id);
+      const totalAfter = targetIdx !== -1 ? targetIdx + 1 : sortedHistory.length;
+
+      // Chronological balance reconstruction:
+      // Each order generates flat 8% MinCoins on paid cash amount.
+      // Core rule: MinCoins received in a bill cannot be used in the same bill, but must be used in the next order.
+      // Therefore, if coins were redeemed in an order, the customer's initial balance before that order MUST have been at least the redeemed amount.
+      const totalNetChange = sortedHistory.reduce((sum, o) => {
+        const cash = o.type === 'DELIVERY' && o.manualTotal != null 
+          ? o.manualTotal 
+          : o.items.reduce((acc, item) => acc + (item.paidWithCoins ? 0 : item.price * item.quantity), 0);
+        const earned = Math.floor(cash * 0.08);
+        const redeemed = o.items.reduce((acc, item) => acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
+        return sum + (earned - redeemed);
       }, 0);
-      
-      // This order
-      const currentRedeemed = order.items.reduce((acc, item) => acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
-      const currentTotal = order.total;
 
-      const initialBal = calculateTotalMinCoins(spentBefore, redeemedBefore);
-      const finalBal = calculateTotalMinCoins(spentBefore + currentTotal, redeemedBefore + currentRedeemed);
-      const earned = finalBal - (initialBal - currentRedeemed);
+      const customerKnownCoins = customer?.minCoins ?? 0;
+      let runningBalance = Math.max(0, customerKnownCoins - totalNetChange);
+      let targetInitialBal = 0;
+      let targetEarnedCoins = 0;
+      let targetFinalBal = 0;
 
-      setFoundOrderInitialBalance(initialBal);
-      setFoundOrderFinalBalance(finalBal);
-      setFoundOrderEarnedCoins(earned);
+      for (let i = 0; i < sortedHistory.length; i++) {
+        const o = sortedHistory[i];
+        const cash = o.type === 'DELIVERY' && o.manualTotal != null 
+          ? o.manualTotal 
+          : o.items.reduce((acc, item) => acc + (item.paidWithCoins ? 0 : item.price * item.quantity), 0);
+        const earned = Math.floor(cash * 0.08);
+        const redeemed = o.items.reduce((acc, item) => acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
+
+        // If coins were redeemed, running balance had to be at least the redeemed amount
+        if (redeemed > 0 && runningBalance < redeemed) {
+          runningBalance = redeemed;
+        }
+
+        const initialForThisOrder = runningBalance;
+        const finalForThisOrder = Math.max(0, initialForThisOrder - redeemed) + earned;
+
+        if (i === targetIdx) {
+          targetInitialBal = initialForThisOrder;
+          targetEarnedCoins = earned;
+          targetFinalBal = finalForThisOrder;
+        }
+
+        runningBalance = finalForThisOrder;
+      }
+
+      setFoundOrderInitialBalance(targetInitialBal);
+      setFoundOrderFinalBalance(targetFinalBal);
+      setFoundOrderEarnedCoins(targetEarnedCoins);
 
       // Next order coupon historical state
       let nextCoupon = null;
@@ -1709,6 +1748,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
   const realBalance = useMemo(() => {
     if (!activeCustomer) return 0;
+    if (activeCustomer.minCoins !== null && activeCustomer.minCoins !== undefined) {
+      return Number(activeCustomer.minCoins);
+    }
     const spent = selectedCustomerHistory.reduce((acc, order) => {
       return acc + order.items.reduce((sum, item) => sum + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
     }, 0);
@@ -1961,8 +2003,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                 onClick={() => {
                   ordersCacheRef.current.clear();
                   deletedOrdersCacheRef.current.clear();
+                  invalidateOrdersRangeCache();
+                  invalidateCustomersCache();
+                  invalidateCohortCache();
+                  invalidateClassificationCache();
                   fetchOrders(true);
                   fetchDeletedOrders(true);
+                  fetchStaticData(true);
                   fetchAdjustments();
                 }}
                 disabled={isOrdersLoading}
@@ -2061,7 +2108,41 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                       </div>
                    </div>
 
-                   <div className="mt-10 space-y-3">
+                   {foundOrder.customerPhone && (
+                      <div className="mt-6 p-4 rounded-2xl bg-indigo-50/80 border border-indigo-100 flex flex-wrap items-center justify-between gap-3 shadow-sm">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center text-sm shadow-md">🪙</div>
+                          <div>
+                            <p className="text-[10px] font-black text-indigo-950 uppercase tracking-wider">MinCoins Loyalty Rewards</p>
+                            <p className="text-[8px] font-bold text-indigo-600">Flat 8% generated • Usable strictly on next order</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4 text-right">
+                          <div className="bg-white/80 px-3 py-1.5 rounded-xl border border-indigo-100/60">
+                            <span className="text-[7px] font-black uppercase text-stone-400 block tracking-wider">Initial</span>
+                            <span className="text-xs font-black text-brand-brown">{foundOrderInitialBalance ?? 0}</span>
+                          </div>
+                          <div className="bg-white/80 px-3 py-1.5 rounded-xl border border-indigo-100/60">
+                            <span className="text-[7px] font-black uppercase text-stone-400 block tracking-wider">Earned</span>
+                            <span className="text-xs font-black text-mountain-green">+{foundOrderEarnedCoins ?? 0}</span>
+                          </div>
+                          {foundOrder.items.some(i => i.paidWithCoins) && (
+                            <div className="bg-white/80 px-3 py-1.5 rounded-xl border border-indigo-100/60">
+                              <span className="text-[7px] font-black uppercase text-stone-400 block tracking-wider">Redeemed</span>
+                              <span className="text-xs font-black text-brand-red">
+                                -{foundOrder.items.reduce((sum, item) => sum + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0)}
+                              </span>
+                            </div>
+                          )}
+                          <div className="bg-indigo-600 text-white px-3 py-1.5 rounded-xl shadow-sm">
+                            <span className="text-[7px] font-black uppercase text-white/70 block tracking-wider">Final Total</span>
+                            <span className="text-xs font-black text-white">{foundOrderFinalBalance ?? 0}</span>
+                          </div>
+                        </div>
+                      </div>
+                   )}
+
+                   <div className="mt-8 space-y-3">
                       <p className="text-[10px] font-black uppercase text-brand-brown/30 tracking-widest px-1">Order Breakdown</p>
                       <div className="max-h-[250px] overflow-y-auto no-scrollbar pr-2">
                         {foundOrder.items.length > 0 ? (
@@ -2077,7 +2158,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                                     {it.paidWithCoins && <span className="text-[8px] font-black text-indigo-600 uppercase tracking-widest leading-none">Redeemed with Coins</span>}
                                   </div>
                                   <span className={`font-black text-xs lg:text-sm ${isGift ? 'text-brand-red' : 'text-brand-brown'}`}>
-                                    {isGift ? '₹0' : (it.paidWithCoins ? '0 (Coins)' : `₹${(it.price * it.quantity).toLocaleString()}`)}
+                                    {isGift ? '₹0' : (it.paidWithCoins ? `🪙 ${(it.coinsPrice || 0) * it.quantity} Coins` : `₹${(it.price * it.quantity).toLocaleString()}`)}
                                   </span>
                               </div>
                             );
@@ -2113,28 +2194,59 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                    )}
                 </div>
 
-                <div className="w-full lg:w-96 bg-brand-cream/50 rounded-[2rem] p-6 border-2 border-brand-stone shadow-inner">
+                <div className="w-full lg:w-96 bg-brand-cream/50 rounded-[2rem] p-6 border-2 border-brand-stone shadow-inner flex flex-col">
                    <div className="mb-4 text-center">
                      <p className="text-[10px] font-black text-brand-brown/30 uppercase tracking-widest">Digital Copy</p>
                    </div>
-                    <PrintReceipt 
-                     orderItems={foundOrder.items} 
-                     billNumber={foundOrder.billNumber} 
-                     branchName={foundOrder.branchName} 
-                     date={foundOrder.date} 
-                     paymentMethod={foundOrder.paymentMethod}
-                     customerPhone={foundOrder.customerPhone}
-                     customerInitialBalance={foundOrderInitialBalance}
-                     customerFinalBalance={foundOrderFinalBalance}
-                     earnedCoinsValue={foundOrderEarnedCoins}
-                     nextOrderCoupon={foundOrderNextCoupon}
-                     orderType={foundOrder.type}
-                     totalValue={foundOrder.type === 'DELIVERY' && foundOrder.manualTotal != null ? foundOrder.manualTotal : foundOrder.total}
-                    />
+                   <div className="bg-white p-1 shadow-2xl rounded-sm">
+                     <div className="border border-dashed border-stone-200">
+                       <PrintReceipt 
+                        orderItems={foundOrder.items} 
+                        billNumber={foundOrder.billNumber} 
+                        branchName={foundOrder.branchName} 
+                        date={foundOrder.date} 
+                        paymentMethod={foundOrder.paymentMethod}
+                        customerPhone={foundOrder.customerPhone}
+                        customerInitialBalance={foundOrderInitialBalance}
+                        customerFinalBalance={foundOrderFinalBalance}
+                        earnedCoinsValue={foundOrderEarnedCoins}
+                        nextOrderCoupon={foundOrderNextCoupon}
+                        orderType={foundOrder.type}
+                        totalValue={foundOrder.type === 'DELIVERY' && foundOrder.manualTotal != null ? foundOrder.manualTotal : foundOrder.total}
+                       />
+                     </div>
+                   </div>
 
+                   <button
+                     onClick={() => {
+                       window.print();
+                     }}
+                     className="mt-4 w-full py-3.5 bg-brand-brown text-brand-yellow rounded-2xl text-[10px] font-black uppercase tracking-widest hover:scale-[1.02] active:scale-[0.98] transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+                   >
+                     <Printer className="w-4 h-4" />
+                     Print Receipt
+                   </button>
                 </div>
              </div>
           </div>
+        )}
+
+        {foundOrder && typeof document !== 'undefined' && document.getElementById('print-root') && createPortal(
+          <PrintReceipt 
+            orderItems={foundOrder.items} 
+            billNumber={foundOrder.billNumber} 
+            branchName={foundOrder.branchName} 
+            date={foundOrder.date} 
+            paymentMethod={foundOrder.paymentMethod}
+            customerPhone={foundOrder.customerPhone}
+            customerInitialBalance={foundOrderInitialBalance}
+            customerFinalBalance={foundOrderFinalBalance}
+            earnedCoinsValue={foundOrderEarnedCoins}
+            nextOrderCoupon={foundOrderNextCoupon}
+            orderType={foundOrder.type}
+            totalValue={foundOrder.type === 'DELIVERY' && foundOrder.manualTotal != null ? foundOrder.manualTotal : foundOrder.total}
+          />,
+          document.getElementById('print-root')!
         )}
 
         {searchMessage && (

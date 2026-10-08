@@ -631,12 +631,13 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
 
   useEffect(() => {
     fetchData();
-    // Polling safety fallback lengthened to 60s and only runs when tab is visible to eliminate redundant egress
+    // Safety polling lengthened to 5 minutes (300,000ms) and only runs when tab is visible.
+    // All user actions (receiving, restock, adjustments, etc.) already trigger immediate updates.
     pollIntervalRef.current = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
         fetchData(true);
       }
-    }, 60000);
+    }, 300000);
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     };

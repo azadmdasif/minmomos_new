@@ -71,7 +71,7 @@ interface FinanceLedgerProps {
   user: {
     id: string;
     username: string;
-    role: 'ADMIN' | 'COFOUNDER' | 'STORE_MANAGER' | 'CASHIER';
+    role: 'ADMIN' | 'COFOUNDER' | 'STORE_MANAGER' | 'CASHIER' | 'HR';
     stationName?: string;
   };
 }
