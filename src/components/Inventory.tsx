@@ -63,7 +63,7 @@ interface InventoryProps {
 
 type InventoryTab = 'HUB' | 'LEDGER' | 'FINANCE' | 'VENDORS' | 'CONSUMPTION';
 type LedgerType = 'BUYING' | 'ALLOCATION' | 'ADJUSTMENT';
-type DatePreset = 'today' | 'yesterday' | 'week' | 'last-week' | 'month' | 'last-month' | 'custom';
+type DatePreset = 'all' | 'today' | 'yesterday' | 'week' | 'last-week' | 'month' | 'last-month' | 'custom';
 type VendorDatePreset = 'all' | 'today' | 'yesterday' | 'week' | 'last-week' | 'month' | 'last-month' | 'custom';
 type SortBy = 'date' | 'quantity' | 'cost';
 
@@ -104,10 +104,14 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [materialCategory, setMaterialCategory] = useState<MaterialCategory>('MOMO');
   const [activeSubcategory, setActiveSubcategory] = useState<string>('all');
   
-  // Ledger States
+  // Ledger States - default to 'all' so historical procurements are immediately visible
   const [ledgerType, setLedgerType] = useState<LedgerType>('BUYING');
-  const [datePreset, setDatePreset] = useState<DatePreset>('today');
-  const [startDate, setStartDate] = useState(getISTDateString());
+  const [datePreset, setDatePreset] = useState<DatePreset>('all');
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() - 2);
+    return getISTDateString(d);
+  });
   const [endDate, setEndDate] = useState(getISTDateString());
   const [sortBy, setSortBy] = useState<SortBy>('date');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
@@ -685,7 +689,9 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
     let start = getISTDate();
     let end = getISTDate();
 
-    if (preset === 'today') {
+    if (preset === 'all') {
+      start.setFullYear(today.getFullYear() - 2);
+    } else if (preset === 'today') {
       start = today;
     } else if (preset === 'yesterday') {
       start.setDate(today.getDate() - 1);
@@ -2460,8 +2466,8 @@ NOTIFY pgrst, 'reload schema';`}
               <button onClick={() => fetchData()} className="bg-brand-stone/30 p-2 rounded-xl hover:bg-brand-yellow transition-colors mr-4" title="Reload History">
                 <svg className={`w-5 h-5 ${isLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
               </button>
-              {(['today', 'yesterday', 'week', 'last-week', 'month', 'last-month', 'custom'] as DatePreset[]).map(p => (
-                <button key={p} onClick={() => handlePresetChange(p)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border-2 transition-all ${datePreset === p ? 'bg-brand-brown border-brand-brown text-brand-yellow' : 'bg-white border-brand-stone text-brand-brown/40 hover:border-brand-brown/20'}`}>{p === 'week' ? 'this week' : p.replace('-', ' ')}</button>
+              {(['all', 'today', 'yesterday', 'week', 'last-week', 'month', 'last-month', 'custom'] as DatePreset[]).map(p => (
+                <button key={p} onClick={() => handlePresetChange(p)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border-2 transition-all ${datePreset === p ? 'bg-brand-brown border-brand-brown text-brand-yellow' : 'bg-white border-brand-stone text-brand-brown/40 hover:border-brand-brown/20'}`}>{p === 'all' ? 'show all' : p === 'week' ? 'this week' : p.replace('-', ' ')}</button>
               ))}
               {datePreset === 'custom' && (
                 <div className="flex items-center gap-2 pl-4 border-l-2 border-brand-stone">
@@ -2698,8 +2704,8 @@ NOTIFY pgrst, 'reload schema';`}
           <div className="flex flex-col lg:flex-row justify-between items-center gap-6 mb-10 p-8 bg-white rounded-[3rem] border border-brand-stone shadow-sm">
             <div className="flex flex-wrap items-center gap-6">
               <div className="flex flex-wrap items-center gap-3">
-                {(['today', 'yesterday', 'week', 'last-week', 'month', 'last-month', 'custom'] as DatePreset[]).map(p => (
-                  <button key={p} onClick={() => handlePresetChange(p)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border-2 transition-all ${datePreset === p ? 'bg-brand-brown border-brand-brown text-brand-yellow' : 'bg-white border-brand-stone text-brand-brown/40 hover:border-brand-brown/20'}`}>{p === 'week' ? 'this week' : p.replace('-', ' ')}</button>
+                {(['all', 'today', 'yesterday', 'week', 'last-week', 'month', 'last-month', 'custom'] as DatePreset[]).map(p => (
+                  <button key={p} onClick={() => handlePresetChange(p)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border-2 transition-all ${datePreset === p ? 'bg-brand-brown border-brand-brown text-brand-yellow' : 'bg-white border-brand-stone text-brand-brown/40 hover:border-brand-brown/20'}`}>{p === 'all' ? 'show all' : p === 'week' ? 'this week' : p.replace('-', ' ')}</button>
                 ))}
                 {datePreset === 'custom' && (
                   <div className="flex items-center gap-2 pl-4 border-l-2 border-brand-stone">

@@ -166,12 +166,13 @@ export async function fetchMenuItems(forceRefresh = false): Promise<{ data: Menu
   const localHidden = getLocalHiddenItemIds();
   let mappedData = data?.map(item => {
     const master = MENU_ITEMS.find(m => m.id === item.id);
+    const sizeRecipesObj = (item.sizeRecipes && typeof item.sizeRecipes === 'object') ? item.sizeRecipes : {};
     return {
       ...item,
       minCoinsPrices: item.min_coins_prices || item.minCoinsPrices || {},
       is_hidden: item.is_hidden !== undefined ? Boolean(item.is_hidden) : localHidden.has(item.id),
-      variationRecipes: item.variation_recipes || item.variationRecipes || master?.variationRecipes || {},
-      no_sizes: item.no_sizes !== undefined ? item.no_sizes : (master?.no_sizes || item.category === 'combo' || item.category === 'summit-meals')
+      variationRecipes: (sizeRecipesObj as any)?._variations || item.variation_recipes || item.variationRecipes || master?.variationRecipes || {},
+      no_sizes: (sizeRecipesObj as any)?._no_sizes !== undefined ? (sizeRecipesObj as any)._no_sizes : item.no_sizes !== undefined ? item.no_sizes : (master?.no_sizes || item.category === 'combo' || item.category === 'summit-meals')
     };
   }) || [];
 
@@ -224,29 +225,56 @@ export async function upsertMenuItem(item: MenuItem): Promise<void> {
     setLocalItemHidden(item.id, Boolean(item.is_hidden));
   }
 
+  // Clean empty recipe requirements
+  const cleanReqList = (arr?: RecipeRequirement[]): RecipeRequirement[] => {
+    if (!Array.isArray(arr)) return [];
+    return arr.filter(r => r && typeof r.materialId === 'string' && r.materialId.trim() !== '' && Number(r.quantity) > 0);
+  };
+
+  const cleanedSizeRecipes: Record<string, any> = {};
+  if (item.sizeRecipes && typeof item.sizeRecipes === 'object') {
+    for (const [k, v] of Object.entries(item.sizeRecipes)) {
+      if (k === '_variations' || k === '_no_sizes') continue;
+      cleanedSizeRecipes[k] = cleanReqList(v as RecipeRequirement[]);
+    }
+  }
+
+  // Clean variation recipes
+  const cleanedVariationRecipes: Record<string, RecipeRequirement[]> = {};
+  if (item.variationRecipes && typeof item.variationRecipes === 'object') {
+    for (const [k, v] of Object.entries(item.variationRecipes)) {
+      cleanedVariationRecipes[k] = cleanReqList(v as RecipeRequirement[]);
+    }
+  }
+
+  // Store variations and no_sizes safely inside sizeRecipes JSONB column (guaranteed to exist in DB)
+  if (Object.keys(cleanedVariationRecipes).length > 0) {
+    cleanedSizeRecipes._variations = cleanedVariationRecipes;
+  }
+  if (item.no_sizes !== undefined) {
+    cleanedSizeRecipes._no_sizes = Boolean(item.no_sizes);
+  }
+
   const payload: any = {
     id: item.id,
     name: item.name,
     image: item.image,
     category: item.category,
-    min_coins_prices: item.minCoinsPrices,
-    preparations: item.preparations,
-    costs: item.costs,
-    recipe: item.recipe,
-    sizeRecipes: item.sizeRecipes,
-    variationRecipes: item.variationRecipes,
-    no_sizes: Boolean(item.no_sizes),
+    min_coins_prices: item.minCoinsPrices || {},
+    preparations: item.preparations || {},
+    costs: item.costs || {},
+    recipe: cleanReqList(item.recipe),
+    sizeRecipes: cleanedSizeRecipes,
     is_hidden: Boolean(item.is_hidden)
   };
   
   const { error } = await supabase.from('menu_items').upsert(payload);
   if (error) {
+    console.error("Upsert menu_item error, retrying without optional columns:", error);
     // If specific columns do not exist in the database table yet, retry without optional columns so it saves smoothly
-    if (error.message?.includes('is_hidden') || error.message?.includes('variation') || error.message?.includes('no_sizes') || error.code === '42703' || error.code === 'PGRST204') {
+    if (error.message?.includes('is_hidden') || error.code === '42703' || error.code === 'PGRST204') {
       delete payload.is_hidden;
-      delete payload.no_sizes;
-      delete payload.variationRecipes;
-      delete payload.variation_recipes;
+      delete payload.min_coins_prices;
       const { error: retryError } = await supabase.from('menu_items').upsert(payload);
       if (retryError) throw retryError;
     } else {
@@ -430,15 +458,28 @@ export async function logProcurement(item: any): Promise<void> {
 
 export async function fetchProcurements(startDate: string, endDate: string): Promise<{ data: any[], error: any }> {
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('procurements')
-      .select('id, item_id, item_name, category, unit, quantity, unit_cost, total_cost, vendor, date, payment_status, is_voided')
-      .gte('date', `${startDate}T00:00:00+05:30`)
-      .lte('date', `${endDate}T23:59:59+05:30`)
-      .order('date', { ascending: false });
+      .select('id, item_id, item_name, unit, quantity, total_cost, vendor, date, is_voided, void_reason, is_paid, paid_at, paid_by, payment_notes, payment_mode, payment_history');
+      
+    if (startDate) {
+      query = query.gte('date', `${startDate}T00:00:00+05:30`);
+    }
+    if (endDate) {
+      query = query.lte('date', `${endDate}T23:59:59+05:30`);
+    }
+    
+    const { data, error } = await query
+      .order('date', { ascending: false })
+      .limit(5000);
     
     if (error) console.error("Procurement fetch error:", error);
-    return { data: data || [], error };
+    const mapped = (data || []).map((p: any) => ({
+      ...p,
+      unit_cost: p.quantity ? Number((p.total_cost / p.quantity).toFixed(2)) : 0,
+      payment_status: p.is_paid ? 'PAID' : 'UNPAID'
+    }));
+    return { data: mapped, error };
   } catch (err) {
     return { data: [], error: err };
   }
@@ -452,15 +493,20 @@ export async function fetchAllNonVoidedProcurements(forceRefresh = false): Promi
 
     const { data, error } = await supabase
       .from('procurements')
-      .select('id, item_id, item_name, unit, quantity, unit_cost, total_cost, vendor, date, is_voided')
+      .select('id, item_id, item_name, unit, quantity, total_cost, vendor, date, is_voided, is_paid')
       .order('date', { ascending: false })
-      .limit(200);
+      .limit(500);
 
     if (error) {
       console.error("Error fetching all non-voided procurements:", error);
       return [];
     }
-    const filtered = (data || []).filter((p: any) => p.is_voided !== true);
+    const filtered = (data || [])
+      .filter((p: any) => p.is_voided !== true)
+      .map((p: any) => ({
+        ...p,
+        unit_cost: p.quantity ? Number((p.total_cost / p.quantity).toFixed(2)) : 0
+      }));
     procurementsCache = { timestamp: Date.now(), data: filtered };
     return filtered;
   } catch (e) {
@@ -1346,11 +1392,27 @@ export function resolveItemActiveRecipe(
   const idLower = rawId.toLowerCase();
 
   let matchedVariation: string | null = null;
-  if (idLower.includes('tandoori') || nameLower.includes('tandoori')) matchedVariation = 'tandoori';
-  else if (idLower.includes('kurkure') || nameLower.includes('kurkure')) matchedVariation = 'kurkure';
+  // Check known prep keywords in ID or Name
+  if (idLower.includes('kurkure') || nameLower.includes('kurkure')) matchedVariation = 'kurkure';
+  else if (idLower.includes('tandoori') || nameLower.includes('tandoori')) matchedVariation = 'tandoori';
   else if (idLower.includes('pan-fried') || idLower.includes('pan_fried') || nameLower.includes('pan fried') || nameLower.includes('pan-fried')) matchedVariation = 'pan-fried';
+  else if (idLower.includes('fried') || nameLower.includes('fried')) matchedVariation = 'fried';
+  else if (idLower.includes('steamed') || nameLower.includes('steamed')) matchedVariation = 'steamed';
   else if (idLower.includes('strips') || nameLower.includes('strips')) matchedVariation = 'strips';
   else if (idLower.includes('wings') || nameLower.includes('wings')) matchedVariation = 'wings';
+  else if (idLower.includes('peri-peri') || idLower.includes('peri peri') || nameLower.includes('peri-peri') || nameLower.includes('peri peri')) matchedVariation = 'peri-peri';
+  else if (idLower.includes('normal') || nameLower.includes('normal')) matchedVariation = 'normal';
+
+  // If menu item has preparations, see if rawId or name matches any of its preparation keys
+  if (!matchedVariation && menuDetail?.preparations) {
+    for (const prepKey of Object.keys(menuDetail.preparations)) {
+      const k = prepKey.toLowerCase();
+      if (idLower.includes(`-${k}-`) || idLower.endsWith(`-${k}-sale`) || nameLower.includes(k)) {
+        matchedVariation = prepKey;
+        break;
+      }
+    }
+  }
 
   let size: Size = 'medium';
   if (nameLower.includes('small') || rawId.includes('small') || rawId === 'gift-campa-cola' || nameLower.includes('campa cola (gift)')) {
@@ -1361,70 +1423,79 @@ export function resolveItemActiveRecipe(
     size = 'medium';
   }
 
+  // Helper to filter and return only valid requirements
+  const getValidReqs = (arr?: RecipeRequirement[]): RecipeRequirement[] => {
+    if (!Array.isArray(arr)) return [];
+    return arr.filter(r => r && typeof r.materialId === 'string' && r.materialId.trim() !== '' && Number(r.quantity) > 0);
+  };
+
   // 4. Resolve recipe requirements (Priority: Variation Recipe -> Size Recipe -> Global Recipe)
   let activeRecipe: RecipeRequirement[] = [];
 
   if (menuDetail) {
-    if (matchedVariation && menuDetail.variationRecipes?.[matchedVariation] && Array.isArray(menuDetail.variationRecipes[matchedVariation]) && menuDetail.variationRecipes[matchedVariation]!.length > 0) {
-      activeRecipe = menuDetail.variationRecipes[matchedVariation]!;
-    } else {
+    // Check variation recipe
+    if (matchedVariation && menuDetail.variationRecipes?.[matchedVariation]) {
+      const vReqs = getValidReqs(menuDetail.variationRecipes[matchedVariation]);
+      if (vReqs.length > 0) {
+        activeRecipe = vReqs;
+      }
+    }
+
+    // Check size recipe
+    if (activeRecipe.length === 0) {
       const sizeRecipe = menuDetail.sizeRecipes?.[size];
-      if (sizeRecipe && Array.isArray(sizeRecipe) && sizeRecipe.length > 0) {
-        activeRecipe = sizeRecipe;
+      const validSize = getValidReqs(sizeRecipe);
+      if (validSize.length > 0) {
+        activeRecipe = validSize;
       } else {
-        const anySize = (menuDetail.sizeRecipes?.medium?.length ? menuDetail.sizeRecipes.medium : null) ||
-                        (menuDetail.sizeRecipes?.small?.length ? menuDetail.sizeRecipes.small : null) ||
-                        (menuDetail.sizeRecipes?.large?.length ? menuDetail.sizeRecipes.large : null);
+        const anySize = getValidReqs(menuDetail.sizeRecipes?.medium) ||
+                        getValidReqs(menuDetail.sizeRecipes?.small) ||
+                        getValidReqs(menuDetail.sizeRecipes?.large);
         if (anySize && anySize.length > 0) {
           activeRecipe = anySize;
         }
       }
+    }
 
-      if (activeRecipe.length === 0 && menuDetail.recipe && Array.isArray(menuDetail.recipe) && menuDetail.recipe.length > 0) {
-        activeRecipe = menuDetail.recipe;
+    // Check base recipe
+    if (activeRecipe.length === 0 && menuDetail.recipe) {
+      const validBase = getValidReqs(menuDetail.recipe);
+      if (validBase.length > 0) {
+        activeRecipe = validBase;
       }
     }
   }
 
   // 5. Fallback recipes for built-in catalog items if no database recipe exists
   if (activeRecipe.length === 0) {
-    if (nameLower.includes('summit meal') || menuItemId === 'momo-summit-meal') {
-      if (matchedVariation === 'tandoori') {
-        activeRecipe = [
-          { materialId: 'momo-chicken', quantity: 6 },
-          { materialId: 'sauce-tandoori', quantity: 0.05 },
-          { materialId: 'spice-momo-masala', quantity: 0.02 },
-          { materialId: 'pkg-momo-box', quantity: 1 }
-        ];
-      } else if (matchedVariation === 'kurkure') {
-        activeRecipe = [
-          { materialId: 'momo-chicken', quantity: 6 },
-          { materialId: 'momo-kurkure', quantity: 6 },
-          { materialId: 'spice-peri-peri', quantity: 0.02 },
-          { materialId: 'pkg-momo-box', quantity: 1 }
-        ];
+    if (nameLower.includes('cross combo') || menuItemId === 'item-1790431822932') {
+      if (matchedVariation === 'kurkure') {
+        activeRecipe = [{ materialId: 'momo-kurkure', quantity: 6 }];
+      } else if (matchedVariation === 'tandoori') {
+        activeRecipe = [{ materialId: 'momo-tandoori', quantity: 6 }];
       } else {
-        activeRecipe = [
-          { materialId: 'momo-chicken', quantity: 6 },
-          { materialId: 'pkt-butter', quantity: 0.25 },
-          { materialId: 'sauce-red-chutney', quantity: 0.05 },
-          { materialId: 'pkg-momo-box', quantity: 1 }
-        ];
+        activeRecipe = [{ materialId: 'momo-chicken', quantity: 6 }];
+      }
+    } else if (nameLower.includes('summit meal') || menuItemId === 'momo-summit-meal') {
+      if (matchedVariation === 'kurkure') {
+        activeRecipe = [{ materialId: 'momo-kurkure', quantity: 6 }];
+      } else if (matchedVariation === 'tandoori') {
+        activeRecipe = [{ materialId: 'momo-tandoori', quantity: 6 }];
+      } else {
+        activeRecipe = [{ materialId: 'momo-chicken', quantity: 6 }];
       }
     } else if (nameLower.includes('chicken meal') || menuItemId === 'momo-chicken-meal' || menuItemId === 'summit-chicken-meal') {
       if (matchedVariation === 'wings') {
-        activeRecipe = [
-          { materialId: 'chicken-wings-raw', quantity: 3 },
-          { materialId: 'pkt-mayo', quantity: 0.05 },
-          { materialId: 'pkg-momo-box', quantity: 1 }
-        ];
+        activeRecipe = [{ materialId: 'chicken-wings-raw', quantity: 3 }];
       } else {
-        activeRecipe = [
-          { materialId: 'chicken-strips-raw', quantity: 3 },
-          { materialId: 'pkt-mayo', quantity: 0.05 },
-          { materialId: 'pkg-momo-box', quantity: 1 }
-        ];
+        activeRecipe = [{ materialId: 'chicken-strips-raw', quantity: 3 }];
       }
+    } else if (nameLower.includes('kurkure')) {
+      const qty = size === 'small' ? 4 : size === 'large' ? 8 : 6;
+      activeRecipe = [{ materialId: 'momo-kurkure', quantity: qty }];
+    } else if (nameLower.includes('tandoori') && nameLower.includes('momo')) {
+      const qty = size === 'small' ? 4 : size === 'large' ? 8 : 6;
+      activeRecipe = [{ materialId: 'momo-tandoori', quantity: qty }];
     } else if (nameLower.includes('mojito')) {
       activeRecipe = [
         { materialId: 'soda-water', quantity: 1 },
@@ -1438,7 +1509,7 @@ export function resolveItemActiveRecipe(
       activeRecipe = [{ materialId: 'pkt-mayo', quantity: 0.1 }];
     } else if (nameLower.includes('moburg') || menuItemId === 'classic-moburg') {
       activeRecipe = [
-        { materialId: 'momo-veg', quantity: 1 },
+        { materialId: nameLower.includes('kurkure') ? 'momo-kurkure' : nameLower.includes('chicken') ? 'momo-chicken' : 'momo-veg', quantity: 2 },
         { materialId: 'burger-buns', quantity: 1 }
       ];
     } else if (nameLower.includes('chicken cheese') || nameLower.includes('cheese lava')) {
@@ -1447,7 +1518,7 @@ export function resolveItemActiveRecipe(
     } else if (nameLower.includes('corn cheese')) {
       const qty = size === 'small' ? 4 : size === 'large' ? 8 : 6;
       activeRecipe = [{ materialId: 'momo-corn-cheese', quantity: qty }];
-    } else if (nameLower.includes('chicken')) {
+    } else if (nameLower.includes('chicken') && (nameLower.includes('momo') || nameLower.includes('combo'))) {
       const qty = size === 'small' ? 4 : size === 'large' ? 8 : 6;
       activeRecipe = [{ materialId: 'momo-chicken', quantity: qty }];
     } else if (nameLower.includes('paneer')) {

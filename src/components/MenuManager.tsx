@@ -207,6 +207,8 @@ const MenuManager: React.FC = () => {
           category: editingItem.category || (sections[0]?.id || 'momo'),
           minCoinsPrices: editingItem.minCoinsPrices || {},
           sizeRecipes: editingItem.sizeRecipes || {},
+          variationRecipes: editingItem.variationRecipes || {},
+          no_sizes: Boolean(editingItem.no_sizes),
           is_hidden: Boolean(editingItem.is_hidden)
         } as MenuItem;
         
@@ -534,7 +536,16 @@ const MenuManager: React.FC = () => {
               onChange={e => updateRecipeRow(idx, 'materialId', e.target.value, size, variationKey)}
             >
               <option value="">Select Material...</option>
-              {centralStock.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+              {[...centralStock].sort((a, b) => {
+                const aIsMomo = a.category === 'MOMO' ? 1 : 0;
+                const bIsMomo = b.category === 'MOMO' ? 1 : 0;
+                if (aIsMomo !== bIsMomo) return bIsMomo - aIsMomo;
+                return a.name.localeCompare(b.name);
+              }).map(m => (
+                <option key={m.id} value={m.id}>
+                  {m.category === 'MOMO' ? `🥟 ${m.name}` : m.name} ({m.unit})
+                </option>
+              ))}
             </select>
             <div className="flex items-center justify-between pt-2 border-t border-brand-stone/50">
               <div className="flex items-center gap-2">
