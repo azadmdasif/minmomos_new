@@ -37,10 +37,13 @@ export function resolveCategoryName(
 
   // Match against menu items by name
   if (cleanName) {
-    const matched = menuItems.find(m => {
-      const mName = m.name.toLowerCase();
-      return mName === cleanName || cleanName.includes(mName) || mName.includes(cleanName);
-    });
+    let matched = menuItems.find(m => m.name.toLowerCase() === cleanName);
+    if (!matched) {
+      matched = menuItems.find(m => cleanName.includes(m.name.toLowerCase()));
+    }
+    if (!matched) {
+      matched = menuItems.find(m => m.name.toLowerCase().includes(cleanName));
+    }
 
     if (matched && matched.category) {
       const sec = menuSections.find(

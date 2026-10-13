@@ -7,9 +7,14 @@ import { motion, AnimatePresence } from 'motion/react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { getLocalMenuSections, fetchMenuSections, fetchMenuItems } from '../utils/storage';
 import { resolveCategoryName } from '../utils/categoryHelper';
+import { ItemSalesTrend } from './ItemSalesTrend';
 
 interface ItemSalesReportProps {
   orders: CompletedOrder[];
+  allOrdersRaw?: CompletedOrder[];
+  startDate?: string;
+  endDate?: string;
+  studentPhoneSet?: Set<string>;
 }
 
 interface SalesData {
@@ -201,7 +206,13 @@ export function extractDiscountDetails(item: any): { cleanName: string; category
   return { cleanName, category, categoryType };
 }
 
-const ItemSalesReport: React.FC<ItemSalesReportProps> = ({ orders = [] }) => {
+const ItemSalesReport: React.FC<ItemSalesReportProps> = ({ 
+  orders = [],
+  allOrdersRaw = [],
+  startDate,
+  endDate,
+  studentPhoneSet
+}) => {
   const [selectedChannels, setSelectedChannels] = useState<string[]>(['DINE_IN', 'TAKEAWAY', 'DELIVERY']);
   const [isSplit, setIsSplit] = useState(false);
   const [isDiscountExpanded, setIsDiscountExpanded] = useState(false);
@@ -576,6 +587,17 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({ orders = [] }) => {
 
   return (
     <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-1000 min-w-0">
+      {/* 📈 Units Sold Trend Explorer (Item-wise & Category-wise, Time Window, Segment & Channel filters) */}
+      <ItemSalesTrend
+        orders={orders}
+        allOrdersRaw={allOrdersRaw}
+        currentStartDate={startDate}
+        currentEndDate={endDate}
+        studentPhoneSet={studentPhoneSet}
+        menuItems={menuItems}
+        menuSections={sections}
+      />
+
       {/* Header Controls & Expandable Discounts Panel */}
       <div className="bg-white p-6 rounded-[3rem] shadow-xl border border-brand-stone transition-all duration-300">
         <div className="flex flex-wrap items-center justify-between gap-6">

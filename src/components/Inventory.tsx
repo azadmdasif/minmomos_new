@@ -15,6 +15,7 @@ import {
   raiseRestockRequest, 
   seedStandardInventory,
   fetchProcurements,
+  fetchProcurementPaymentHistory,
   fetchAllNonVoidedProcurements,
   logProcurement,
   fetchAllocations,
@@ -104,12 +105,12 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   const [materialCategory, setMaterialCategory] = useState<MaterialCategory>('MOMO');
   const [activeSubcategory, setActiveSubcategory] = useState<string>('all');
   
-  // Ledger States - default to 'all' so historical procurements are immediately visible
+  // Ledger States - default to 'thisMonth' so initial load is lightweight (<200KB vs 7MB)
   const [ledgerType, setLedgerType] = useState<LedgerType>('BUYING');
-  const [datePreset, setDatePreset] = useState<DatePreset>('all');
+  const [datePreset, setDatePreset] = useState<DatePreset>('thisMonth');
   const [startDate, setStartDate] = useState(() => {
     const d = new Date();
-    d.setFullYear(d.getFullYear() - 2);
+    d.setDate(1);
     return getISTDateString(d);
   });
   const [endDate, setEndDate] = useState(getISTDateString());

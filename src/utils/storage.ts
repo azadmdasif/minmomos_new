@@ -460,7 +460,7 @@ export async function fetchProcurements(startDate: string, endDate: string): Pro
   try {
     let query = supabase
       .from('procurements')
-      .select('id, item_id, item_name, unit, quantity, total_cost, vendor, date, is_voided, void_reason, is_paid, paid_at, paid_by, payment_notes, payment_mode, payment_history');
+      .select('id, item_id, item_name, unit, quantity, total_cost, vendor, date, is_voided, void_reason, is_paid, paid_at, paid_by, payment_notes, payment_mode');
       
     if (startDate) {
       query = query.gte('date', `${startDate}T00:00:00+05:30`);
@@ -482,6 +482,21 @@ export async function fetchProcurements(startDate: string, endDate: string): Pro
     return { data: mapped, error };
   } catch (err) {
     return { data: [], error: err };
+  }
+}
+
+export async function fetchProcurementPaymentHistory(procurementId: string): Promise<any[]> {
+  try {
+    const { data, error } = await supabase
+      .from('procurements')
+      .select('payment_history')
+      .eq('id', procurementId)
+      .maybeSingle();
+    if (error || !data) return [];
+    return Array.isArray(data.payment_history) ? data.payment_history : [];
+  } catch (err) {
+    console.error("Error fetching payment history for procurement:", err);
+    return [];
   }
 }
 

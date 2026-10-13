@@ -4359,7 +4359,15 @@ BENEFITS:
           </div>
         )}
 
-        {reportView === 'itemSales' && <ItemSalesReport orders={displayOrders} />}
+        {reportView === 'itemSales' && (
+          <ItemSalesReport 
+            orders={displayOrders} 
+            allOrdersRaw={allOrdersRaw}
+            startDate={startDate}
+            endDate={endDate}
+            studentPhoneSet={studentPhoneSet}
+          />
+        )}
       </div>
       
       <DeleteBillModal isOpen={isDeleteModalOpen} onClose={() => setIsDeleteModalOpen(false)} onConfirm={confirmDelete} billNumber={orderToDelete?.billNumber || null} />
