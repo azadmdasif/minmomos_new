@@ -15,7 +15,6 @@ import {
   raiseRestockRequest, 
   seedStandardInventory,
   fetchProcurements,
-  fetchProcurementPaymentHistory,
   fetchAllNonVoidedProcurements,
   logProcurement,
   fetchAllocations,
@@ -107,7 +106,7 @@ const Inventory: React.FC<InventoryProps> = ({ user }) => {
   
   // Ledger States - default to 'thisMonth' so initial load is lightweight (<200KB vs 7MB)
   const [ledgerType, setLedgerType] = useState<LedgerType>('BUYING');
-  const [datePreset, setDatePreset] = useState<DatePreset>('thisMonth');
+  const [datePreset, setDatePreset] = useState<DatePreset>('month');
   const [startDate, setStartDate] = useState(() => {
     const d = new Date();
     d.setDate(1);

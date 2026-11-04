@@ -22,6 +22,7 @@ import PerformanceChart from './PerformanceChart';
 import RevenueBreakdownChart from './RevenueBreakdownChart';
 import OrderModeChart from './OrderModeChart';
 import TimeWiseRevenueChart from './TimeWiseRevenueChart';
+import OrderValueHistogram from './OrderValueHistogram';
 import CustomerInsights from './CustomerInsights';
 import CohortRetentionChart from './CohortRetentionChart';
 import CohortCompositionChart from './CohortCompositionChart';
@@ -2376,6 +2377,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
               <OrderModeChart orders={displayOrders} analysisBasis={analysisBasis} />
             </div>
 
+            {/* Order Value & Ticket Size Distribution Histogram */}
+            <OrderValueHistogram orders={displayOrders} />
+
             {/* 2. Insight Summary Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
               <div className="bg-brand-brown p-8 rounded-[2.5rem] shadow-xl text-white relative overflow-hidden group">
@@ -2854,6 +2858,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
               </div>
 
             </div>
+
+            {/* Order Value & Ticket Size Distribution Histogram */}
+            <OrderValueHistogram orders={displayOrders} />
 
             <TimeWiseRevenueChart orders={displayOrders} />
             

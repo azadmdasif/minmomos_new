@@ -3,10 +3,12 @@ import React from 'react';
 import { OrderItem, OrderType, Customer, MenuItem } from '../types';
 import BillItem from './BillItem';
 import { GIFT_CAMPA_COLA } from '../constants';
-import { fetchUsualOrder, fetchLastOrderPriorityItem, getCustomerByPhone, getTierInfo, registerCustomer, searchCustomers, updateCustomer, fetchMenuItems } from '../utils/storage';
+import { getCustomerByPhone, getTierInfo, registerCustomer, searchCustomers, updateCustomer, fetchMenuItems } from '../utils/storage';
 import { getActiveCouponForCustomer, syncCouponFromSupabase, getMarketingCoupons, saveMarketingCoupons, MarketingCoupon, getLocalCustomOffers, saveLocalCustomOffers, fetchCustomOffersFromSupabase, CustomOffer, getActiveClaimsForCustomer, syncFreeItemClaimsFromSupabaseForCustomer, getActiveDiscountClaimsForCustomer, syncDiscountClaimsFromSupabaseForCustomer } from '../utils/marketingStorage';
 import CelebrationOverlay from './CelebrationOverlay';
 import NewCustomerModal from './NewCustomerModal';
+import { StudentGangModal } from './StudentGangModal';
+import { validateReferralCode, validateGangCoupon, checkReferralEligibility, getWhatsAppReferralShareUrl, getWhatsAppGangCouponUrl, markReferralCodeAsSent, markGangCouponAsSent, ensureCustomerGangCoupon } from '../utils/referralStorage';
 
 interface BillProps {
   orderItems: OrderItem[];
@@ -19,6 +21,8 @@ interface BillProps {
   setOrderType: (type: OrderType) => void;
   customerPhone: string;
   setCustomerPhone: (phone: string) => void;
+  onPromptVipReferral?: (customer: Customer) => void;
+  onPromptStudentGang?: (customer: Customer) => void;
 }
 
 const Bill: React.FC<BillProps> = ({ 
@@ -31,13 +35,13 @@ const Bill: React.FC<BillProps> = ({
   orderType,
   setOrderType,
   customerPhone,
-  setCustomerPhone
+  setCustomerPhone,
+  onPromptVipReferral,
+  onPromptStudentGang
 }) => {
   const total = orderItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
 
   const [customer, setCustomer] = React.useState<Customer | null>(null);
-  const [usualOrder, setUsualOrder] = React.useState<{ name: string, quantity: number } | null>(null);
-  const [lastPriorityItem, setLastPriorityItem] = React.useState<{ name: string, quantity: number } | null>(null);
   const [showCelebration, setShowCelebration] = React.useState(false);
   const [celebratedTier, setCelebratedTier] = React.useState<string | null>(null);
   const [showNewCustomerPrompt, setShowNewCustomerPrompt] = React.useState(false);
@@ -71,6 +75,181 @@ const Bill: React.FC<BillProps> = ({
   React.useEffect(() => {
     setCustomOffers(getLocalCustomOffers());
   }, [customerPhone, orderItems]);
+
+  // Student Gang State
+  const [showGangModal, setShowGangModal] = React.useState(false);
+  const [gangModalInitialCode, setGangModalInitialCode] = React.useState('');
+
+  // Unified Coupon / Referral Code State
+  const [couponInputCode, setCouponInputCode] = React.useState('');
+  const [couponError, setCouponError] = React.useState<string | null>(null);
+  const [couponSuccessMessage, setCouponSuccessMessage] = React.useState<string | null>(null);
+  const [isApplyingCoupon, setIsApplyingCoupon] = React.useState(false);
+
+  const referralDiscountItem = orderItems.find(i => i.id === 'referral-discount');
+  const hasGangDiscount = orderItems.some(i => i.id === 'student-gang-discount');
+
+  // Auto-recalculate 50% referral discount (up to ₹100 max) whenever standard subtotal changes
+  React.useEffect(() => {
+    const referralItem = orderItems.find(i => i.id === 'referral-discount');
+    if (!referralItem) return;
+
+    const baseSubtotal = orderItems
+      .filter(i => i.id !== 'referral-discount' && !i.id.startsWith('loyalty-discount') && !i.id.startsWith('free-gift-') && !i.id.startsWith('custom-discount-') && i.price > 0)
+      .reduce((acc, i) => acc + i.price * i.quantity, 0);
+
+    const expectedDiscount = -Math.min(100, Math.round(baseSubtotal * 0.5));
+    if (baseSubtotal <= 0) {
+      onUpdateQuantity('referral-discount', 0);
+    } else if (Math.abs(referralItem.price - expectedDiscount) > 0.01) {
+      onAddItem([{
+        ...referralItem,
+        price: expectedDiscount,
+        quantity: 1
+      }]);
+    }
+  }, [orderItems, onAddItem, onUpdateQuantity]);
+
+  // Auto-recalculate Flat 50% student gang discount (up to ₹200 max) whenever standard subtotal changes
+  React.useEffect(() => {
+    const gangItem = orderItems.find(i => i.id === 'student-gang-discount');
+    if (!gangItem) return;
+
+    const baseSubtotal = orderItems
+      .filter(i => i.id !== 'student-gang-discount' && i.id !== 'referral-discount' && !i.id.startsWith('loyalty-discount') && !i.id.startsWith('free-gift-') && !i.id.startsWith('custom-discount-') && i.price > 0)
+      .reduce((acc, i) => acc + i.price * i.quantity, 0);
+
+    const expectedDiscount = -Math.min(200, Math.round(baseSubtotal * 0.50));
+    if (baseSubtotal <= 0) {
+      onUpdateQuantity('student-gang-discount', 0);
+    } else if (Math.abs(gangItem.price - expectedDiscount) > 0.01) {
+      onAddItem([{
+        ...gangItem,
+        price: expectedDiscount,
+        quantity: 1
+      }]);
+    }
+  }, [orderItems, onAddItem, onUpdateQuantity]);
+
+  // Unified Coupon Processor: Auto-detects whether entered code is a Gang Coupon or a Referral Code
+  const handleApplyUnifiedCoupon = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const cleanCode = couponInputCode.trim().toUpperCase();
+    if (!cleanCode) {
+      setCouponError('Please enter a coupon or referral code.');
+      return;
+    }
+
+    setCouponError(null);
+    setCouponSuccessMessage(null);
+    setIsApplyingCoupon(true);
+
+    try {
+      // 1. Check if it's a Student Gang Coupon (starts with GANG- or registered gang coupon)
+      if (cleanCode.startsWith('GANG-')) {
+        const gangRes = await validateGangCoupon(cleanCode);
+        if (!gangRes.valid) {
+          setCouponError(gangRes.error || 'Invalid student gang coupon.');
+          setIsApplyingCoupon(false);
+          return;
+        }
+
+        setGangModalInitialCode(cleanCode);
+        setShowGangModal(true);
+        setCouponSuccessMessage(`Student Gang Coupon recognized! Enlist 3+ gang members to claim Flat 50% off (up to ₹200).`);
+        setIsApplyingCoupon(false);
+        return;
+      }
+
+      // 2. Check if it's a VIP Referral Code (starts with MOMO- or registered referral code)
+      if (cleanCode.startsWith('MOMO-')) {
+        if (!customerPhone || customerPhone.length !== 10) {
+          setCouponError("Please enter the customer's 10-digit mobile number above first.");
+          setIsApplyingCoupon(false);
+          return;
+        }
+
+        const refRes = await validateReferralCode(cleanCode, customerPhone);
+        if (!refRes.valid) {
+          setCouponError(refRes.error || 'Invalid referral code.');
+          setIsApplyingCoupon(false);
+          return;
+        }
+
+        const standardSubtotal = orderItems
+          .filter(i => i.id !== 'referral-discount' && !i.id.startsWith('loyalty-discount') && !i.id.startsWith('free-gift-') && !i.id.startsWith('custom-discount-') && i.price > 0)
+          .reduce((acc, i) => acc + i.price * i.quantity, 0);
+
+        if (standardSubtotal <= 0) {
+          setCouponError("Please add items to your cart before applying referral discount.");
+          setIsApplyingCoupon(false);
+          return;
+        }
+
+        const discountAmt = Math.min(100, Math.round(standardSubtotal * 0.5));
+        onAddItem([{
+          id: 'referral-discount',
+          menuItemId: 'discount',
+          name: `🎁 Referral 50% Off (Max ₹100) - Code: ${cleanCode}`,
+          price: -discountAmt,
+          quantity: 1,
+          cost: 0
+        }]);
+
+        setCouponInputCode('');
+        setCouponSuccessMessage(`Referral discount applied! Saved ₹${discountAmt}.`);
+        setIsApplyingCoupon(false);
+        return;
+      }
+
+      // 3. Fallback: try checking gang validation in DB / local storage
+      const gangCheck = await validateGangCoupon(cleanCode);
+      if (gangCheck.valid) {
+        setGangModalInitialCode(cleanCode);
+        setShowGangModal(true);
+        setCouponSuccessMessage(`Student Gang Coupon recognized! Enlist 3+ gang members to claim Flat 50% off (up to ₹200).`);
+        setIsApplyingCoupon(false);
+        return;
+      }
+
+      // 4. Fallback: try checking referral validation in DB / local storage
+      if (customerPhone && customerPhone.length === 10) {
+        const refCheck = await validateReferralCode(cleanCode, customerPhone);
+        if (refCheck.valid) {
+          const standardSubtotal = orderItems
+            .filter(i => i.id !== 'referral-discount' && !i.id.startsWith('loyalty-discount') && !i.id.startsWith('free-gift-') && !i.id.startsWith('custom-discount-') && i.price > 0)
+            .reduce((acc, i) => acc + i.price * i.quantity, 0);
+
+          if (standardSubtotal <= 0) {
+            setCouponError("Please add items to your cart before applying referral discount.");
+            setIsApplyingCoupon(false);
+            return;
+          }
+
+          const discountAmt = Math.min(100, Math.round(standardSubtotal * 0.5));
+          onAddItem([{
+            id: 'referral-discount',
+            menuItemId: 'discount',
+            name: `🎁 Referral 50% Off (Max ₹100) - Code: ${cleanCode}`,
+            price: -discountAmt,
+            quantity: 1,
+            cost: 0
+          }]);
+
+          setCouponInputCode('');
+          setCouponSuccessMessage(`Referral discount applied! Saved ₹${discountAmt}.`);
+          setIsApplyingCoupon(false);
+          return;
+        }
+      }
+
+      setCouponError(`Unrecognized or invalid coupon "${cleanCode}".`);
+      setIsApplyingCoupon(false);
+    } catch (err: any) {
+      setCouponError(err?.message || 'Error processing coupon code');
+      setIsApplyingCoupon(false);
+    }
+  };
 
   const subtotal = React.useMemo(() => {
     return orderItems.reduce((acc, i) => acc + (i.price > 0 && i.id !== 'promo-mojito' && i.id !== 'loyalty-discount' && !i.id.startsWith('free-gift-') && !i.id.startsWith('custom-discount-') ? i.price * i.quantity : 0), 0);
@@ -272,25 +451,36 @@ const Bill: React.FC<BillProps> = ({
       
       const loadCustomer = async () => {
         const cust = await getCustomerByPhone(customerPhone);
-        setCustomer(cust);
         lastCheckedPhone.current = customerPhone;
 
         if (cust) {
-          const [usual, lastPriority] = await Promise.all([
-            fetchUsualOrder(cust.phone),
-            fetchLastOrderPriorityItem(cust.phone)
-          ]);
-          setUsualOrder(usual);
-          setLastPriorityItem(lastPriority);
-          
+          let updatedCust = cust;
+          const isStudent = updatedCust.note === 'STUDENT' || updatedCust.note?.startsWith('STUDENT|');
+
+          if (isStudent) {
+            // FOR STUDENTS: GANG COUPON IS FIRST PRIORITY!
+            updatedCust = await ensureCustomerGangCoupon(updatedCust);
+            setCustomer(updatedCust);
+            if (!updatedCust.gangCouponSent && onPromptStudentGang) {
+              onPromptStudentGang(updatedCust);
+            } else if (checkReferralEligibility(updatedCust) && !updatedCust.referralCodeSent && onPromptVipReferral) {
+              onPromptVipReferral(updatedCust);
+            }
+          } else {
+            setCustomer(updatedCust);
+            // Check if eligible prospective VIP member and code not sent yet
+            if (checkReferralEligibility(updatedCust) && !updatedCust.referralCodeSent && onPromptVipReferral) {
+              onPromptVipReferral(updatedCust);
+            }
+          }
+
           // MISSING NAME Logic
-          if (!cust.name) {
+          if (!updatedCust.name) {
             setIsPromptForExisting(true);
             setShowNewCustomerPrompt(true);
           }
 
           // VOIDED / RE-FIRST ORDER Logic
-          const isStudent = cust.note === 'STUDENT' || cust.note?.startsWith('STUDENT|');
           if (isStudent) {
             const hasMojitoInOrder = orderItems.some(item => item.id === 'student-mojito-gift' || item.name.includes('Student Promo'));
             if (cust.totalOrders === 0 && !hasMojitoInOrder) {
@@ -313,7 +503,6 @@ const Bill: React.FC<BillProps> = ({
             }
           }
         } else {
-          setUsualOrder(null);
           // NEW CUSTOMER Logic
           setIsPromptForExisting(false);
           setShowNewCustomerPrompt(true);
@@ -322,8 +511,6 @@ const Bill: React.FC<BillProps> = ({
       loadCustomer();
     } else {
       setCustomer(null);
-      setUsualOrder(null);
-      setLastPriorityItem(null);
       setCelebratedTier(null);
       lastCheckedPhone.current = null;
       setShowNewCustomerPrompt(false);
@@ -382,8 +569,15 @@ const Bill: React.FC<BillProps> = ({
       const note = `STUDENT|${convertSchoolName.trim()}|${hikerNo}`;
       
       await updateCustomer(customer.id, { note });
-      setCustomer({ ...customer, note });
+      let updatedCust: Customer = { ...customer, note };
+      updatedCust = await ensureCustomerGangCoupon(updatedCust);
+      setCustomer(updatedCust);
       setShowConvertStudentModal(false);
+
+      // Trigger Student Gang modal as FIRST PRIORITY!
+      if (!updatedCust.gangCouponSent && onPromptStudentGang) {
+        onPromptStudentGang(updatedCust);
+      }
     } catch (err) {
       console.error("Failed to convert customer to student:", err);
     }
@@ -497,19 +691,53 @@ const Bill: React.FC<BillProps> = ({
                   <span className="text-[10px] font-black text-brand-yellow uppercase tracking-widest animate-in fade-in slide-in-from-right-2 block drop-shadow-sm">
                     {customer.name || 'Anonymous Explorer'} • {tier?.name} Stage • Visit #{customer.totalOrders + 1}
                   </span>
-                  <div className="mt-1 flex items-center justify-end gap-2">
+                  <div className="mt-1 flex items-center justify-end gap-1.5 flex-wrap">
                     {customer.note === 'STUDENT' || customer.note?.startsWith('STUDENT|') ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const parts = (customer.note || '').split('|');
-                          setConvertSchoolName(parts[1] || '');
-                          setShowConvertStudentModal(true);
-                        }}
-                        className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 transition-all inline-flex items-center gap-1"
-                      >
-                        🎓 Student Category (10% Off)
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const parts = (customer.note || '').split('|');
+                            setConvertSchoolName(parts[1] || '');
+                            setShowConvertStudentModal(true);
+                          }}
+                          className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 transition-all inline-flex items-center gap-1"
+                        >
+                          🎓 Student (10% Off)
+                        </button>
+                        {customer.gangCouponCode && (
+                          <span className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-teal-500/20 text-teal-300 border border-teal-500/30 inline-flex items-center gap-1">
+                            🎟️ Gang Code: <strong className="font-mono text-white">{customer.gangCouponCode}</strong>
+                          </span>
+                        )}
+                        {customer.gangCouponCode && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const url = getWhatsAppGangCouponUrl(customer.phone, customer.name || '', customer.gangCouponCode!);
+                              await markGangCouponAsSent(customer.phone);
+                              setCustomer(prev => prev ? { ...prev, gangCouponSent: true } : null);
+                              window.open(url, '_blank');
+                            }}
+                            className={`text-[8px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded transition-all inline-flex items-center gap-1 cursor-pointer shadow-sm ${
+                              customer.gangCouponSent
+                                ? 'bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/50'
+                                : 'bg-gradient-to-r from-teal-500 to-emerald-500 text-stone-950 font-black border border-teal-300 hover:brightness-110 shadow-emerald-950/30 animate-pulse'
+                            }`}
+                            title="WhatsApp Gang Coupon to Student"
+                          >
+                            <span>📲</span>
+                            <span>{customer.gangCouponSent ? 'Gang Coupon Sent ✅' : '⭐ WhatsApp Gang Coupon (Priority)'}</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setShowGangModal(true)}
+                          className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-teal-500/25 text-teal-300 border border-teal-500/40 hover:bg-teal-500/40 transition-all inline-flex items-center gap-1 shadow-sm cursor-pointer"
+                        >
+                          👥 Redeem Gang (50% Off)
+                        </button>
+                      </>
                     ) : (
                       <button
                         type="button"
@@ -523,6 +751,27 @@ const Bill: React.FC<BillProps> = ({
                       </button>
                     )}
                   </div>
+                  {customer.referralCode && (
+                    <div className="mt-1 flex items-center justify-end gap-1.5 flex-wrap">
+                      <span className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 inline-flex items-center gap-1">
+                        ⭐ VIP Code: <strong className="font-mono text-white">{customer.referralCode}</strong>
+                        {customer.referralWallet ? ` • Earnings: ₹${customer.referralWallet}` : ''}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const url = getWhatsAppReferralShareUrl(customer.phone, customer.name || '', customer.referralCode!);
+                          await markReferralCodeAsSent(customer.phone);
+                          setCustomer(prev => prev ? { ...prev, referralCodeSent: true } : null);
+                          window.open(url, '_blank');
+                        }}
+                        className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/50 transition-all inline-flex items-center gap-1 cursor-pointer"
+                        title="Open WhatsApp with prefilled message"
+                      >
+                        📲 WhatsApp Code
+                      </button>
+                    </div>
+                  )}
                   {nextTarget && (
                     <div className="mt-1">
                       <div className="w-28 h-1.5 bg-white/10 rounded-full overflow-hidden ml-auto border border-white/5">
@@ -580,9 +829,102 @@ const Bill: React.FC<BillProps> = ({
                 </div>
               )}
             </div>
+
+            {/* Active Gang Discount Tag */}
+            {hasGangDiscount && (
+              <div className="mt-2 bg-teal-900/40 border border-teal-500/40 rounded-xl p-2.5 flex items-center justify-between text-teal-200">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">🎒</span>
+                  <div>
+                    <span className="text-[8px] font-black uppercase tracking-wider block text-teal-400">Student Gang Offer Active</span>
+                    <span className="text-[11px] font-black uppercase">
+                      FLAT 50% OFF (Saved ₹{Math.abs(orderItems.find(i => i.id === 'student-gang-discount')?.price || 200)})
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onUpdateQuantity('student-gang-discount', 0)}
+                  className="px-2 py-1 rounded bg-black/30 hover:bg-black/50 text-[10px] font-bold text-teal-300 transition-all cursor-pointer"
+                  title="Remove gang discount"
+                >
+                  ✕ Remove
+                </button>
+              </div>
+            )}
+            {/* Active Referral Discount Tag */}
+            {referralDiscountItem && (
+              <div className="mt-2 bg-amber-900/40 border border-amber-500/40 rounded-xl p-2.5 flex items-center justify-between text-amber-200">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">🎁</span>
+                  <div>
+                    <span className="text-[8px] font-black uppercase tracking-wider block text-amber-400">VIP Referral Reward Active</span>
+                    <span className="text-[11px] font-black uppercase">50% OFF (Saved ₹{Math.abs(referralDiscountItem.price)})</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onUpdateQuantity('referral-discount', 0)}
+                  className="px-2 py-1 rounded bg-black/30 hover:bg-black/50 text-[10px] font-bold text-amber-300 transition-all cursor-pointer"
+                  title="Remove referral discount"
+                >
+                  ✕ Remove
+                </button>
+              </div>
+            )}
+
+            {/* Unified Coupon & Referral Entry Box for Every Order */}
+            <div className="mt-2.5 bg-black/30 lg:bg-white/5 border border-amber-500/30 rounded-2xl p-3 shadow-inner">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-black uppercase tracking-wider text-brand-yellow flex items-center gap-1.5">
+                  <span>🎟️</span> Enter Coupon or Referral Code
+                </span>
+                <span className="text-[8px] font-black uppercase tracking-widest text-zinc-400 bg-white/5 px-2 py-0.5 rounded-full border border-white/5">
+                  All Orders
+                </span>
+              </div>
+
+              <form onSubmit={handleApplyUnifiedCoupon} className="flex gap-2">
+                <input
+                  type="text"
+                  value={couponInputCode}
+                  onChange={(e) => {
+                    setCouponInputCode(e.target.value.toUpperCase());
+                    setCouponError(null);
+                    setCouponSuccessMessage(null);
+                  }}
+                  placeholder="e.g. GANG-XXXX-XX or MOMO-XXXX-XX"
+                  className="flex-1 bg-black/40 border border-white/15 rounded-xl px-3 py-2 text-xs font-mono font-bold text-white uppercase outline-none focus:border-brand-yellow focus:ring-1 focus:ring-brand-yellow/30 placeholder:text-zinc-500"
+                />
+                <button
+                  type="submit"
+                  disabled={isApplyingCoupon || !couponInputCode.trim()}
+                  className="px-4 py-2 rounded-xl bg-brand-yellow hover:bg-yellow-400 text-brand-brown text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shadow-md"
+                >
+                  {isApplyingCoupon ? 'Checking...' : 'Apply'}
+                </button>
+              </form>
+
+              {couponError && (
+                <div className="mt-2 text-[10px] font-bold text-rose-400 bg-rose-950/50 border border-rose-500/30 px-2.5 py-1.5 rounded-xl flex items-center gap-1.5 animate-in fade-in">
+                  <span>⚠️</span>
+                  <span>{couponError}</span>
+                </div>
+              )}
+              {couponSuccessMessage && (
+                <div className="mt-2 text-[10px] font-bold text-emerald-300 bg-emerald-950/50 border border-emerald-500/30 px-2.5 py-1.5 rounded-xl flex items-center gap-1.5 animate-in fade-in">
+                  <span>✅</span>
+                  <span>{couponSuccessMessage}</span>
+                </div>
+              )}
+
+              <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-wider mt-2 leading-tight">
+                💡 Automatically identifies Student Gang Coupons (Flat 50% Off for 3+ students) & VIP Referral Codes (50% Off).
+              </p>
+            </div>
           </div>
 
-          {customer && (loyaltyDiscount || usualOrder || lastPriorityItem || canRedeemSomething || isCloseToNextTier || isStale || activePromoCoupon || activeFreeClaims.length > 0 || activeDiscountClaims.length > 0 || qualifiedOffer) && (
+          {customer && (loyaltyDiscount || canRedeemSomething || isCloseToNextTier || isStale || activePromoCoupon || activeFreeClaims.length > 0 || activeDiscountClaims.length > 0 || qualifiedOffer) && (
             <div className="flex flex-wrap gap-3 animate-in fade-in slide-in-from-top-3 duration-700">
                {activeFreeClaims.map((claim) => {
                  const promoId = `free-promo-${claim.id}`;
@@ -772,28 +1114,6 @@ const Bill: React.FC<BillProps> = ({
                      </button>
                   </div>
                 )}
-               {usualOrder && (
-                  <div className="bg-white/10 lg:bg-white/5 px-4 py-3 rounded-2xl border-2 border-brand-yellow/30 flex items-center gap-3 backdrop-blur-xl group hover:bg-white/20 transition-all cursor-default shadow-2xl shrink-0">
-                    <div className="w-8 h-8 bg-brand-yellow/30 rounded-xl flex items-center justify-center shrink-0 shadow-inner">
-                      <span className="text-[14px]">⭐</span>
-                    </div>
-                    <div className="flex flex-col min-w-[120px]">
-                      <span className="text-[8px] font-black text-brand-yellow uppercase tracking-[0.2em] leading-none mb-1.5 shadow-sm">Their Favorite</span>
-                      <span className="text-[12px] font-black text-white leading-tight drop-shadow-md">{usualOrder.name}</span>
-                    </div>
-                  </div>
-               )}
-               {lastPriorityItem && (
-                  <div className="bg-white/10 lg:bg-white/5 px-4 py-3 rounded-2xl border-2 border-rose-500/30 flex items-center gap-3 backdrop-blur-xl group hover:bg-white/20 transition-all cursor-default shadow-2xl shrink-0">
-                    <div className="w-8 h-8 bg-rose-500/30 rounded-xl flex items-center justify-center shrink-0 shadow-inner">
-                      <span className="text-[14px]">🔥</span>
-                    </div>
-                    <div className="flex flex-col min-w-[120px]">
-                      <span className="text-[8px] font-black text-rose-300 uppercase tracking-[0.2em] leading-none mb-1.5 shadow-sm">Last Time's Pick</span>
-                      <span className="text-[12px] font-black text-white leading-tight drop-shadow-md">{lastPriorityItem.name}</span>
-                    </div>
-                  </div>
-               )}
                {rewardSuggestion && (
                  <div className="bg-white px-4 py-2.5 rounded-2xl flex items-center gap-3 shadow-xl shadow-black/20 border-2 border-peak-amber/20">
                    <div className="w-6 h-6 bg-peak-amber/10 rounded-full flex items-center justify-center">
@@ -972,6 +1292,19 @@ const Bill: React.FC<BillProps> = ({
           </div>
         );
       })()}
+
+      {/* Student Gang Registration & Redemption Modal */}
+      {showGangModal && (
+        <StudentGangModal
+          isOpen={showGangModal}
+          onClose={() => setShowGangModal(false)}
+          customer={customer}
+          customerPhone={customerPhone}
+          subtotal={subtotal}
+          initialCouponCode={gangModalInitialCode || customer?.gangCouponCode || ''}
+          onApplyGangDiscount={(item) => onAddItem([item])}
+        />
+      )}
     </div>
   );
 };

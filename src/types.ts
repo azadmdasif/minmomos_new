@@ -153,6 +153,9 @@ export interface OrderItem {
   parentItemId?: string;
   paidWithCoins?: boolean;
   coinsPrice?: number;
+  is_addon_offer?: boolean;
+  impression_id?: string;
+  offer_key?: string;
 }
 
 export interface DiningTable {
@@ -177,6 +180,13 @@ export interface Customer {
   joinedDate: string;
   welcomeCouponUsed?: boolean;
   welcomeCouponCode?: string;
+  referralCode?: string;
+  referredByCode?: string;
+  referralWallet?: number;
+  isReferralActive?: boolean;
+  gangCouponCode?: string;
+  referralCodeSent?: boolean;
+  gangCouponSent?: boolean;
 }
 
 export interface CompletedOrder {

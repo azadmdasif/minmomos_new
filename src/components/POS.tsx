@@ -1,12 +1,18 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { MenuItem as MenuItemType, OrderItem, OrderType, PaymentMethod, User as UserType, MenuSection } from '../types';
+import { MenuItem as MenuItemType, OrderItem, OrderType, PaymentMethod, User as UserType, MenuSection, Customer } from '../types';
 import Menu from './Menu';
 import Bill from './Bill';
 import VariantSelectionModal from './VariantSelectionModal';
 import BillPreviewModal from './BillPreviewModal';
 import CrossSellModal from './CrossSellModal';
-import { saveOrder, peekNextBillNumber, fetchMenuItems, fetchMenuSections, getLocalMenuSections } from '../utils/storage';
+import { ReferralWhatsAppModal } from './ReferralWhatsAppModal';
+import { StudentGangWhatsAppModal } from './StudentGangWhatsAppModal';
+import { saveOrder, peekNextBillNumber, fetchMenuItems, fetchMenuSections, getLocalMenuSections, getCustomerByPhone } from '../utils/storage';
+import { checkReferralEligibility, ensureCustomerReferralCode, ensureCustomerGangCoupon } from '../utils/referralStorage';
+import { supabase } from '../utils/supabase';
+import { generateDynamicAddonOffer, DynamicAddonOffer } from '../utils/suggestedAddonEngine';
+import { updateAddonImpressionOutcome } from '../utils/addonStorageQueue';
 import { 
   useCouponForCustomer, 
   syncFreeItemClaimsFromSupabaseForCustomer, 
@@ -22,7 +28,6 @@ import { CustomOffersModal } from './CustomOffersModal';
 
 
 const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, user }) => {
-  const SIDE_ADDON_IDS = ['add-fries', 'add-mojito', 'add-popcorn'];
   const [menuItems, setMenuItems] = useState<MenuItemType[]>([]);
   const [sections, setSections] = useState<MenuSection[]>(getLocalMenuSections());
   const [order, setOrder] = useState<OrderItem[]>([]);
@@ -43,7 +48,14 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
   
   // Cross-sell sides state
   const [showUpsellModal, setShowUpsellModal] = useState(false);
-  const [hasShownSidePrompt, setHasShownSidePrompt] = useState(false);
+  const [pendingBillPrintAfterPrompt, setPendingBillPrintAfterPrompt] = useState(false);
+  const [suggestedAddonOffer, setSuggestedAddonOffer] = useState<DynamicAddonOffer | null>(null);
+  const [customerPastItems, setCustomerPastItems] = useState<string[]>([]);
+
+  // Customer & Referral State
+  const [posCustomer, setPosCustomer] = useState<Customer | null>(null);
+  const [referralPromptCustomer, setReferralPromptCustomer] = useState<Customer | null>(null);
+  const [studentGangPromptCustomer, setStudentGangPromptCustomer] = useState<Customer | null>(null);
 
   useEffect(() => {
     const loadData = async () => {
@@ -77,9 +89,65 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
   const [activePromoClaims, setActivePromoClaims] = useState<any[]>([]);
   const [customerDiscountClaim, setCustomerDiscountClaim] = useState<any | null>(null);
 
-  // Fetch campaigns/claims for entered customer dynamically
+  // Fetch campaigns/claims and customer details for entered customer dynamically
   useEffect(() => {
     if (customerPhone && customerPhone.length === 10) {
+      getCustomerByPhone(customerPhone).then(async (cust) => {
+        if (cust) {
+          let updated = cust;
+          const isStudent = updated.note === 'STUDENT' || updated.note?.startsWith('STUDENT|');
+
+          if (isStudent) {
+            // FOR STUDENTS: GANG COUPON IS FIRST PRIORITY!
+            updated = await ensureCustomerGangCoupon(updated);
+            if (!updated.gangCouponSent) {
+              setStudentGangPromptCustomer(updated);
+            } else if (checkReferralEligibility(updated)) {
+              // Only after gang coupon is sent, check if VIP referral should be prompted
+              updated = await ensureCustomerReferralCode(updated);
+              if (!updated.referralCodeSent) {
+                setReferralPromptCustomer(updated);
+              }
+            }
+          } else {
+            // Non-students: check for VIP referral eligibility
+            if (checkReferralEligibility(updated)) {
+              updated = await ensureCustomerReferralCode(updated);
+              if (!updated.referralCodeSent) {
+                setReferralPromptCustomer(updated);
+              }
+            }
+          }
+          setPosCustomer(updated);
+
+          // Fetch past orders to understand customer preferences
+          try {
+            const { data: pastOrders } = await supabase
+              .from('orders')
+              .select('id, items:order_items(name)')
+              .eq('customer_phone', customerPhone)
+              .order('date', { ascending: false })
+              .limit(5);
+            if (pastOrders) {
+              const names: string[] = [];
+              pastOrders.forEach(po => {
+                if (Array.isArray(po.items)) {
+                  po.items.forEach((it: any) => {
+                    if (it.name) names.push(it.name);
+                  });
+                }
+              });
+              setCustomerPastItems(names);
+            }
+          } catch (e) {
+            console.warn("Could not fetch past order items:", e);
+          }
+        } else {
+          setPosCustomer(null);
+          setCustomerPastItems([]);
+        }
+      });
+
       syncFreeItemClaimsFromSupabaseForCustomer(customerPhone).then(() => {
         const activeClaims = getActiveClaimsForCustomer(customerPhone);
         setActivePromoClaims(activeClaims);
@@ -94,6 +162,7 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
         }
       });
     } else {
+      setPosCustomer(null);
       setActivePromoClaims([]);
       setCustomerDiscountClaim(null);
     }
@@ -218,20 +287,6 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
   };
 
   const handleAddItem = useCallback((itemsToAdd: OrderItem[]) => {
-    // Check for side upselling opportunity (Add Fries, Add Mojito, Add Chicken Popcorn at ₹39 each)
-    const hasQualifyingItem = itemsToAdd.some(item => {
-      const menuDetail = menuItems.find(m => m.id === item.menuItemId);
-      return menuDetail && (menuDetail.category === 'momo' || menuDetail.category === 'moburg');
-    });
-
-    const hasSideAlready = order.some(item => SIDE_ADDON_IDS.includes(item.menuItemId || item.id));
-    const addingSideNow = itemsToAdd.some(item => SIDE_ADDON_IDS.includes(item.menuItemId || item.id));
-
-    if (hasQualifyingItem && !hasSideAlready && !addingSideNow && !hasShownSidePrompt) {
-      setHasShownSidePrompt(true);
-      setShowUpsellModal(true);
-    }
-
     setOrder((prev) => {
       const newOrder = [...prev];
       itemsToAdd.forEach(item => {
@@ -250,13 +305,48 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
       });
       return newOrder;
     });
-  }, [menuItems, order, hasShownSidePrompt]);
+  }, []);
 
   const handleUpdateQuantity = (id: string, qty: number) => {
     setOrder(prev => qty <= 0 ? prev.filter(i => i.id !== id) : prev.map(i => i.id === id ? { ...i, quantity: qty } : i));
   };
 
+  const handleCloseUpsellModal = async () => {
+    setShowUpsellModal(false);
+    
+    // If prompt was triggered after clicking Bill & Print, proceed to the bill preview immediately
+    if (pendingBillPrintAfterPrompt) {
+      setPendingBillPrintAfterPrompt(false);
+      const nextNum = await peekNextBillNumber();
+      setPendingBillNumber(nextNum);
+      setIsPreviewing(true);
+    }
+  };
+
   const handleFinalize = async () => {
+    if (order.length === 0) return;
+
+    // The add-on screen should always appear after clicking Bill & Print
+    if (!pendingBillPrintAfterPrompt) {
+      const standardSubtotal = order.reduce(
+        (acc, i) => acc + (i.price > 0 && !i.parentItemId ? i.price * i.quantity : 0),
+        0
+      );
+
+      // Generate variable suggested offer based on customer history, cart value & rounding rules
+      const dynamicOffer = generateDynamicAddonOffer(
+        order,
+        standardSubtotal,
+        posCustomer,
+        customerPastItems
+      );
+
+      setSuggestedAddonOffer(dynamicOffer);
+      setPendingBillPrintAfterPrompt(true);
+      setShowUpsellModal(true);
+      return;
+    }
+
     const nextNum = await peekNextBillNumber();
     setPendingBillNumber(nextNum);
     setIsPreviewing(true);
@@ -265,11 +355,14 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
   const resetAfterOrder = () => {
     setOrder([]);
     setCustomerPhone('');
+    setPosCustomer(null);
+    setCustomerPastItems([]);
+    setSuggestedAddonOffer(null);
     setIsPreviewing(false);
     setIsMobileCartOpen(false);
     setPendingBillNumber(null);
     setIsSaving(false);
-    setHasShownSidePrompt(false);
+    setPendingBillPrintAfterPrompt(false);
   };
 
   const handleConfirmOrder = async (method: PaymentMethod, useBluetooth: boolean = false, manualTotal?: number, manualDiscount?: number) => {
@@ -295,6 +388,40 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
       );
       
       if (savedNum) {
+        // Link Bill ID to Addon Impression and check if still in final order or removed before print
+        if (suggestedAddonOffer?.impression?.impression_id) {
+          const orderId = `BILL-${savedNum}`;
+          const isStillInCart = order.some(
+            i => i.is_addon_offer || i.impression_id === suggestedAddonOffer.impression?.impression_id || i.id === suggestedAddonOffer.id
+          );
+          if (isStillInCart) {
+            updateAddonImpressionOutcome(
+              suggestedAddonOffer.impression.impression_id,
+              'accepted',
+              orderId
+            );
+          } else if (suggestedAddonOffer.impression.outcome === 'accepted') {
+            updateAddonImpressionOutcome(
+              suggestedAddonOffer.impression.impression_id,
+              'removed_before_print',
+              orderId
+            );
+          }
+        }
+
+        // Referral program prompt detection for eligible VIP customers
+        let customerForReferralPrompt: Customer | null = null;
+        if (customerPhone) {
+          try {
+            const cust = posCustomer || await getCustomerByPhone(customerPhone);
+            if (cust && (checkReferralEligibility(cust) || cust.referralCode)) {
+              customerForReferralPrompt = await ensureCustomerReferralCode(cust);
+            }
+          } catch (e) {
+            console.warn("Could not check referral eligibility for prompt:", e);
+          }
+        }
+
         if (customerPhone) {
           useCouponForCustomer(customerPhone);
           // Auto-mark any claimed free tag promos
@@ -315,6 +442,10 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
               }
             }
           });
+        }
+
+        if (customerForReferralPrompt && customerForReferralPrompt.referralCode) {
+          setReferralPromptCustomer(customerForReferralPrompt);
         }
         if (useBluetooth && printerService.isConnected()) {
           const success = await printerService.printReceipt({
@@ -435,7 +566,7 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
           <Bill 
             orderItems={order} 
             onUpdateQuantity={handleUpdateQuantity} 
-            onClear={() => { setOrder([]); setCustomerPhone(''); setHasShownSidePrompt(false); }} 
+            onClear={() => { setOrder([]); setCustomerPhone(''); }} 
             onPreview={handleFinalize}
             branchName={branchName}
             onAddItem={handleAddItem}
@@ -443,6 +574,8 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
             setOrderType={setOrderType}
             customerPhone={customerPhone}
             setCustomerPhone={setCustomerPhone}
+            onPromptVipReferral={(cust) => setReferralPromptCustomer(cust)}
+            onPromptStudentGang={(cust) => setStudentGangPromptCustomer(cust)}
           />
         </div>
       </div>
@@ -477,7 +610,7 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
             <Bill 
               orderItems={order} 
               onUpdateQuantity={handleUpdateQuantity} 
-              onClear={() => { setOrder([]); setCustomerPhone(''); setHasShownSidePrompt(false); setIsMobileCartOpen(false); }} 
+              onClear={() => { setOrder([]); setCustomerPhone(''); setIsMobileCartOpen(false); }} 
               onPreview={handleFinalize}
               branchName={branchName}
               onAddItem={handleAddItem}
@@ -487,6 +620,8 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
               }}
               customerPhone={customerPhone}
               setCustomerPhone={setCustomerPhone}
+              onPromptVipReferral={(cust) => setReferralPromptCustomer(cust)}
+              onPromptStudentGang={(cust) => setStudentGangPromptCustomer(cust)}
             />
           </div>
         </div>
@@ -514,16 +649,55 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
       />
       <CrossSellModal 
         isOpen={showUpsellModal}
-        onClose={() => setShowUpsellModal(false)}
+        onClose={handleCloseUpsellModal}
         currentOrder={order}
         onConfirm={(item) => handleAddItem([item])}
         onUpdateQuantity={handleUpdateQuantity}
+        suggestedOffer={suggestedAddonOffer}
+        orderType={orderType}
+        customer={posCustomer}
+        orderTotal={order.reduce((acc, i) => acc + (i.price > 0 && !i.parentItemId ? i.price * i.quantity : 0), 0)}
       />
       <CustomOffersModal
         isOpen={isOffersOpen}
         onClose={() => setIsOffersOpen(false)}
         menuItems={menuItems}
       />
+      {studentGangPromptCustomer && (
+        <StudentGangWhatsAppModal
+          isOpen={Boolean(studentGangPromptCustomer)}
+          customer={studentGangPromptCustomer}
+          onClose={(sent) => {
+            const currentCust = studentGangPromptCustomer;
+            if (sent) {
+              setStudentGangPromptCustomer(prev => prev ? { ...prev, gangCouponSent: true } : null);
+              setPosCustomer(prev => prev ? { ...prev, gangCouponSent: true } : null);
+              // Once gang coupon is sent, check if this customer also qualifies for VIP referral
+              if (currentCust && checkReferralEligibility(currentCust)) {
+                ensureCustomerReferralCode(currentCust).then(updated => {
+                  if (!updated.referralCodeSent) {
+                    setReferralPromptCustomer(updated);
+                  }
+                });
+              }
+            }
+            setStudentGangPromptCustomer(null);
+          }}
+        />
+      )}
+      {referralPromptCustomer && !studentGangPromptCustomer && (
+        <ReferralWhatsAppModal
+          isOpen={Boolean(referralPromptCustomer)}
+          customer={referralPromptCustomer}
+          onClose={(sent) => {
+            if (sent) {
+              setReferralPromptCustomer(prev => prev ? { ...prev, referralCodeSent: true } : null);
+              setPosCustomer(prev => prev ? { ...prev, referralCodeSent: true } : null);
+            }
+            setReferralPromptCustomer(null);
+          }}
+        />
+      )}
     </div>
 
   );

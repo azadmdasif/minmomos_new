@@ -2,6 +2,7 @@
 import { CompletedOrder, OrderItem, PaymentMethod, OrderType, OrderStatus, RawMaterial, User, Station, CentralMaterial, MaterialCategory, MenuItem, MenuSection, Size, StockAllocation, Customer, RecipeRequirement } from '../types';
 import { supabase } from './supabase';
 import { RAW_MATERIALS_LIST, MENU_ITEMS, DEFAULT_MENU_SECTIONS } from '../constants';
+import { generateReferralCodeForPhone, generateGangCouponForPhone, checkReferralEligibility, applyReferralReward, isReferralCodeSent, isGangCouponSent } from './referralStorage';
 
 const AUTH_KEY = 'minmomos-auth-user';
 
@@ -209,6 +210,17 @@ export async function fetchMenuItems(forceRefresh = false): Promise<{ data: Menu
         return masterItem ? { ...item, name: masterItem.name, image: masterItem.image } : { ...item, name: 'Add Chicken Popcorn' };
       }
       return item;
+    });
+
+    // Filter out discontinued lines: Cheese Momos & Afghani Momos
+    const DISCONTINUED_IDS = new Set(['cheese-lovers-combo', 'premium-chicken-cheese-lava', 'premium-corn-cheese-lava']);
+    mappedData = mappedData.filter(item => {
+      if (DISCONTINUED_IDS.has(item.id)) return false;
+      const nameL = (item.name || '').toLowerCase();
+      const idL = (item.id || '').toLowerCase();
+      if (nameL.includes('afghani') || idL.includes('afghani')) return false;
+      if (nameL.includes('cheese lava') || nameL.includes('cheese lovers') || idL.includes('cheese-lava') || idL.includes('cheese-lovers')) return false;
+      return true;
     });
   }
 
@@ -1516,6 +1528,26 @@ export function resolveItemActiveRecipe(
         { materialId: 'soda-water', quantity: 1 },
         { materialId: 'syrup-mint-mojito', quantity: 0.05 }
       ];
+    } else if (nameLower.includes('+2 steamed momos') || menuItemId === 'addon-2-steamed-momos' || rawId.startsWith('addon-') || (menuItemId && menuItemId.startsWith('addon-'))) {
+      const countMatch = nameLower.match(/\+(\d+)/);
+      const pieceCount = countMatch ? parseInt(countMatch[1], 10) : 2;
+      if (nameLower.includes('kurkure')) {
+        activeRecipe = [{ materialId: 'momo-kurkure', quantity: pieceCount }];
+      } else if (nameLower.includes('paneer')) {
+        activeRecipe = [{ materialId: 'momo-paneer', quantity: pieceCount }];
+      } else if (nameLower.includes('chicken cheese') || nameLower.includes('cheese lava')) {
+        activeRecipe = [{ materialId: 'momo-chicken-cheese', quantity: pieceCount }];
+      } else if (nameLower.includes('corn cheese')) {
+        activeRecipe = [{ materialId: 'momo-corn-cheese', quantity: pieceCount }];
+      } else if (nameLower.includes('peri peri') || nameLower.includes('tandoori')) {
+        activeRecipe = [{ materialId: 'momo-tandoori', quantity: pieceCount }];
+      } else if (nameLower.includes('veg')) {
+        activeRecipe = [{ materialId: 'momo-veg', quantity: pieceCount }];
+      } else if (nameLower.includes('campa')) {
+        activeRecipe = [{ materialId: 'campa-cola-small', quantity: 1 }];
+      } else {
+        activeRecipe = [{ materialId: 'momo-chicken', quantity: pieceCount }];
+      }
     } else if (nameLower.includes('campa cola') || menuItemId === 'campa-cola' || rawId === 'gift-campa-cola') {
       activeRecipe = [{ materialId: 'campa-cola-small', quantity: 1 }];
     } else if (nameLower.includes('fries') || menuItemId === 'fries') {
@@ -1715,6 +1747,18 @@ export async function saveOrder(
         const usesWelcomeDiscount = orderItems.some(i => i.id === 'welcome-discount');
         if (usesWelcomeDiscount && customerId) {
           await supabase.from('customers').update({ welcome_coupon_used: true }).eq('id', customerId);
+        }
+
+        const referralDiscountItem = orderItems.find(i => i.id === 'referral-discount');
+        if (referralDiscountItem) {
+          const codeMatch = referralDiscountItem.name.match(/Code:\s*([A-Za-z0-9\-_]+)/i);
+          const referrerCode = codeMatch ? codeMatch[1].trim() : '';
+          const discountAmt = Math.abs(referralDiscountItem.price * referralDiscountItem.quantity);
+          if (referrerCode && discountAmt > 0) {
+            applyReferralReward(referrerCode, normalizedPhone, orderData.bill_number, discountAmt).catch(e => {
+              console.error("Failed to apply referral reward:", e);
+            });
+          }
         }
     }
 
@@ -2969,7 +3013,35 @@ export async function getCustomerByPhone(phone: string): Promise<Customer | null
       .eq('id', dbCust.id)
       .then(); // Non-blocking
   }
+
+  // 4. Referral Program Eligibility: >1000 LTV or 10+ orders
+  let referralCode = dbCust.referral_code;
+  let isReferralActive = dbCust.is_referral_active || Boolean(referralCode);
+  const isEligibleForReferral = checkReferralEligibility({ totalSpent, totalOrders });
+
+  if (isEligibleForReferral && !referralCode) {
+    referralCode = generateReferralCodeForPhone(phone);
+    isReferralActive = true;
+    supabase.from('customers')
+      .update({ referral_code: referralCode, is_referral_active: true })
+      .eq('id', dbCust.id)
+      .then();
+  }
+
+  // 5. Student Gang Coupon Generation: whenever a student comes, create a unique gang coupon
+  let gangCouponCode = dbCust.gang_coupon_code;
+  const isStudentCust = dbCust.note === 'STUDENT' || dbCust.note?.startsWith('STUDENT|');
+  if (isStudentCust && !gangCouponCode) {
+    gangCouponCode = generateGangCouponForPhone(phone);
+    supabase.from('customers')
+      .update({ gang_coupon_code: gangCouponCode })
+      .eq('id', dbCust.id)
+      .then();
+  }
   
+  const referralCodeSent = Boolean(dbCust.referral_code_sent) || isReferralCodeSent(phone);
+  const gangCouponSent = Boolean(dbCust.gang_coupon_sent) || isGangCouponSent(phone);
+
   return {
     id: dbCust.id,
     phone: dbCust.phone,
@@ -2983,7 +3055,14 @@ export async function getCustomerByPhone(phone: string): Promise<Customer | null
     lastVisit: lastVisit,
     joinedDate: dbCust.created_at,
     welcomeCouponUsed: dbCust.welcome_coupon_used || false,
-    welcomeCouponCode: dbCust.welcome_coupon_code
+    welcomeCouponCode: dbCust.welcome_coupon_code,
+    referralCode: referralCode || undefined,
+    referredByCode: dbCust.referred_by_code || undefined,
+    referralWallet: dbCust.referral_wallet != null ? Number(dbCust.referral_wallet) : 0,
+    isReferralActive: isReferralActive,
+    gangCouponCode: gangCouponCode || undefined,
+    referralCodeSent: referralCodeSent,
+    gangCouponSent: gangCouponSent
   };
 }
 
@@ -3014,7 +3093,14 @@ export async function searchCustomers(query: string): Promise<Customer[]> {
       joinedDate: d.created_at,
       lastVisit: d.last_visit,
       welcomeCouponUsed: d.welcome_coupon_used || false,
-      welcomeCouponCode: d.welcome_coupon_code
+      welcomeCouponCode: d.welcome_coupon_code,
+      referralCode: d.referral_code || undefined,
+      referredByCode: d.referred_by_code || undefined,
+      referralWallet: d.referral_wallet != null ? Number(d.referral_wallet) : 0,
+      isReferralActive: d.is_referral_active || Boolean(d.referral_code),
+      gangCouponCode: d.gang_coupon_code || undefined,
+      referralCodeSent: Boolean(d.referral_code_sent) || isReferralCodeSent(d.phone),
+      gangCouponSent: Boolean(d.gang_coupon_sent) || isGangCouponSent(d.phone)
     };
   });
 }
@@ -3053,7 +3139,13 @@ export async function registerCustomer(phone: string, name: string, isStudent?: 
     joinedDate: data.created_at,
     lastVisit: data.last_visit,
     welcomeCouponUsed: data.welcome_coupon_used || false,
-    welcomeCouponCode: data.welcome_coupon_code
+    welcomeCouponCode: data.welcome_coupon_code,
+    referralCode: data.referral_code || undefined,
+    referredByCode: data.referred_by_code || undefined,
+    referralWallet: data.referral_wallet != null ? Number(data.referral_wallet) : 0,
+    isReferralActive: data.is_referral_active || Boolean(data.referral_code),
+    gangCouponCode: data.gang_coupon_code || undefined,
+    referralCodeSent: false
   };
 }
 

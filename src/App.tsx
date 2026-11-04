@@ -14,10 +14,11 @@ import { EmployeeManagement } from './components/EmployeeManagement';
 import DailyOperations from './components/DailyOperations';
 import { MinSlack } from './components/minslack/MinSlack';
 import { AtsView } from './components/ats/AtsView';
+import { AddonLearningDashboard } from './components/AddonLearningDashboard';
 import { getCurrentUser, setCurrentUser } from './utils/storage';
 import { User } from './types';
 
-type View = 'pos' | 'reports' | 'inventory' | 'users' | 'stations' | 'menu' | 'ledger' | 'marketing' | 'employees' | 'operations' | 'minslack' | 'ats';
+type View = 'pos' | 'reports' | 'inventory' | 'users' | 'stations' | 'menu' | 'ledger' | 'marketing' | 'employees' | 'operations' | 'minslack' | 'ats' | 'addon_ml';
 
 function App() {
   const [view, setView] = useState<View>('reports');
@@ -59,6 +60,7 @@ function App() {
         {view === 'operations' && <DailyOperations user={user} />}
         {view === 'minslack' && <MinSlack user={user} />}
         {view === 'ats' && (user.role === 'ADMIN' || user.role === 'COFOUNDER' || user.role === 'HR') && <AtsView user={user} />}
+        {view === 'addon_ml' && <AddonLearningDashboard />}
       </main>
     </div>
   );

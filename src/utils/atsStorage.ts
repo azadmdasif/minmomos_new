@@ -4,7 +4,7 @@ import { AtsCandidate, AtsJob, AtsStage, AtsInterviewNote } from '../types/ats';
 const ATS_CANDIDATES_CACHE_KEY = 'momomaya_ats_candidates_cache';
 const ATS_JOBS_CACHE_KEY = 'momomaya_ats_jobs_cache';
 
-// Default initial jobs for Momomaya
+// Default initial jobs for MinMomos
 export const INITIAL_ATS_JOBS: AtsJob[] = [
   {
     id: 'a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d',
@@ -37,7 +37,7 @@ export const INITIAL_ATS_JOBS: AtsJob[] = [
     branch_name: 'BNR',
     employment_type: 'Shift-based',
     salary_range: '₹16,000 - ₹22,000 / month',
-    description: 'Welcoming guests, operating Momomaya POS billing, handling cash/UPI, and upselling momo platters.',
+    description: 'Welcoming guests, operating MinMomos POS billing, handling cash/UPI, and upselling momo platters.',
     requirements: ['Energetic customer-first attitude', 'Fast numerical & billing speed', 'Clear communication'],
     status: 'ACTIVE',
     created_at: new Date(Date.now() - 15 * 86400000).toISOString()
@@ -447,7 +447,7 @@ export async function checkSupabaseAtsStatus(): Promise<{
 // Ready-to-Execute Supabase SQL Migration Script
 // -------------------------------------------------------------------------
 export const SUPABASE_ATS_SQL = `-- =========================================================================
--- MOMOMAYA APPLICANT TRACKING SYSTEM (ATS) - SUPABASE DATABASE MIGRATION
+-- MINMOMOS APPLICANT TRACKING SYSTEM (ATS) - SUPABASE DATABASE MIGRATION
 -- Run this in your Supabase Project: SQL Editor -> New Query -> Run
 -- =========================================================================
 
@@ -517,12 +517,12 @@ BEGIN
     CREATE POLICY "Allow all access to ats_candidates" ON public.ats_candidates FOR ALL USING (true) WITH CHECK (true);
 END $$;
 
--- 6. Initial Seed Jobs for Momomaya Restaurant Chain
+-- 6. Initial Seed Jobs for MinMomos Restaurant Chain
 INSERT INTO public.ats_jobs (id, title, department, branch_name, employment_type, salary_range, description, requirements, status)
 VALUES 
   ('a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d', 'Head Momo Chef', 'Kitchen', 'All Stations', 'Full-time', '₹28,000 - ₹38,000 / month', 'Lead momo preparation, dough kneading, signature spice blends, and kitchen quality standards.', '["3+ years QSR or dumpling experience", "Knowledge of HACCP & kitchen hygiene", "Team leadership"]'::jsonb, 'ACTIVE'),
   ('b2c3d4e5-f6a7-4b6c-9d0e-1f2a3b4c5d6e', 'Line Cook / Steamer Operator', 'Kitchen', 'BNR', 'Full-time', '₹18,000 - ₹24,000 / month', 'Operate high-pressure momo steamers, prep fillings, manage portioning and speedy dispatch.', '["1+ years culinary experience", "Speed under high order volume", "Punctuality"]'::jsonb, 'ACTIVE'),
-  ('c3d4e5f6-a7b8-4c7d-0e1f-2a3b4c5d6e7f', 'Counter Cashier & Front of House', 'Front of House', 'BNR', 'Shift-based', '₹16,000 - ₹22,000 / month', 'Welcoming guests, operating Momomaya POS billing, handling cash/UPI, and upselling momo platters.', '["Energetic customer-first attitude", "Fast numerical & billing speed", "Clear communication"]'::jsonb, 'ACTIVE'),
+  ('c3d4e5f6-a7b8-4c7d-0e1f-2a3b4c5d6e7f', 'Counter Cashier & Front of House', 'Front of House', 'BNR', 'Shift-based', '₹16,000 - ₹22,000 / month', 'Welcoming guests, operating MinMomos POS billing, handling cash/UPI, and upselling momo platters.', '["Energetic customer-first attitude", "Fast numerical & billing speed", "Clear communication"]'::jsonb, 'ACTIVE'),
   ('d4e5f6a7-b8c9-4d8e-1f2a-3b4c5d6e7f8a', 'Restaurant Store Manager', 'Management', 'BNR', 'Full-time', '₹35,000 - ₹50,000 / month', 'Oversee end-to-end station profitability, staff rosters, inventory tracking, customer review rate, and food waste minimization.', '["Prior QSR or cafe managerial experience", "P&L awareness", "Shift roster planning"]'::jsonb, 'ACTIVE'),
   ('e5f6a7b8-c9d0-4e9f-2a3b-4c5d6e7f8a9b', 'Food Delivery Coordinator', 'Operations', 'BNR', 'Full-time', '₹18,000 - ₹25,000 / month', 'Coordinate Swiggy/Zomato dispatch, packaging quality check, rider handoffs, and delivery SLA compliance.', '["Smartphone proficient", "Fast-paced coordination", "Attention to packaging"]'::jsonb, 'ACTIVE')
 ON CONFLICT (id) DO NOTHING;

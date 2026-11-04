@@ -284,7 +284,7 @@ export const CandidateDetailModal: React.FC<CandidateDetailModalProps> = ({
                   {candidate.ai_strengths && candidate.ai_strengths.length > 0 && (
                     <div className="pt-2 border-t border-brand-stone/20">
                       <p className="text-[10px] font-black uppercase tracking-wider text-emerald-800 mb-1">
-                        Key Strengths for Momomaya:
+                        Key Strengths for MinMomos:
                       </p>
                       <ul className="text-xs text-emerald-950 space-y-1 list-disc pl-4">
                         {candidate.ai_strengths.map((str, idx) => (
@@ -399,7 +399,7 @@ export const CandidateDetailModal: React.FC<CandidateDetailModalProps> = ({
                 <div>
                   <h4 className="text-sm font-black text-purple-200">AI Tailored Interview Questions</h4>
                   <p className="text-xs text-white/80 mt-0.5">
-                    Generate probing operational questions customized to {candidate.full_name}'s resume gaps and Momomaya QSR standards.
+                    Generate probing operational questions customized to {candidate.full_name}'s resume gaps and MinMomos QSR standards.
                   </p>
                 </div>
                 <button

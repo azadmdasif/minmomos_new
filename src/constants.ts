@@ -72,7 +72,7 @@ export const RAW_MATERIALS_LIST = [
 export const MENU_ITEMS: MenuItem[] = [
   {
     id: 'platter',
-    name: 'Momomaya Must Try Platter',
+    name: 'MinMomos Must Try Platter',
     image: 'https://images.picxy.com/cache/2021/5/26/f33738dc75574a81b72c0d8c164b4a77.jpg',
     category: 'combo',
     no_sizes: true,
@@ -198,6 +198,7 @@ export const MENU_ITEMS: MenuItem[] = [
     name: 'Cheese Lovers Combo',
     image: 'https://patelcafenrestro.com/wp-content/uploads/2024/08/DM-2024-08-06T163007.734.png',
     category: 'combo',
+    is_hidden: true,
     no_sizes: true,
     preparations: {
       normal: { small: 110, medium: 110, large: 110 },
@@ -214,6 +215,7 @@ export const MENU_ITEMS: MenuItem[] = [
     name: 'Premium Chicken Cheese Lava Momo',
     image: 'https://img.thecdn.in/17132/1607351667375_SKU-0125_0.jpg',
     category: 'momo',
+    is_hidden: true,
     preparations: {
       normal: { small: 75, medium: 100, large: 120 },
       'pan-fried': { small: 85, medium: 110, large: 130 },
@@ -234,6 +236,7 @@ export const MENU_ITEMS: MenuItem[] = [
     name: 'Premium Corn Cheese Lava Momo',
     image: 'https://english.cdn.zeenews.com/sites/default/files/2025/05/08/1744609-untitled-design.png',
     category: 'momo',
+    is_hidden: true,
     preparations: {
       normal: { small: 75, medium: 100, large: 120 },
       'pan-fried': { small: 85, medium: 110, large: 130 },
@@ -528,7 +531,7 @@ export const POPUP_SIDE_ADDONS: {
     price: 39,
     cost: 12,
     icon: '🍟',
-    image: 'https://images.unsplash.com/photo-1576107232684-1279f3908594?w=800&auto=format&fit=crop&q=80',
+    image: 'https://images.unsplash.com/photo-1541592106381-b31e9677c0e5?w=800&auto=format&fit=crop&q=80',
     tagline: 'Crispy golden hot salted fries'
   },
   {
@@ -552,4 +555,38 @@ export const POPUP_SIDE_ADDONS: {
     tagline: 'Crispy seasoned bite-sized chicken popcorn'
   }
 ];
+
+export const STEAMED_CHICKEN_ADDON_ITEM: OrderItem = {
+  id: 'addon-2-steamed-momos',
+  menuItemId: 'addon-2-steamed-momos',
+  name: '🥟 +2 Steamed Momos (Add-on Offer)',
+  price: 15,
+  cost: 8,
+  quantity: 1
+};
+
+export function isSteamedChickenLarge(item: OrderItem): boolean {
+  const nameLower = (item.name || '').toLowerCase();
+  const idLower = (item.id || '').toLowerCase();
+  
+  const isChicken = nameLower.includes('chicken') || idLower.includes('chicken');
+  const isSteamed = nameLower.includes('steamed') || idLower.includes('steamed');
+  const isLarge = nameLower.includes('large') || idLower.includes('large');
+  const isMedium = nameLower.includes('medium') || idLower.includes('medium');
+
+  return isChicken && isSteamed && isLarge && !isMedium;
+}
+
+export function isSteamedChickenMedium(item: OrderItem): boolean {
+  const nameLower = (item.name || '').toLowerCase();
+  const idLower = (item.id || '').toLowerCase();
+  
+  const isChicken = nameLower.includes('chicken') || idLower.includes('chicken');
+  const isSteamed = nameLower.includes('steamed') || idLower.includes('steamed');
+  const isMedium = nameLower.includes('medium') || idLower.includes('medium');
+
+  return (isChicken && isSteamed && isMedium) || (isChicken && (Math.round(item.price) === 69 || idLower.includes('medium')));
+}
+
+
 

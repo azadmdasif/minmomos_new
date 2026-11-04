@@ -170,7 +170,7 @@ export const AtsView: React.FC<AtsViewProps> = ({ user }) => {
                 )}
               </div>
               <p className="text-[10px] text-brand-cream/60 font-medium">
-                Talent pipeline for Momomaya • Visible to Admins, Co-Founders &amp; HR
+                Talent pipeline for MinMomos • Visible to Admins, Co-Founders &amp; HR
               </p>
             </div>
           </div>
