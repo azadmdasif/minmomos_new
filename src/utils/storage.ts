@@ -1334,6 +1334,22 @@ export async function voidAllocation(id: string, reason: string, performedBy: st
 
 // --- ORDERING & INVENTORY DEDUCTION ---
 
+export function extractCouponCodeFromOrder(order: { items?: { name?: string; id?: string }[] } | null | undefined): string | null {
+  if (!order || !order.items) return null;
+  for (const item of order.items) {
+    const name = item.name || '';
+    // 1. Bracket or Code: pattern
+    const m = name.match(/(?:Code|Coupon):\s*([A-Za-z0-9_-]+)/i) ||
+              name.match(/\[(?:Code|Coupon):\s*([A-Za-z0-9_-]+)\]/i);
+    if (m && m[1]) return m[1].trim().toUpperCase();
+
+    // 2. Direct format match: MOMO-XXXX-XXX, GANG-XXXX-XXX, DISC15-XXXX, TREAT-XXXX
+    const fmt = name.match(/\b(MOMO-[A-Z0-9]{3,6}-[A-Z0-9]{2,5}|GANG-[A-Z0-9]{3,6}-[A-Z0-9]{1,4}|DISC15-[A-Z0-9]{2,6}|TREAT-[A-Z0-9]{2,6})\b/i);
+    if (fmt && fmt[1]) return fmt[1].trim().toUpperCase();
+  }
+  return null;
+}
+
 function mapDatabaseOrderToType(o: any): CompletedOrder {
   // Supabase might return items under 'order_items' or 'items' depending on alias/join
   const rawItems = o.order_items || o.items || o.order_item || [];
@@ -1354,6 +1370,7 @@ function mapDatabaseOrderToType(o: any): CompletedOrder {
     cashierId: o.cashier_id,
     cashierName: o.cashier_name,
     deletionInfo: o.deletion_info,
+    appliedCouponCode: extractCouponCodeFromOrder({ items: rawItems }) || undefined,
     items: rawItems.map((i: any) => ({ 
       id: i.id, 
       menuItemId: i.menu_item_id, 
@@ -1655,8 +1672,8 @@ export async function saveOrder(
       table_id: tableId || null, 
       customer_id: customerId,
       customer_phone: customerPhone || null,
-      manual_total: manualTotal != null ? Math.round(manualTotal) : null,
-      manual_discount: manualDiscount != null ? Math.round(manualDiscount) : null,
+      manual_total: type === 'DELIVERY' && manualTotal != null ? Math.round(manualTotal) : null,
+      manual_discount: type === 'DELIVERY' && manualDiscount != null ? Math.round(manualDiscount) : null,
       cashier_id: cashierId || null,
       cashier_name: cashierName || null
     }).select().single();
@@ -1666,26 +1683,35 @@ export async function saveOrder(
       throw orderError;
     }
 
-    const itemsToInsert = orderItems.map(item => {
-      const row: any = {
-        order_id: orderData.id, 
-        name: item.name, 
-        price: Math.round(item.price), // Round price to handle fractional discounts
-        cost: Math.round(item.cost || 0), 
-        quantity: item.quantity,
-        paid_with_coins: item.paidWithCoins || false,
-        coins_price: item.coinsPrice || 0,
-        menu_item_id: null // Explicitly handle null
-      };
-      
-      if (item.menuItemId && 
-          item.menuItemId !== 'discount' && 
-          item.menuItemId !== 'registration') {
-        row.menu_item_id = item.menuItemId;
-      }
-      
-      return row;
-    });
+    // Query valid menu items to protect against foreign key constraint violations
+    const { data: menuRows } = await supabase.from('menu_items').select('id');
+    const validMenuIds = new Set((menuRows || []).map(m => m.id));
+
+    const itemsToInsert = orderItems
+      .filter(item => item && (item.quantity > 0 || item.price < 0))
+      .map(item => {
+        const row: any = {
+          order_id: orderData.id, 
+          name: item.name, 
+          price: Math.round(item.price), // Round price to handle fractional discounts
+          cost: Math.round(item.cost || 0), 
+          quantity: item.quantity,
+          paid_with_coins: item.paidWithCoins || false,
+          coins_price: item.coinsPrice || 0,
+          menu_item_id: null // Explicitly handle null
+        };
+        
+        if (item.menuItemId && 
+            item.menuItemId !== 'discount' && 
+            item.menuItemId !== 'registration' &&
+            !item.is_addon_offer &&
+            !item.menuItemId.startsWith('addon-') &&
+            validMenuIds.has(item.menuItemId)) {
+          row.menu_item_id = item.menuItemId;
+        }
+        
+        return row;
+      });
 
     const { error: itemsError } = await supabase.from('order_items').insert(itemsToInsert);
     if (itemsError) {
@@ -1694,7 +1720,10 @@ export async function saveOrder(
       for (const row of itemsToInsert) {
         try {
           const { error: singleError } = await supabase.from('order_items').insert(row);
-          if (singleError) console.error("Individual Item Insert Error:", singleError, "Row:", row);
+          if (singleError) {
+            console.error("Individual Item Insert Error, retrying with menu_item_id: null:", singleError, "Row:", row);
+            await supabase.from('order_items').insert({ ...row, menu_item_id: null });
+          }
         } catch (e) {
           console.error("Fatal individual insert error:", e);
         }
@@ -2682,6 +2711,40 @@ export async function getOrdersByItemName(itemName: string, startDate?: string, 
   return results;
 }
 
+export async function getOrdersByCouponCode(couponCode: string, startDate?: string, endDate?: string): Promise<CompletedOrder[]> {
+  const clean = couponCode.trim();
+  if (!clean) return [];
+
+  // Direct fast search in order_items for items containing the coupon code
+  const { data: matchedItems, error: itemsErr } = await supabase
+    .from('order_items')
+    .select('order_id, name')
+    .ilike('name', `%${clean}%`)
+    .limit(100);
+
+  if (itemsErr || !matchedItems || matchedItems.length === 0) {
+    return [];
+  }
+
+  const orderIds = [...new Set(matchedItems.map(i => i.order_id))];
+  let ordersQuery = supabase
+    .from('orders')
+    .select('*, items:order_items(*)')
+    .in('id', orderIds)
+    .is('deletion_info', null);
+
+  if (startDate && endDate) {
+    ordersQuery = ordersQuery.gte('date', `${startDate}T00:00:00+05:30`)
+                             .lte('date', `${endDate}T23:59:59+05:30`);
+  }
+
+  const { data: ordersData, error: ordersErr } = await ordersQuery
+    .order('bill_number', { ascending: false });
+
+  if (ordersErr || !ordersData) return [];
+  return ordersData.map(mapDatabaseOrderToType);
+}
+
 export async function getMatchingMenuItems(term: string): Promise<string[]> {
   if (!term || term.length < 2) return [];
   
@@ -3067,13 +3130,14 @@ export async function getCustomerByPhone(phone: string): Promise<Customer | null
 }
 
 export async function searchCustomers(query: string): Promise<Customer[]> {
-  if (query.length < 3) return [];
+  const clean = query.trim();
+  if (clean.length < 2) return [];
   
   const { data, error } = await supabase
     .from('customers')
     .select('*')
-    .ilike('phone', `%${query}%`)
-    .limit(5);
+    .or(`phone.ilike.%${clean}%,referral_code.ilike.%${clean}%,name.ilike.%${clean}%,gang_coupon_code.ilike.%${clean}%`)
+    .limit(10);
 
   if (error) return [];
   
@@ -3262,6 +3326,63 @@ export async function fetchCohortRawData(forceRefresh = false): Promise<CohortOr
   return finalResult;
 }
 
+let mauOrdersCache: { timestamp: number; data: CompletedOrder[] } | null = null;
+const MAU_ORDERS_CACHE_TTL = 5 * 60 * 1000;
+
+export function invalidateMauOrdersCache(): void {
+  mauOrdersCache = null;
+}
+
+export async function fetchMauOrders(forceRefresh = false): Promise<CompletedOrder[]> {
+  if (!forceRefresh && mauOrdersCache && (Date.now() - mauOrdersCache.timestamp < MAU_ORDERS_CACHE_TTL)) {
+    return mauOrdersCache.data;
+  }
+
+  let all: any[] = [];
+  let page = 0;
+  const pageSize = 1000;
+  let hasMore = true;
+
+  while (hasMore) {
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
+
+    const { data, error } = await supabase
+      .from('orders')
+      .select('id, bill_number, date, total, customer_phone, status')
+      .is('deletion_info', null)
+      .not('customer_phone', 'is', null)
+      .order('date', { ascending: false })
+      .range(from, to);
+
+    if (error || !data || data.length === 0) {
+      hasMore = false;
+    } else {
+      all = all.concat(data);
+      if (data.length < pageSize) {
+        hasMore = false;
+      } else {
+        page++;
+      }
+    }
+  }
+
+  const mapped: CompletedOrder[] = all.map(o => ({
+    id: o.id,
+    billNumber: o.bill_number,
+    date: o.date,
+    total: Number(o.total || 0),
+    customerPhone: o.customer_phone,
+    status: o.status as OrderStatus,
+    type: 'TAKEAWAY',
+    items: [],
+    branchName: 'All'
+  }));
+
+  mauOrdersCache = { timestamp: Date.now(), data: mapped };
+  return mapped;
+}
+
 let customerClassificationCache: { timestamp: number; data: Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }> } | null = null;
 const CLASSIFICATION_CACHE_TTL = 15 * 60 * 1000;
 
@@ -3415,23 +3536,56 @@ export async function fetchCustomers(branchFilter?: string, forceRefresh = false
   }
 
   // Fetch real database min_coins and coupons directly from customers table to ensure frozen balances are never lost
-  const custMap: Record<string, { minCoins?: number, couponCode?: string, couponUsed?: boolean }> = {};
+  const custMap: Record<string, {
+    minCoins?: number;
+    couponCode?: string;
+    couponUsed?: boolean;
+    referralCode?: string;
+    isReferralActive?: boolean;
+    referralWallet?: number;
+    gangCouponCode?: string;
+    referralCodeSent?: boolean;
+    gangCouponSent?: boolean;
+  }> = {};
+  const custPhoneMap: Record<string, {
+    minCoins?: number;
+    couponCode?: string;
+    couponUsed?: boolean;
+    referralCode?: string;
+    isReferralActive?: boolean;
+    referralWallet?: number;
+    gangCouponCode?: string;
+    referralCodeSent?: boolean;
+    gangCouponSent?: boolean;
+  }> = {};
   let custPage = 0;
   let custHasMore = true;
   while (custHasMore) {
-    const { data: custBatch } = await supabase
+    const { data: custBatch, error: custErr } = await supabase
       .from('customers')
-      .select('id, min_coins, welcome_coupon_code, welcome_coupon_used')
+      .select('id, phone, min_coins, welcome_coupon_code, welcome_coupon_used, referral_code, is_referral_active, referral_wallet, gang_coupon_code, referral_code_sent')
+      .order('id')
       .range(custPage * 1000, (custPage + 1) * 1000 - 1);
-    if (!custBatch || custBatch.length === 0) {
+    if (custErr || !custBatch || custBatch.length === 0) {
+      if (custErr) console.error('Error fetching customer metadata batch:', custErr);
       custHasMore = false;
     } else {
       custBatch.forEach((row: any) => {
-        custMap[row.id] = {
+        const meta = {
           minCoins: row.min_coins !== null && row.min_coins !== undefined ? Number(row.min_coins) : undefined,
           couponCode: row.welcome_coupon_code,
-          couponUsed: row.welcome_coupon_used
+          couponUsed: row.welcome_coupon_used,
+          referralCode: row.referral_code || undefined,
+          isReferralActive: row.is_referral_active,
+          referralWallet: row.referral_wallet != null ? Number(row.referral_wallet) : 0,
+          gangCouponCode: row.gang_coupon_code || undefined,
+          referralCodeSent: row.referral_code_sent,
+          gangCouponSent: false
         };
+        custMap[row.id] = meta;
+        if (row.phone) {
+          custPhoneMap[normalizePhone(row.phone)] = meta;
+        }
       });
       if (custBatch.length < 1000) custHasMore = false;
       else custPage++;
@@ -3440,14 +3594,29 @@ export async function fetchCustomers(branchFilter?: string, forceRefresh = false
 
   const customers = allData.map((c: any) => {
     const totalSpent = Number(c.total_spent || 0);
+    const totalOrders = Number(c.total_orders || 0);
     const normPhone = normalizePhone(c.phone);
     const redeemedCoins = redeemedCoinsMap[normPhone] || 0;
-    const dbCustomerMeta = custMap[c.id];
+    const dbCustomerMeta = custMap[c.id] || custPhoneMap[normPhone];
     
     // Priority: Genuine database min_coins balance > RPC column > calculated fallback
     const resolvedMinCoins = dbCustomerMeta?.minCoins !== undefined 
       ? dbCustomerMeta.minCoins 
       : (c.min_coins !== null && c.min_coins !== undefined ? Number(c.min_coins) : calculateTotalMinCoins(totalSpent, redeemedCoins));
+
+    let referralCode = dbCustomerMeta?.referralCode || c.referral_code;
+    let isReferralActive = dbCustomerMeta?.isReferralActive ?? (c.is_referral_active || Boolean(referralCode));
+
+    // Auto-generate if eligible or active and code is missing
+    if (!referralCode && (isReferralActive || checkReferralEligibility({ totalSpent, totalOrders }))) {
+      referralCode = generateReferralCodeForPhone(c.phone);
+      isReferralActive = true;
+      supabase
+        .from('customers')
+        .update({ referral_code: referralCode, is_referral_active: true })
+        .eq('id', c.id)
+        .then();
+    }
 
     return {
       id: c.id,
@@ -3456,13 +3625,19 @@ export async function fetchCustomers(branchFilter?: string, forceRefresh = false
       email: c.email,
       birthday: c.birthday,
       note: c.note,
-      totalOrders: Number(c.total_orders || 0),
+      totalOrders: totalOrders,
       totalSpent: totalSpent,
       minCoins: resolvedMinCoins,
       lastVisit: c.last_visit,
       joinedDate: c.joined_date,
       welcomeCouponUsed: dbCustomerMeta?.couponUsed ?? c.welcome_coupon_used ?? false,
-      welcomeCouponCode: dbCustomerMeta?.couponCode ?? c.welcome_coupon_code
+      welcomeCouponCode: dbCustomerMeta?.couponCode ?? c.welcome_coupon_code,
+      referralCode: referralCode || undefined,
+      isReferralActive: isReferralActive,
+      referralWallet: dbCustomerMeta?.referralWallet ?? (c.referral_wallet != null ? Number(c.referral_wallet) : 0),
+      gangCouponCode: dbCustomerMeta?.gangCouponCode || c.gang_coupon_code || undefined,
+      referralCodeSent: Boolean(dbCustomerMeta?.referralCodeSent ?? c.referral_code_sent) || isReferralCodeSent(c.phone),
+      gangCouponSent: Boolean(dbCustomerMeta?.gangCouponSent ?? c.gang_coupon_sent) || isGangCouponSent(c.phone)
     };
   });
 

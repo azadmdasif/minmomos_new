@@ -231,10 +231,57 @@ export function getAllStoredImpressions(): AddonImpression[] {
 }
 
 /**
+ * Fetch and sync all impressions from Supabase with local fallback
+ * Merges cloud records with local retry queue to ensure real-time cross-device sync
+ */
+export async function fetchAndSyncAllImpressions(): Promise<AddonImpression[]> {
+  try {
+    const { data, error } = await supabase
+      .from('addon_impressions')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (!error && data && data.length > 0) {
+      // Merge with any unsynced local impressions in queue
+      const queue: AddonImpression[] = safeParse(getItem(IMPRESSIONS_QUEUE_KEY), []);
+      const remoteIds = new Set(data.map(d => d.impression_id));
+      const unpushed = queue.filter(q => !remoteIds.has(q.impression_id));
+      
+      const combined = [...unpushed, ...data];
+      setItem(IMPRESSIONS_LOCAL_STORE, JSON.stringify(combined.slice(0, 5000)));
+      return combined;
+    }
+  } catch (err) {
+    console.warn('Failed to fetch impressions from Supabase, using local fallback:', err);
+  }
+  return getAllStoredImpressions();
+}
+
+/**
  * Load all fixed section interaction events from local store
  */
 export function getAllStoredFixedEvents(): AddonFixedEvent[] {
   return safeParse<AddonFixedEvent[]>(getItem(FIXED_EVENTS_LOCAL_STORE), []);
+}
+
+/**
+ * Fetch and sync fixed section events from Supabase
+ */
+export async function fetchAndSyncAllFixedEvents(): Promise<AddonFixedEvent[]> {
+  try {
+    const { data, error } = await supabase
+      .from('addon_fixed_events')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (!error && data && data.length > 0) {
+      setItem(FIXED_EVENTS_LOCAL_STORE, JSON.stringify(data.slice(0, 5000)));
+      return data;
+    }
+  } catch (err) {
+    console.warn('Failed to fetch fixed events from Supabase:', err);
+  }
+  return getAllStoredFixedEvents();
 }
 
 /**
@@ -256,12 +303,24 @@ export function getCachedStatsSnapshot(): AddonEngineStatsSnapshot | null {
 }
 
 /**
- * Save a newly calculated stats snapshot to memory and local storage
+ * Save a newly calculated stats snapshot to memory, local storage, and Supabase
  */
 export function saveAddonStatsSnapshot(snapshot: AddonEngineStatsSnapshot): void {
   cachedStatsSnapshot = snapshot;
   setItem(STATS_SNAPSHOT_KEY, JSON.stringify(snapshot));
   lastStatsRefreshTime = Date.now();
+
+  // Asynchronously persist to Supabase so ALL devices share the learned snapshot
+  setTimeout(async () => {
+    try {
+      await supabase.from('addon_stats_snapshot').insert({
+        snapshot_data: snapshot,
+        created_at: new Date().toISOString()
+      });
+    } catch (e) {
+      console.warn('Failed to persist snapshot to Supabase:', e);
+    }
+  }, 10);
 }
 
 /**
@@ -281,15 +340,86 @@ export function getCustomerAddonProfile(phoneOrId?: string | null): CustomerAddo
   );
   cachedCustomerProfiles = allProfiles;
 
-  return allProfiles[clean] || allProfiles[phoneOrId] || null;
+  const found = allProfiles[clean] || allProfiles[phoneOrId] || null;
+  if (!found) {
+    // Non-blocking background fetch from Supabase
+    fetchRemoteCustomerProfile(clean).catch(() => {});
+  }
+  return found;
 }
 
 /**
- * Save customer addon profiles map to memory and local storage
+ * Background fetch single customer profile from Supabase
+ */
+async function fetchRemoteCustomerProfile(cleanPhone: string): Promise<void> {
+  try {
+    const { data } = await supabase
+      .from('customer_addon_profile')
+      .select('*')
+      .eq('lookup_key', cleanPhone)
+      .maybeSingle();
+
+    if (data) {
+      const prof: CustomerAddonProfile = {
+        customer_id: data.customer_id || cleanPhone,
+        phone: data.phone || cleanPhone,
+        visits: data.visits || 0,
+        last_visit: data.last_visit || new Date().toISOString(),
+        median_days_between_visits: Number(data.median_days_between_visits) || 14,
+        avg_cart: Number(data.avg_cart) || 0,
+        usual_daypart: data.usual_daypart || 'lunch',
+        veg_only_so_far: data.veg_only_so_far || 0,
+        item_counts: data.item_counts || {},
+        category_counts: data.category_counts || {},
+        addon_history: data.addon_history || {},
+        category_addon_history: data.category_addon_history || {},
+        deal_strength_accepts: data.deal_strength_accepts || {}
+      };
+      cachedCustomerProfiles[cleanPhone] = prof;
+      const allProfiles = safeParse<Record<string, CustomerAddonProfile>>(getItem(CUSTOMER_PROFILES_KEY), {});
+      allProfiles[cleanPhone] = prof;
+      setItem(CUSTOMER_PROFILES_KEY, JSON.stringify(allProfiles));
+    }
+  } catch {
+    // Silent
+  }
+}
+
+/**
+ * Save customer addon profiles map to memory, local storage, and Supabase
  */
 export function saveCustomerAddonProfiles(profiles: Record<string, CustomerAddonProfile>): void {
   cachedCustomerProfiles = profiles;
   setItem(CUSTOMER_PROFILES_KEY, JSON.stringify(profiles));
+
+  // Asynchronously upsert profiles to Supabase in batches
+  setTimeout(async () => {
+    try {
+      const records = Object.entries(profiles).map(([key, p]) => ({
+        lookup_key: key,
+        customer_id: p.customer_id,
+        phone: p.phone,
+        visits: p.visits,
+        last_visit: p.last_visit,
+        median_days_between_visits: p.median_days_between_visits,
+        avg_cart: p.avg_cart,
+        usual_daypart: p.usual_daypart,
+        veg_only_so_far: p.veg_only_so_far,
+        item_counts: p.item_counts,
+        category_counts: p.category_counts,
+        addon_history: p.addon_history,
+        deal_strength_accepts: p.deal_strength_accepts,
+        last_updated: new Date().toISOString()
+      }));
+
+      for (let i = 0; i < records.length; i += 50) {
+        const batch = records.slice(i, i + 50);
+        await supabase.from('customer_addon_profile').upsert(batch, { onConflict: 'lookup_key' });
+      }
+    } catch (e) {
+      console.warn('Failed to persist customer profiles to Supabase:', e);
+    }
+  }, 50);
 }
 
 /**
@@ -309,7 +439,7 @@ function checkTriggerBackgroundRefresh(): void {
 /**
  * Fetch remote snapshot from Supabase if available
  */
-async function fetchRemoteStatsSnapshot(): Promise<void> {
+export async function fetchRemoteStatsSnapshot(): Promise<AddonEngineStatsSnapshot | null> {
   try {
     const { data, error } = await supabase
       .from('addon_stats_snapshot')
@@ -319,9 +449,13 @@ async function fetchRemoteStatsSnapshot(): Promise<void> {
       .maybeSingle();
 
     if (!error && data && data.snapshot_data) {
-      saveAddonStatsSnapshot(data.snapshot_data);
+      cachedStatsSnapshot = data.snapshot_data;
+      setItem(STATS_SNAPSHOT_KEY, JSON.stringify(data.snapshot_data));
+      lastStatsRefreshTime = Date.now();
+      return data.snapshot_data;
     }
   } catch {
     // Ignore remote refresh error and continue using cached stats
   }
+  return null;
 }

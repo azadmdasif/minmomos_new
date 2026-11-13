@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import { 
   getAllStoredImpressions, 
+  fetchAndSyncAllImpressions,
+  fetchRemoteStatsSnapshot,
   getAddonEngineConfig, 
   saveAddonEngineConfig 
 } from '../utils/addonStorageQueue';
@@ -26,19 +28,36 @@ export const AddonLearningDashboard: React.FC = () => {
   const [impressions, setImpressions] = useState<AddonImpression[]>([]);
   const [config, setConfig] = useState<AddonEngineConfig>(getAddonEngineConfig());
   const [isRebuilding, setIsRebuilding] = useState<boolean>(false);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [isSimulating, setIsSimulating] = useState<boolean>(false);
   const [simulationResult, setSimulationResult] = useState<SimulationResult | null>(null);
   const [rebuildStatus, setRebuildStatus] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'performance' | 'holdout' | 'health' | 'simulation' | 'config'>('performance');
 
-  const reloadData = () => {
-    const imps = getAllStoredImpressions();
-    setImpressions(imps);
+  const reloadData = async (_forceCloud = false) => {
+    // 1. Instant local read so UI is never blocked
+    const local = getAllStoredImpressions();
+    setImpressions(local);
     setConfig(getAddonEngineConfig());
+
+    // 2. Cross-device Cloud sync from Supabase
+    setIsSyncing(true);
+    try {
+      const [liveImps] = await Promise.all([
+        fetchAndSyncAllImpressions(),
+        fetchRemoteStatsSnapshot()
+      ]);
+      setImpressions(liveImps);
+      setConfig(getAddonEngineConfig());
+    } catch (e) {
+      console.warn('Dashboard cloud sync fallback:', e);
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   useEffect(() => {
-    reloadData();
+    reloadData(true);
   }, []);
 
   const handleRunRebuild = async () => {
@@ -194,6 +213,17 @@ export const AddonLearningDashboard: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2.5 flex-wrap">
+          <button
+            type="button"
+            onClick={() => reloadData(true)}
+            disabled={isSyncing}
+            className="py-2.5 px-3 rounded-xl bg-white border border-stone-200 text-stone-700 hover:bg-stone-50 font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+            title="Sync latest live impressions and stats across all devices from Supabase"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 text-brand-red ${isSyncing ? 'animate-spin' : ''}`} />
+            <span>{isSyncing ? 'Syncing...' : 'Sync Cloud'}</span>
+          </button>
+
           <button
             type="button"
             onClick={handleRunRebuild}
@@ -560,7 +590,7 @@ export const AddonLearningDashboard: React.FC = () => {
                   </div>
 
                   <div className="p-4 rounded-xl bg-stone-50 border border-stone-200 text-center">
-                    <span className="text-[10px] font-black uppercase tracking-wider text-stone-500 block mb-1">&lt;20% Price Cap</span>
+                    <span className="text-[10px] font-black uppercase tracking-wider text-stone-500 block mb-1">&lt;25% Price Cap</span>
                     <span className="text-3xl font-black text-emerald-700 font-mono">
                       {simulationResult.constraintViolations.under20PercentViolations}
                     </span>
@@ -744,6 +774,26 @@ export const AddonLearningDashboard: React.FC = () => {
                   max="0.5"
                   value={config.HOLDOUT_RATE}
                   onChange={(e) => handleConfigChange('HOLDOUT_RATE', parseFloat(e.target.value) || 0.10)}
+                  className="w-20 p-2 rounded-lg bg-white border border-stone-300 text-center font-bold font-mono text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl bg-stone-50 border border-stone-200">
+              <div>
+                <span className="font-bold text-xs uppercase text-brand-brown block">Cart Price Cap Limit</span>
+                <span className="text-[11px] text-stone-500">
+                  Maximum ratio of cart total allowed for add-on price (default: 25%)
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <input 
+                  type="number"
+                  step="0.05"
+                  min="0.10"
+                  max="0.50"
+                  value={config.PRICE_CAP_RATIO ?? 0.25}
+                  onChange={(e) => handleConfigChange('PRICE_CAP_RATIO', parseFloat(e.target.value) || 0.25)}
                   className="w-20 p-2 rounded-lg bg-white border border-stone-300 text-center font-bold font-mono text-xs"
                 />
               </div>

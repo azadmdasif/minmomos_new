@@ -1,6 +1,7 @@
 
 import React from 'react';
 import { OrderItem, PaymentMethod, OrderType } from '../types';
+import { extractCouponCodeFromOrder } from '../utils/storage';
 
 interface PrintReceiptProps {
   orderItems: OrderItem[];
@@ -16,6 +17,7 @@ interface PrintReceiptProps {
   earnedCoinsValue?: number;
   nextOrderCoupon?: { code: string, discount: string, forOrder: number } | null;
   totalValue?: number;
+  couponCode?: string | null;
 }
 
 const PrintReceipt: React.FC<PrintReceiptProps> = ({ 
@@ -31,11 +33,13 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
   customerFinalBalance,
   earnedCoinsValue,
   nextOrderCoupon,
-  totalValue
+  totalValue,
+  couponCode
 }) => {
   const calculatedTotal = orderItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
   const total = totalValue !== undefined ? totalValue : calculatedTotal;
   const coinsRequired = orderItems.reduce((acc, item) => acc + (item.paidWithCoins ? (item.coinsPrice || 0) * item.quantity : 0), 0);
+  const effectiveCouponCode = couponCode || extractCouponCodeFromOrder({ items: orderItems });
   
   // If specific balances are provided (e.g. from historical view), use them.
   // Consistent flat 8% MinCoins logic on paid cash amount
@@ -148,6 +152,16 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
         <span>TOTAL</span>
         <span>₹{total.toFixed(0)}</span>
       </div>
+      
+      {effectiveCouponCode && (
+        <>
+          <div style={styles.divider}></div>
+          <div style={{...styles.metaRow, fontWeight: 'bold', fontSize: '9pt', padding: '2px 0'}}>
+            <span>🎟️ COUPON USED:</span>
+            <span style={{letterSpacing: '1px', fontFamily: 'monospace'}}>{effectiveCouponCode}</span>
+          </div>
+        </>
+      )}
       
       {customerPhone && (
         <>

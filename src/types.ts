@@ -209,6 +209,7 @@ export interface CompletedOrder {
     reason: string;
     date: string;
   };
+  appliedCouponCode?: string;
 }
 
 export interface CustomOffer {

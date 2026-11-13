@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchCustomers, fetchCustomerHistory, getCustomerByPhone, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats, updateOrderStatus, isStudentFreeMojitoOrder, isStudentCustomer, isOrderFromStudent, invalidateOrdersRangeCache, invalidateCustomersCache, invalidateCohortCache, invalidateClassificationCache } from '../utils/storage';
+import { getOrdersForDateRange, getOrderByBillNumber, getOrdersByItemName, getOrdersByCouponCode, extractCouponCodeFromOrder, getMatchingMenuItems, deleteOrderByBillNumber, getDeletedOrdersForDateRange, getStations, fetchCustomers, fetchCustomerHistory, getCustomerByPhone, updateCustomer, fetchUsualOrder, getTierInfo, calculateTotalMinCoins, getISTDate, getISTDateString, getISTFullDateTime, getISTHour, getISTDay, fetchManualAdjustments, fetchCustomerClassificationStats, fetchCohortRawData, CohortOrder, normalizePhone, syncCustomerStats, updateOrderStatus, isStudentFreeMojitoOrder, isStudentCustomer, isOrderFromStudent, invalidateOrdersRangeCache, invalidateCustomersCache, invalidateCohortCache, invalidateClassificationCache } from '../utils/storage';
 import {
   generateItemNormalizationMap,
   getFilteredOrders,
@@ -15,6 +15,7 @@ import {
 } from '../utils/mlExportHelper';
 import { getMarketingCoupons } from '../utils/marketingStorage';
 import { CompletedOrder, PaymentMethod, Station, User, Customer } from '../types';
+import { MENU_ITEMS } from '../constants';
 import PrintReceipt from './PrintReceipt';
 import DeleteBillModal from './DeleteBillModal';
 import ItemSalesReport from './ItemSalesReport';
@@ -27,9 +28,10 @@ import CustomerInsights from './CustomerInsights';
 import CohortRetentionChart from './CohortRetentionChart';
 import CohortCompositionChart from './CohortCompositionChart';
 import { CustomerHistogram } from './CustomerHistogram';
+import { MauTrackingView } from './MauTrackingView';
 import { OrderIntervalChart } from './OrderIntervalChart';
 import { StudentIntelligenceModal } from './StudentIntelligenceModal';
-import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star, Users, TrendingUp as TrendingUpIcon, Gift, DollarSign, ShoppingBag, Download, RefreshCw, GraduationCap, Copy, Printer } from 'lucide-react';
+import { Search, User as UserIcon, MapPin, Receipt, History, X, Send, MessageSquare, Edit3, Save, Calendar, Mail, FileText, Star, Users, TrendingUp as TrendingUpIcon, Gift, DollarSign, ShoppingBag, Download, RefreshCw, GraduationCap, Copy, Printer, Zap } from 'lucide-react';
 
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
 
@@ -60,6 +62,151 @@ const colorStops = [
   { p: 0.9, r: 220, g: 38, b: 38 },    // Red
   { p: 1.0, r: 153, g: 27, b: 27 }     // Deep Red
 ];
+
+export function classifyOrderItemCategory(item: { name?: string; menuItemId?: string; is_addon_offer?: boolean; price?: number }): string {
+  if (item.is_addon_offer) return 'addon';
+  const name = (item.name || '').toLowerCase();
+  const mId = (item.menuItemId || '').toLowerCase();
+
+  if (
+    mId.startsWith('addon-') ||
+    mId === 'add-fries' ||
+    mId === 'add-mojito' ||
+    mId === 'add-popcorn' ||
+    name.includes('(add-on offer)') ||
+    name.includes('add-on') ||
+    name.includes('+2 ') ||
+    name.includes('+3 ') ||
+    name.includes('special offer') ||
+    name.startsWith('add ')
+  ) {
+    return 'addon';
+  }
+
+  // Pure discount lines
+  if ((item.price ?? 0) < 0 || name.includes('discount') || name.includes('loyalty') || name.includes('coupon') || name.includes('welcome offer')) {
+    return 'discount';
+  }
+
+  // Match against known catalog menu items
+  if (mId) {
+    const found = MENU_ITEMS.find(m => m.id.toLowerCase() === mId);
+    if (found?.category) {
+      if (found.category === 'momo') return 'momo';
+      if (found.category === 'moburg') return 'moburg';
+      if (found.category === 'side') return 'side';
+      if (found.category === 'drink') return 'drink';
+      if (found.category === 'combo' || found.category === 'summit-meals') return 'combo';
+    }
+  }
+
+  // Name keyword heuristics
+  if (name.includes('momo') || name.includes('platter')) return 'momo';
+  if (name.includes('moburg') || name.includes('burger') || name.includes('zinger')) return 'moburg';
+  if (
+    name.includes('mojito') ||
+    name.includes('campa') ||
+    name.includes('cola') ||
+    name.includes('sprite') ||
+    name.includes('coke') ||
+    name.includes('water') ||
+    name.includes('soda') ||
+    name.includes('drink') ||
+    name.includes('beverage')
+  ) {
+    return 'drink';
+  }
+  if (
+    name.includes('fries') ||
+    name.includes('popcorn') ||
+    name.includes('strips') ||
+    name.includes('wings') ||
+    name.includes('dip') ||
+    name.includes('mayo') ||
+    name.includes('sauce') ||
+    name.includes('seasoning')
+  ) {
+    return 'side';
+  }
+  if (name.includes('combo') || name.includes('meal')) return 'combo';
+
+  return 'other';
+}
+
+export function isPackagedDrinkItem(item: { name?: string; menuItemId?: string }): boolean {
+  const name = (item.name || '').toLowerCase();
+  const mId = (item.menuItemId || '').toLowerCase();
+
+  // Fresh / handcrafted items are non-packaged
+  if (
+    name.includes('mojito') ||
+    name.includes('cooler') ||
+    name.includes('iced tea') ||
+    name.includes('shake') ||
+    name.includes('smoothie') ||
+    name.includes('lemonade') ||
+    name.includes('fresh lime') ||
+    mId.includes('mojito') ||
+    mId.includes('cooler')
+  ) {
+    return false;
+  }
+
+  // Packaged IDs
+  if (
+    mId === 'campa-cola' ||
+    mId === 'mineral-water' ||
+    mId === 'soda-water' ||
+    mId.includes('cola') ||
+    mId.includes('sprite') ||
+    mId.includes('water') ||
+    mId.includes('pepsi') ||
+    mId.includes('coke') ||
+    mId.includes('fanta') ||
+    mId.includes('thums')
+  ) {
+    return true;
+  }
+
+  // Packaged keywords in name (water, pepsi, sprite, campa, coke, can, bottle, etc.)
+  return /\b(water|mineral water|water bottle|packaged water|soda water|campa|cola|pepsi|sprite|coke|fanta|thums up|frooti|maaza|slice|mirinda|7up|mountain dew|red bull|can|bottle|canned|bottled)\b/i.test(name);
+}
+
+export function isNonPackagedDrinkItem(item: { name?: string; menuItemId?: string }): boolean {
+  const name = (item.name || '').toLowerCase();
+  const mId = (item.menuItemId || '').toLowerCase();
+
+  // Fresh / handcrafted beverage IDs or names
+  if (
+    mId === 'add-mojito' ||
+    mId.includes('mojito') ||
+    mId.includes('cooler') ||
+    mId.includes('shake') ||
+    mId.includes('lemonade')
+  ) {
+    return true;
+  }
+
+  if (/\b(mojito|cooler|lemonade|iced tea|fresh lime|nimbu pani|shikanji|shake|smoothie|crush|fresh drink)\b/i.test(name)) {
+    return true;
+  }
+
+  // Any other drink that is not packaged
+  const isAnyDrink =
+    classifyOrderItemCategory(item) === 'drink' ||
+    mId.includes('drink') ||
+    /\b(drink|beverage)\b/i.test(name);
+
+  if (isAnyDrink && !isPackagedDrinkItem(item)) {
+    return true;
+  }
+
+  return false;
+}
+
+export function isDrinkItem(item: { name?: string; menuItemId?: string }): boolean {
+  return isPackagedDrinkItem(item) || isNonPackagedDrinkItem(item);
+}
 
 const getHeatmapColor = (intensity: number) => {
   if (intensity <= 0) return 'rgba(0,0,0,0.03)';
@@ -368,9 +515,10 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [isApproved, setIsApproved] = useState<boolean>(false);
   const [normMap, setNormMap] = useState<Record<string, ItemNormalization>>({});
   const [normSearchTerm, setNormSearchTerm] = useState('');
+  const [isAddonModalOpen, setIsAddonModalOpen] = useState(false);
   
   const [searchTerm, setSearchTerm] = useState('');
-  const [searchMode, setSearchMode] = useState<'bill' | 'item'>('bill');
+  const [searchMode, setSearchMode] = useState<'bill' | 'item' | 'coupon'>('bill');
   const [useDateFilter, setUseDateFilter] = useState(false);
   const [itemSuggestions, setItemSuggestions] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -387,6 +535,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [customerSortOrder, setCustomerSortOrder] = useState<'asc' | 'desc'>('desc');
   const [customerClassFilter, setCustomerClassFilter] = useState<'ALL' | 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY' | 'UNCLASSIFIED'>('ALL');
   const [customerTypeFilter, setCustomerTypeFilter] = useState<'ALL' | 'STUDENT' | 'REGULAR'>('ALL');
+  const [customerRecencyFilter, setCustomerRecencyFilter] = useState<'ALL' | 'MAU_90D' | 'POWER_30D' | 'COOLING_90D' | 'DORMANT'>('ALL');
+  const [customerNetworkTab, setCustomerNetworkTab] = useState<'mau' | 'cohort'>('mau');
   const [segmentFilter, setSegmentFilter] = useState<'ALL' | 'STUDENT' | 'REGULAR'>('ALL');
   const [isStudentScorecardOpen, setIsStudentScorecardOpen] = useState(false);
   const [customerOrderStats, setCustomerOrderStats] = useState<Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }>>({});
@@ -406,6 +556,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [revSortOrder, setRevSortOrder] = useState<'asc' | 'desc'>('desc');
   const [revTypeFilter, setRevTypeFilter] = useState<string>('all');
   const [revBranchFilter, setRevBranchFilter] = useState<string>('all');
+  const [revCategoryFilter, setRevCategoryFilter] = useState<string>('all');
+  const [revItemFilter, setRevItemFilter] = useState<string>('all');
   const [revMinAmount, setRevMinAmount] = useState<string>('');
   const [revMaxAmount, setRevMaxAmount] = useState<string>('');
   const [revSearchQuery, setRevSearchQuery] = useState<string>('');
@@ -646,6 +798,40 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     return Array.from(branches);
   }, [orders, deletedOrders, adjustments]);
 
+  // Distinct unique items present in current loaded orders for filtering
+  const availableItemsList = useMemo(() => {
+    const rawList = activeTab === 'active' ? orders : deletedOrders;
+    const itemMap = new Map<string, { name: string; category: string }>();
+
+    rawList.forEach(o => {
+      o.items?.forEach(it => {
+        const cat = classifyOrderItemCategory(it);
+        if (cat !== 'discount' && it.name && it.name.trim()) {
+          const cleanName = it.name.trim();
+          if (!itemMap.has(cleanName)) {
+            itemMap.set(cleanName, { name: cleanName, category: cat });
+          }
+        }
+      });
+    });
+
+    const list = Array.from(itemMap.values());
+    list.sort((a, b) => a.name.localeCompare(b.name));
+    return list;
+  }, [activeTab, orders, deletedOrders]);
+
+  // Filtered item options if a specific category is chosen
+  const filteredItemOptions = useMemo(() => {
+    if (revCategoryFilter === 'all') return availableItemsList;
+    if (revCategoryFilter === 'drink-packaged') {
+      return availableItemsList.filter(i => isPackagedDrinkItem(i));
+    }
+    if (revCategoryFilter === 'drink-fresh') {
+      return availableItemsList.filter(i => isNonPackagedDrinkItem(i));
+    }
+    return availableItemsList.filter(i => i.category === revCategoryFilter);
+  }, [availableItemsList, revCategoryFilter]);
+
   // Computed Active or Voided orders filtered and sorted
   const filteredAndSortedOrders = useMemo(() => {
     const rawList = activeTab === 'active' ? orders : deletedOrders;
@@ -659,8 +845,10 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         const matchesItem = o.items && o.items.some(item => item.name.toLowerCase().includes(query));
         const matchesCashier = o.cashierName && o.cashierName.toLowerCase().includes(query);
         const matchesPayment = o.paymentMethod && o.paymentMethod.toLowerCase().includes(query);
+        const coup = o.appliedCouponCode || extractCouponCodeFromOrder(o);
+        const matchesCoupon = Boolean(coup && coup.toLowerCase().includes(query));
         
-        if (!matchesBillNum && !matchesItem && !matchesCashier && !matchesPayment) {
+        if (!matchesBillNum && !matchesItem && !matchesCashier && !matchesPayment && !matchesCoupon) {
           return false;
         }
       }
@@ -677,6 +865,25 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         if (o.branchName.toLowerCase() !== revBranchFilter.toLowerCase()) {
           return false;
         }
+      }
+
+      // Item Category Filter (contains item of category)
+      if (revCategoryFilter !== 'all') {
+        let hasMatchingCategory = false;
+        if (revCategoryFilter === 'drink-packaged') {
+          hasMatchingCategory = o.items && o.items.some(it => isPackagedDrinkItem(it));
+        } else if (revCategoryFilter === 'drink-fresh') {
+          hasMatchingCategory = o.items && o.items.some(it => isNonPackagedDrinkItem(it));
+        } else {
+          hasMatchingCategory = o.items && o.items.some(it => classifyOrderItemCategory(it) === revCategoryFilter);
+        }
+        if (!hasMatchingCategory) return false;
+      }
+
+      // Specific Item Filter (contains specific item)
+      if (revItemFilter !== 'all') {
+        const hasMatchingItem = o.items && o.items.some(it => it.name && it.name.trim() === revItemFilter);
+        if (!hasMatchingItem) return false;
       }
 
       // Amount Range
@@ -718,7 +925,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     });
 
     return result;
-  }, [activeTab, orders, deletedOrders, revSearchQuery, revTypeFilter, revBranchFilter, revMinAmount, revMaxAmount, revSortField, revSortOrder, segmentFilter, checkIsOrderStudent]);
+  }, [activeTab, orders, deletedOrders, revSearchQuery, revTypeFilter, revBranchFilter, revCategoryFilter, revItemFilter, revMinAmount, revMaxAmount, revSortField, revSortOrder, segmentFilter, checkIsOrderStudent]);
 
   // Computed Stock Adjustments filtered and sorted
   const filteredAndSortedAdjustments = useMemo(() => {
@@ -1431,7 +1638,17 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       const sDate = useDateFilter ? startDate : undefined;
       const eDate = useDateFilter ? endDate : undefined;
 
-      if (mode === 'bill') {
+      if (mode === 'coupon' || (mode === 'bill' && !forcedBillNum && isNaN(parseInt(query, 10)) && query.trim().length >= 2)) {
+        const results = await getOrdersByCouponCode(query, sDate, eDate);
+        if (results.length > 0) {
+          setFoundOrdersList(results);
+          if (results.length === 1) {
+            await displayOrderDetails(results[0]);
+          }
+        } else {
+          setSearchMessage(`No orders found with coupon code "${query}"${useDateFilter ? ` between ${sDate} and ${eDate}` : ''}.`);
+        }
+      } else if (mode === 'bill') {
         const billNum = parseInt(query, 10);
         if (isNaN(billNum)) {
           setSearchMessage('Please enter a valid bill number.');
@@ -1584,6 +1801,33 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     let takeawayOrdersCount = 0;
     let takeawayReviewsCollected = 0;
 
+    // Add-on & Drink Attach tracking
+    let addonOrdersCount = 0;
+    let offlineOrdersCount = 0;
+    let offlineAddonOrdersCount = 0;
+    let onlineOrdersCount = 0;
+    let onlineAddonOrdersCount = 0;
+
+    let takeawayAddonOrders = 0;
+    let dineInAddonOrders = 0;
+    let deliveryAddonOrders = 0;
+
+    let drinkOrdersCount = 0;
+    let packagedDrinkOrdersCount = 0;
+    let nonPackagedDrinkOrdersCount = 0;
+
+    let dineInDrinkOrders = 0;
+    let dineInPackagedDrinkOrders = 0;
+    let dineInNonPackagedDrinkOrders = 0;
+
+    let takeawayDrinkOrders = 0;
+    let takeawayPackagedDrinkOrders = 0;
+    let takeawayNonPackagedDrinkOrders = 0;
+
+    let deliveryDrinkOrders = 0;
+    let deliveryPackagedDrinkOrders = 0;
+    let deliveryNonPackagedDrinkOrders = 0;
+
     const breakdown: Record<PaymentMethod, number> = { 'Cash': 0, 'UPI': 0, 'Card': 0 };
 
     displayOrders.forEach(order => {
@@ -1623,18 +1867,66 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         }
       }
 
-      // Track Dine-In and Takeaway reviews separately for non-student free orders
+      // Track Dine-In, Takeaway, Add-ons and Drink Attach rates for commercial orders
       if (!isStudentFreeMojitoOrder(order)) {
-        if (order.type === 'DINE_IN') {
-          dineInOrdersCount++;
-          if (order.status === 'REVIEW_COLLECTED') {
-            dineInReviewsCollected++;
-          }
-        } else if (order.type === 'TAKEAWAY') {
+        const hasAddon = (order.items || []).some(it => {
+          if (it.is_addon_offer) return true;
+          const name = it.name || '';
+          const mId = it.menuItemId || '';
+          return (
+            mId.startsWith('addon-') ||
+            mId === 'add-fries' ||
+            mId === 'add-mojito' ||
+            mId === 'add-popcorn' ||
+            name.startsWith('Add ') ||
+            name.includes('(Add-on Offer)') ||
+            name.includes('Add-on') ||
+            name.includes('+2 ') ||
+            name.includes('+3 ') ||
+            name.includes('Special Offer')
+          );
+        });
+
+        const hasPackagedDrink = (order.items || []).some(it => isPackagedDrinkItem(it));
+        const hasNonPackagedDrink = (order.items || []).some(it => isNonPackagedDrinkItem(it));
+        const hasDrink = hasPackagedDrink || hasNonPackagedDrink;
+
+        if (hasAddon) addonOrdersCount++;
+        if (hasDrink) drinkOrdersCount++;
+        if (hasPackagedDrink) packagedDrinkOrdersCount++;
+        if (hasNonPackagedDrink) nonPackagedDrinkOrdersCount++;
+
+        if (order.type === 'DINE_IN' || order.type === 'TAKEAWAY') {
+          offlineOrdersCount++;
+          if (hasAddon) offlineAddonOrdersCount++;
+        } else if (order.type === 'DELIVERY') {
+          onlineOrdersCount++;
+          if (hasAddon) onlineAddonOrdersCount++;
+        }
+
+        if (order.type === 'TAKEAWAY') {
           takeawayOrdersCount++;
+          if (hasAddon) takeawayAddonOrders++;
+          if (hasDrink) takeawayDrinkOrders++;
+          if (hasPackagedDrink) takeawayPackagedDrinkOrders++;
+          if (hasNonPackagedDrink) takeawayNonPackagedDrinkOrders++;
           if (order.status === 'REVIEW_COLLECTED') {
             takeawayReviewsCollected++;
           }
+        } else if (order.type === 'DINE_IN') {
+          dineInOrdersCount++;
+          if (hasAddon) dineInAddonOrders++;
+          if (hasDrink) dineInDrinkOrders++;
+          if (hasPackagedDrink) dineInPackagedDrinkOrders++;
+          if (hasNonPackagedDrink) dineInNonPackagedDrinkOrders++;
+          if (order.status === 'REVIEW_COLLECTED') {
+            dineInReviewsCollected++;
+          }
+        } else if (order.type === 'DELIVERY') {
+          if (hasAddon) deliveryAddonOrders++;
+          if (hasDrink) deliveryDrinkOrders++;
+          if (hasPackagedDrink) deliveryPackagedDrinkOrders++;
+          if (hasNonPackagedDrink) deliveryNonPackagedDrinkOrders++;
         }
       }
     });
@@ -1651,6 +1943,31 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     const effectiveDeliveryDiscountPercent = deliveryMenuTotal > 0
       ? ((deliveryMenuTotal - (deliveryRevenue * 0.55)) / deliveryMenuTotal) * 100
       : 0;
+
+    const totalCommercialOrders = inStoreOrdersCount + deliveryOrdersCount;
+    const addonPercent = totalCommercialOrders > 0 ? (addonOrdersCount / totalCommercialOrders) * 100 : 0;
+    const offlineAddonPercent = offlineOrdersCount > 0 ? (offlineAddonOrdersCount / offlineOrdersCount) * 100 : 0;
+    const onlineAddonPercent = onlineOrdersCount > 0 ? (onlineAddonOrdersCount / onlineOrdersCount) * 100 : 0;
+
+    const takeawayAddonPercent = takeawayOrdersCount > 0 ? (takeawayAddonOrders / takeawayOrdersCount) * 100 : 0;
+    const dineInAddonPercent = dineInOrdersCount > 0 ? (dineInAddonOrders / dineInOrdersCount) * 100 : 0;
+    const deliveryAddonPercent = deliveryOrdersCount > 0 ? (deliveryAddonOrders / deliveryOrdersCount) * 100 : 0;
+
+    const overallDrinkAttachPercent = totalCommercialOrders > 0 ? (drinkOrdersCount / totalCommercialOrders) * 100 : 0;
+    const packagedDrinkAttachPercent = totalCommercialOrders > 0 ? (packagedDrinkOrdersCount / totalCommercialOrders) * 100 : 0;
+    const nonPackagedDrinkAttachPercent = totalCommercialOrders > 0 ? (nonPackagedDrinkOrdersCount / totalCommercialOrders) * 100 : 0;
+
+    const dineInDrinkAttachPercent = dineInOrdersCount > 0 ? (dineInDrinkOrders / dineInOrdersCount) * 100 : 0;
+    const dineInPackagedDrinkPercent = dineInOrdersCount > 0 ? (dineInPackagedDrinkOrders / dineInOrdersCount) * 100 : 0;
+    const dineInNonPackagedDrinkPercent = dineInOrdersCount > 0 ? (dineInNonPackagedDrinkOrders / dineInOrdersCount) * 100 : 0;
+
+    const takeawayDrinkAttachPercent = takeawayOrdersCount > 0 ? (takeawayDrinkOrders / takeawayOrdersCount) * 100 : 0;
+    const takeawayPackagedDrinkPercent = takeawayOrdersCount > 0 ? (takeawayPackagedDrinkOrders / takeawayOrdersCount) * 100 : 0;
+    const takeawayNonPackagedDrinkPercent = takeawayOrdersCount > 0 ? (takeawayNonPackagedDrinkOrders / takeawayOrdersCount) * 100 : 0;
+
+    const deliveryDrinkAttachPercent = deliveryOrdersCount > 0 ? (deliveryDrinkOrders / deliveryOrdersCount) * 100 : 0;
+    const deliveryPackagedDrinkPercent = deliveryOrdersCount > 0 ? (deliveryPackagedDrinkOrders / deliveryOrdersCount) * 100 : 0;
+    const deliveryNonPackagedDrinkPercent = deliveryOrdersCount > 0 ? (deliveryNonPackagedDrinkOrders / deliveryOrdersCount) * 100 : 0;
 
     return { 
       totalRevenue: revenue, 
@@ -1695,6 +2012,51 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       takeawayReviewsCollected,
       takeawayReviewPercent: takeawayOrdersCount > 0 ? (takeawayReviewsCollected / takeawayOrdersCount) * 100 : 0,
       
+      // Add-on & Drink Attach Rate Metrics
+      addonOrdersCount,
+      addonPercent,
+      offlineOrdersCount,
+      offlineAddonOrdersCount,
+      offlineAddonPercent,
+      onlineOrdersCount,
+      onlineAddonOrdersCount,
+      onlineAddonPercent,
+
+      takeawayAddonOrders,
+      takeawayAddonPercent,
+      dineInAddonOrders,
+      dineInAddonPercent,
+      deliveryAddonOrders,
+      deliveryAddonPercent,
+
+      drinkOrdersCount,
+      overallDrinkAttachPercent,
+      packagedDrinkOrdersCount,
+      packagedDrinkAttachPercent,
+      nonPackagedDrinkOrdersCount,
+      nonPackagedDrinkAttachPercent,
+
+      dineInDrinkOrders,
+      dineInDrinkAttachPercent,
+      dineInPackagedDrinkOrders,
+      dineInPackagedDrinkPercent,
+      dineInNonPackagedDrinkOrders,
+      dineInNonPackagedDrinkPercent,
+
+      takeawayDrinkOrders,
+      takeawayDrinkAttachPercent,
+      takeawayPackagedDrinkOrders,
+      takeawayPackagedDrinkPercent,
+      takeawayNonPackagedDrinkOrders,
+      takeawayNonPackagedDrinkPercent,
+
+      deliveryDrinkOrders,
+      deliveryDrinkAttachPercent,
+      deliveryPackagedDrinkOrders,
+      deliveryPackagedDrinkPercent,
+      deliveryNonPackagedDrinkOrders,
+      deliveryNonPackagedDrinkPercent,
+
       studentOrdersCount
     };
   }, [displayOrders]);
@@ -1738,12 +2100,22 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       return d >= startDate && d <= endDate;
     }).length;
 
+    // 90-Day Active MAU count (ordered within last 90 days)
+    const d90AgoMs = Date.now() - (90 * 24 * 60 * 60 * 1000);
+    const mauCount = displayCustomers.filter(c => {
+      if (!c.lastVisit) return false;
+      return new Date(c.lastVisit).getTime() >= d90AgoMs;
+    }).length;
+    const mauPct = totalCount > 0 ? (mauCount / totalCount) * 100 : 0;
+
     return {
       totalCount,
       totalLTV,
       avgLTV,
       retentionRate,
-      newInRange
+      newInRange,
+      mauCount,
+      mauPct
     };
   }, [displayCustomers, startDate, endDate]);
 
@@ -1816,7 +2188,55 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   }, [displayOrders]);
 
   const filteredCustomers = useMemo(() => {
-    let filtered = customers.filter(c => c.phone.includes(customerSearchTerm));
+    const term = customerSearchTerm.trim().toLowerCase();
+    const cleanTermAlnum = term.replace(/[^a-z0-9]/g, '');
+
+    let filtered = customers;
+
+    if (term) {
+      filtered = filtered.filter(c => {
+        // Match phone
+        const phone = (c.phone || '').toLowerCase();
+        const cleanPhone = phone.replace(/\D/g, '');
+        if (phone.includes(term) || (cleanTermAlnum && cleanPhone.includes(cleanTermAlnum))) {
+          return true;
+        }
+
+        // Match referral coupon (e.g. MOMO-8625-PDV, 8625, PDV)
+        if (c.referralCode) {
+          const ref = c.referralCode.toLowerCase();
+          const cleanRef = ref.replace(/[^a-z0-9]/g, '');
+          if (ref.includes(term) || (cleanTermAlnum && cleanRef.includes(cleanTermAlnum))) {
+            return true;
+          }
+        }
+
+        // Match customer name
+        if (c.name && c.name.toLowerCase().includes(term)) {
+          return true;
+        }
+
+        // Match gang coupon code
+        if (c.gangCouponCode) {
+          const gang = c.gangCouponCode.toLowerCase();
+          const cleanGang = gang.replace(/[^a-z0-9]/g, '');
+          if (gang.includes(term) || (cleanTermAlnum && cleanGang.includes(cleanTermAlnum))) {
+            return true;
+          }
+        }
+
+        // Match welcome coupon code
+        if (c.welcomeCouponCode) {
+          const wel = c.welcomeCouponCode.toLowerCase();
+          const cleanWel = wel.replace(/[^a-z0-9]/g, '');
+          if (wel.includes(term) || (cleanTermAlnum && cleanWel.includes(cleanTermAlnum))) {
+            return true;
+          }
+        }
+
+        return false;
+      });
+    }
     
     // Type Filter (Student / Regular) - respect either customerTypeFilter or global segmentFilter
     const effectiveTypeFilter = segmentFilter !== 'ALL' ? segmentFilter : customerTypeFilter;
@@ -1843,6 +2263,21 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         if (takeawayRate > 0.7) return customerClassFilter === 'TAKEAWAY';
         if (deliveryRate > 0.7) return customerClassFilter === 'DELIVERY';
         return customerClassFilter === 'UNCLASSIFIED';
+      });
+    }
+
+    // Recency / 90-Day MAU Filter
+    if (customerRecencyFilter !== 'ALL') {
+      const nowMs = Date.now();
+      const oneDayMs = 24 * 60 * 60 * 1000;
+      filtered = filtered.filter(c => {
+        const lvTime = c.lastVisit ? new Date(c.lastVisit).getTime() : 0;
+        const daysSinceLast = lvTime > 0 ? (nowMs - lvTime) / oneDayMs : 999;
+        if (customerRecencyFilter === 'POWER_30D') return daysSinceLast <= 30;
+        if (customerRecencyFilter === 'MAU_90D') return daysSinceLast <= 90;
+        if (customerRecencyFilter === 'COOLING_90D') return daysSinceLast > 60 && daysSinceLast <= 90;
+        if (customerRecencyFilter === 'DORMANT') return daysSinceLast > 90 || lvTime === 0;
+        return true;
       });
     }
 
@@ -1893,7 +2328,12 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
 
       return customerSortOrder === 'desc' ? valB - valA : valA - valB;
     });
-  }, [customers, customerSearchTerm, customerSortField, customerSortOrder, minLtv, maxLtv, minOrders, maxOrders, customerJoinedStart, customerJoinedEnd, customerActivityStart, customerActivityEnd, allOrdersRaw, customerClassFilter, customerTypeFilter, customerOrderStats, segmentFilter]);
+  }, [customers, customerSearchTerm, customerSortField, customerSortOrder, minLtv, maxLtv, minOrders, maxOrders, customerJoinedStart, customerJoinedEnd, customerActivityStart, customerActivityEnd, allOrdersRaw, customerClassFilter, customerTypeFilter, customerRecencyFilter, customerOrderStats, segmentFilter]);
+
+  const foundOrderCoupon = useMemo(() => {
+    if (!foundOrder) return null;
+    return foundOrder.appliedCouponCode || extractCouponCodeFromOrder(foundOrder);
+  }, [foundOrder]);
 
   return (
     <div className="p-4 lg:p-8 h-full bg-brand-cream overflow-y-auto no-scrollbar pb-24 lg:pb-8">
@@ -1913,6 +2353,12 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                     className={`px-3 py-1 text-[8px] font-black uppercase tracking-widest rounded-lg transition-all ${searchMode === 'bill' ? 'bg-brand-brown text-brand-yellow shadow-sm' : 'text-brand-brown/40 hover:bg-brand-brown/10'}`}
                   >
                     By Bill #
+                  </button>
+                  <button 
+                    onClick={() => setSearchMode('coupon')}
+                    className={`px-3 py-1 text-[8px] font-black uppercase tracking-widest rounded-lg transition-all ${searchMode === 'coupon' ? 'bg-brand-brown text-brand-yellow shadow-sm' : 'text-brand-brown/40 hover:bg-brand-brown/10'}`}
+                  >
+                    By Coupon
                   </button>
                   <button 
                     onClick={() => setSearchMode('item')}
@@ -1940,12 +2386,12 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                 <div className="flex items-center gap-2 bg-white shadow-xl p-2 rounded-2xl border-4 border-brand-brown">
                   <input 
                       type={searchMode === 'bill' ? "number" : "text"} 
-                      placeholder={searchMode === 'bill' ? "SEARCH BILL #" : "SEARCH ITEM NAME"} 
+                      placeholder={searchMode === 'bill' ? "SEARCH BILL #" : (searchMode === 'coupon' ? "SEARCH COUPON (e.g. MOMO-8625)" : "SEARCH ITEM NAME")} 
                       value={searchTerm}
                       onChange={e => setSearchTerm(e.target.value)}
                       onFocus={() => searchMode === 'item' && itemSuggestions.length > 0 && setShowSuggestions(true)}
                       onKeyDown={e => e.key === 'Enter' && handleSearch()}
-                      className="bg-transparent text-[10px] font-black uppercase px-4 py-2 outline-none w-48"
+                      className="bg-transparent text-[10px] font-black uppercase px-4 py-2 outline-none w-52"
                   />
                   <button 
                     onClick={() => handleSearch()} 
@@ -2049,23 +2495,33 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
               </div>
               
               <div className="flex-1 overflow-y-auto no-scrollbar grid grid-cols-1 md:grid-cols-2 gap-4 pb-4">
-                {foundOrdersList.map((order) => (
-                  <button 
-                    key={order.id} 
-                    onClick={() => displayOrderDetails(order)}
-                    className="flex items-center justify-between p-5 bg-brand-brown/5 rounded-2xl border border-brand-brown/10 hover:border-brand-red hover:bg-white transition-all group text-left"
-                  >
-                    <div>
-                      <p className="text-[10px] font-black text-brand-red uppercase tracking-widest leading-none mb-1">Bill #{order.billNumber}</p>
-                      <p className="text-sm font-black text-brand-brown uppercase">{getISTDateString(order.date)}</p>
-                      <p className="text-[10px] font-bold text-brand-brown/40 uppercase">{order.branchName}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-lg font-black text-brand-brown">₹{order.total.toLocaleString()}</p>
-                      <p className="text-[8px] font-black text-brand-brown/40 uppercase tracking-widest">{order.items.length} Items</p>
-                    </div>
-                  </button>
-                ))}
+                {foundOrdersList.map((order) => {
+                  const orderCoupon = order.appliedCouponCode || extractCouponCodeFromOrder(order);
+                  return (
+                    <button 
+                      key={order.id} 
+                      onClick={() => displayOrderDetails(order)}
+                      className="flex items-center justify-between p-5 bg-brand-brown/5 rounded-2xl border border-brand-brown/10 hover:border-brand-red hover:bg-white transition-all group text-left"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <p className="text-[10px] font-black text-brand-red uppercase tracking-widest leading-none">Bill #{order.billNumber}</p>
+                          {orderCoupon && (
+                            <span className="text-[8px] font-black uppercase tracking-wider text-amber-800 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded">
+                              🎟️ {orderCoupon}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-sm font-black text-brand-brown uppercase">{getISTDateString(order.date)}</p>
+                        <p className="text-[10px] font-bold text-brand-brown/40 uppercase">{order.branchName}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-lg font-black text-brand-brown">₹{order.total.toLocaleString()}</p>
+                        <p className="text-[8px] font-black text-brand-brown/40 uppercase tracking-widest">{order.items.length} Items</p>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -2143,23 +2599,72 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                       </div>
                    )}
 
+                   {foundOrderCoupon && (
+                      <div className="mt-6 p-4 rounded-2xl bg-gradient-to-r from-amber-50 to-orange-50 border-2 border-amber-300 flex items-center justify-between gap-3 shadow-sm">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center text-lg shadow-md shrink-0">
+                            🎟️
+                          </div>
+                          <div>
+                            <p className="text-[9px] font-black text-amber-950 uppercase tracking-wider">Coupon Code Redeemed</p>
+                            <p className="text-sm lg:text-base font-black text-brand-red tracking-widest uppercase font-mono">{foundOrderCoupon}</p>
+                          </div>
+                        </div>
+                        <span className="text-[8px] font-black uppercase tracking-widest bg-amber-200/90 text-amber-900 border border-amber-300 px-3 py-1 rounded-full shrink-0">
+                          Discount Applied
+                        </span>
+                      </div>
+                   )}
+
                    <div className="mt-8 space-y-3">
-                      <p className="text-[10px] font-black uppercase text-brand-brown/30 tracking-widest px-1">Order Breakdown</p>
+                      <div className="flex items-center justify-between px-1">
+                        <p className="text-[10px] font-black uppercase text-brand-brown/30 tracking-widest">Order Breakdown</p>
+                        {foundOrder.items.some(it => it.is_addon_offer || it.name.includes('+2 Steamed') || it.name.includes('+3 Kurkure') || (it.menuItemId && it.menuItemId.startsWith('addon-'))) && (
+                          <span className="text-[8px] font-black uppercase tracking-wider text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-300">
+                            Includes Add-on Offer
+                          </span>
+                        )}
+                      </div>
                       <div className="max-h-[250px] overflow-y-auto no-scrollbar pr-2">
                         {foundOrder.items.length > 0 ? (
                           foundOrder.items.map((it, idx) => {
                             const isGift = it.name.includes('(Gift)') || it.id === 'gift-campa-cola' || it.name.includes('Student Promo') || it.price === 0;
+                            const isAddon = it.is_addon_offer || 
+                              it.name.includes('Add-on') || 
+                              it.name.startsWith('Add ') || 
+                              it.name.includes('+2 Steamed') || 
+                              it.name.includes('+3 Kurkure') || 
+                              (it.name.includes('Popcorn') && it.name.includes('pc')) ||
+                              (Boolean(it.menuItemId) && it.menuItemId!.startsWith('addon-'));
+                            const isCouponDiscount = it.price < 0 || it.name.toLowerCase().includes('coupon') || it.name.toLowerCase().includes('discount') || it.name.toLowerCase().includes('welcome offer');
+
                             return (
-                              <div key={idx} className={`flex justify-between items-center border-b border-brand-stone/50 py-3 group/item ${isGift ? 'bg-brand-red/5 p-2 rounded-lg my-1 border-none' : ''}`}>
+                              <div key={idx} className={`flex justify-between items-center border-b border-brand-stone/50 py-3 group/item ${
+                                isGift ? 'bg-brand-red/5 p-2.5 rounded-xl my-1 border-none' : 
+                                isAddon ? 'bg-emerald-50/90 p-2.5 rounded-xl my-1 border border-emerald-200' :
+                                isCouponDiscount ? 'bg-amber-50/90 p-2.5 rounded-xl my-1 border border-amber-200' : ''
+                              }`}>
                                   <div>
-                                    <span className={`font-black uppercase text-xs lg:text-sm block ${isGift ? 'text-brand-red' : 'text-brand-brown'}`}>
-                                      x{it.quantity} {it.name}
-                                      {isGift && <span className="ml-2 bg-brand-red text-white text-[7px] px-1.5 py-0.5 rounded-full ring-2 ring-brand-red/10 animate-pulse uppercase">FREE GIFT</span>}
-                                    </span>
-                                    {it.paidWithCoins && <span className="text-[8px] font-black text-indigo-600 uppercase tracking-widest leading-none">Redeemed with Coins</span>}
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className={`font-black uppercase text-xs lg:text-sm block ${
+                                        isGift ? 'text-brand-red' : 
+                                        isAddon ? 'text-emerald-900' :
+                                        isCouponDiscount ? 'text-amber-900' : 'text-brand-brown'
+                                      }`}>
+                                        x{it.quantity} {it.name}
+                                      </span>
+                                      {isGift && <span className="bg-brand-red text-white text-[7px] font-black px-1.5 py-0.5 rounded-full ring-2 ring-brand-red/10 animate-pulse uppercase">FREE GIFT</span>}
+                                      {isAddon && <span className="bg-emerald-600 text-white text-[7px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider">ADD-ON OFFER</span>}
+                                      {isCouponDiscount && <span className="bg-amber-600 text-white text-[7px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider">COUPON APPLIED</span>}
+                                    </div>
+                                    {it.paidWithCoins && <span className="text-[8px] font-black text-indigo-600 uppercase tracking-widest leading-none block mt-0.5">Redeemed with Coins</span>}
                                   </div>
-                                  <span className={`font-black text-xs lg:text-sm ${isGift ? 'text-brand-red' : 'text-brand-brown'}`}>
-                                    {isGift ? '₹0' : (it.paidWithCoins ? `🪙 ${(it.coinsPrice || 0) * it.quantity} Coins` : `₹${(it.price * it.quantity).toLocaleString()}`)}
+                                  <span className={`font-black text-xs lg:text-sm shrink-0 ml-2 ${
+                                    isGift ? 'text-brand-red' : 
+                                    isAddon ? 'text-emerald-800' :
+                                    isCouponDiscount ? 'text-brand-red' : 'text-brand-brown'
+                                  }`}>
+                                    {isGift ? '₹0' : (it.paidWithCoins ? `🪙 ${(it.coinsPrice || 0) * it.quantity} Coins` : (it.price < 0 ? `-₹${Math.abs(it.price * it.quantity).toLocaleString()}` : `₹${(it.price * it.quantity).toLocaleString()}`))}
                                   </span>
                               </div>
                             );
@@ -2214,6 +2719,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         nextOrderCoupon={foundOrderNextCoupon}
                         orderType={foundOrder.type}
                         totalValue={foundOrder.type === 'DELIVERY' && foundOrder.manualTotal != null ? foundOrder.manualTotal : foundOrder.total}
+                        couponCode={foundOrderCoupon}
                        />
                      </div>
                    </div>
@@ -2246,6 +2752,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
             nextOrderCoupon={foundOrderNextCoupon}
             orderType={foundOrder.type}
             totalValue={foundOrder.type === 'DELIVERY' && foundOrder.manualTotal != null ? foundOrder.manualTotal : foundOrder.total}
+            couponCode={foundOrderCoupon}
           />,
           document.getElementById('print-root')!
         )}
@@ -2818,41 +3325,63 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                 </div>
               </div>
 
-              {/* Card 4: Reviews & Feedback */}
-              <div className="bg-emerald-600 p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-md relative overflow-hidden group border border-black/5 flex flex-col justify-between text-white">
+              {/* Card 4: Add-On Orders & Channel Split (Clickable) */}
+              <div 
+                onClick={() => setIsAddonModalOpen(true)}
+                className="bg-[#0f6b4f] p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-md relative overflow-hidden group border border-black/5 flex flex-col justify-between text-white cursor-pointer hover:brightness-105 hover:shadow-xl active:scale-[0.99] transition-all select-none"
+                title="Click to view detailed drink attach rates and channel analysis"
+              >
                 <div>
-                  <p className="text-[9px] lg:text-[10px] font-black uppercase tracking-[0.2em] mb-2 text-white/60">ORDER REVIEWS</p>
-                  
-                  <div className="flex gap-4 mt-2">
-                    <div>
-                      <h4 className="text-xl lg:text-2xl font-black text-white">{financialData.dineInReviewPercent.toFixed(1)}%</h4>
-                      <p className="text-[7.5px] font-bold uppercase tracking-wider text-white/50">Dine-in</p>
-                    </div>
-                    <div className="h-8 w-px bg-white/20 self-center"></div>
-                    <div>
-                      <h4 className="text-xl lg:text-2xl font-black text-rose-150">{financialData.takeawayReviewPercent.toFixed(1)}%</h4>
-                      <p className="text-[7.5px] font-bold uppercase tracking-wider text-white/50">Takeaway</p>
-                    </div>
-                    <div className="h-8 w-px bg-white/20 self-center"></div>
-                    <div>
-                      <h4 className="text-[10px] font-black uppercase tracking-wider text-emerald-200 mt-2 leading-none">NO OPTION</h4>
-                      <p className="text-[7.5px] font-bold uppercase tracking-wider text-emerald-200/50 mt-1">Delivery</p>
-                    </div>
+                  <div className="flex items-center justify-between gap-1 mb-2">
+                    <p className="text-[9px] lg:text-[10px] font-black uppercase tracking-[0.2em] text-white/60">ADD-ON ORDERS</p>
+                    <span className="text-[7.5px] font-black uppercase tracking-wider bg-white/15 px-2.5 py-0.5 rounded-full text-emerald-200 flex items-center gap-1 group-hover:bg-white/25 transition-colors">
+                      ATTACH RATE <span className="text-[9px]">↗</span>
+                    </span>
                   </div>
+                  <h3 className="text-3xl lg:text-4xl font-black tracking-tighter text-white">
+                    {financialData.addonPercent.toFixed(1)}%
+                  </h3>
+                  <p className="text-[8px] lg:text-[9px] font-bold uppercase tracking-widest mt-1 text-white/50">
+                    {financialData.addonOrdersCount} OF {financialData.combinedOrdersCount} TOTAL ORDERS
+                  </p>
                 </div>
-                
-                <div className="mt-6 pt-4 border-t border-white/10 grid grid-cols-3 gap-2">
-                  <div>
-                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Collected</p>
-                    <p className="text-sm lg:text-base font-black text-white">{financialData.reviewsCollectedCount}</p>
+
+                {/* Minimal Channel-Wise Add-on Split matching Cards 1, 2, 3 */}
+                <div className="mt-6 pt-4 border-t border-white/10">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Channel Split</p>
+                    <span className="text-[7px] font-bold text-emerald-200/80 group-hover:text-emerald-200 transition-colors flex items-center gap-0.5">
+                      Drinks & Details ↗
+                    </span>
                   </div>
-                  <div>
-                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Denied</p>
-                    <p className="text-sm lg:text-base font-black text-rose-200">{financialData.reviewsDeniedCount}</p>
-                  </div>
-                  <div>
-                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">No Option</p>
-                    <p className="text-[9px] font-bold text-white/70 pt-0.5 leading-tight">Delivery Excl.</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Takeaway</p>
+                      <p className="text-sm lg:text-base font-black text-[#ffeaa7]">
+                        {financialData.takeawayAddonPercent.toFixed(1)}%
+                      </p>
+                      <p className="text-[7px] font-bold text-white/40 mt-0.5 leading-none">
+                        {financialData.takeawayAddonOrders}/{financialData.takeawayOrdersCount}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Dine-In</p>
+                      <p className="text-sm lg:text-base font-black text-white">
+                        {financialData.dineInAddonPercent.toFixed(1)}%
+                      </p>
+                      <p className="text-[7px] font-bold text-white/40 mt-0.5 leading-none">
+                        {financialData.dineInAddonOrders}/{financialData.dineInOrdersCount}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Delivery</p>
+                      <p className="text-sm lg:text-base font-black text-emerald-200">
+                        {financialData.deliveryAddonPercent.toFixed(1)}%
+                      </p>
+                      <p className="text-[7px] font-bold text-white/40 mt-0.5 leading-none">
+                        {financialData.deliveryAddonOrders}/{financialData.deliveryOrdersCount}
+                      </p>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2952,32 +3481,89 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-4 pt-4 border-t border-brand-brown/10">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider">Amount Range:</span>
-                        <input
-                          type="number"
-                          placeholder="Min ₹"
-                          value={revMinAmount}
-                          onChange={e => setRevMinAmount(e.target.value)}
-                          className="w-24 p-2 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010]"
-                        />
-                        <span className="text-xs text-brand-brown/40">to</span>
-                        <input
-                          type="number"
-                          placeholder="Max ₹"
-                          value={revMaxAmount}
-                          onChange={e => setRevMaxAmount(e.target.value)}
-                          className="w-24 p-2 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010]"
-                        />
+                    {/* Second Row: Item Category, Specific Item & Amount Range */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-4 border-t border-brand-brown/10">
+                      {/* Item Category Filter */}
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider block mb-1">Item Category</label>
+                        <select
+                          value={revCategoryFilter}
+                          onChange={e => {
+                            const newCat = e.target.value;
+                            setRevCategoryFilter(newCat);
+                            if (newCat !== 'all' && revItemFilter !== 'all') {
+                              const itemStillValid = availableItemsList.some(i => {
+                                if (i.name !== revItemFilter) return false;
+                                if (newCat === 'drink-packaged') return isPackagedDrinkItem(i);
+                                if (newCat === 'drink-fresh') return isNonPackagedDrinkItem(i);
+                                return i.category === newCat;
+                              });
+                              if (!itemStillValid) setRevItemFilter('all');
+                            }
+                          }}
+                          className="w-full p-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010] outline-none focus:border-brand-brown transition-all"
+                        >
+                          <option value="all">All Categories</option>
+                          <option value="momo">♨️ Momos</option>
+                          <option value="moburg">🍔 Moburg & Burgers</option>
+                          <option value="side">🍟 Sides (Fries, Popcorn, etc.)</option>
+                          <option value="drink">🥤 All Drinks & Beverages</option>
+                          <option value="drink-packaged">🍾 Packaged Drinks (Water, Pepsi, Sprite, Campa)</option>
+                          <option value="drink-fresh">🍹 Fresh Drinks (Mojitos, Coolers)</option>
+                          <option value="combo">🍱 Combos & Meals</option>
+                          <option value="addon">✨ Add-on Offers</option>
+                        </select>
                       </div>
 
-                      {(revSearchQuery || revTypeFilter !== 'all' || revBranchFilter !== 'all' || revMinAmount || revMaxAmount) && (
+                      {/* Contains Item Filter */}
+                      <div className="sm:col-span-1 lg:col-span-2">
+                        <label className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider block mb-1 truncate">
+                          Contains Item {revCategoryFilter !== 'all' ? `(${filteredItemOptions.length} in Category)` : `(${filteredItemOptions.length} Items)`}
+                        </label>
+                        <select
+                          value={revItemFilter}
+                          onChange={e => setRevItemFilter(e.target.value)}
+                          className="w-full p-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010] outline-none focus:border-brand-brown transition-all"
+                        >
+                          <option value="all">All Items (No item filter)</option>
+                          {filteredItemOptions.map(item => (
+                            <option key={item.name} value={item.name}>{item.name}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Amount Range */}
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-brand-brown/60 tracking-wider block mb-1">Amount Range</label>
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="number"
+                            placeholder="Min ₹"
+                            value={revMinAmount}
+                            onChange={e => setRevMinAmount(e.target.value)}
+                            className="w-full p-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010]"
+                          />
+                          <span className="text-xs text-brand-brown/40 shrink-0">to</span>
+                          <input
+                            type="number"
+                            placeholder="Max ₹"
+                            value={revMaxAmount}
+                            onChange={e => setRevMaxAmount(e.target.value)}
+                            className="w-full p-2.5 rounded-xl border border-brand-stone bg-white text-xs font-bold text-[#3a2010]"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-4 pt-4 border-t border-brand-brown/10">
+                      {(revSearchQuery || revTypeFilter !== 'all' || revBranchFilter !== 'all' || revCategoryFilter !== 'all' || revItemFilter !== 'all' || revMinAmount || revMaxAmount) && (
                         <button
                           onClick={() => {
                             setRevSearchQuery('');
                             setRevTypeFilter('all');
                             setRevBranchFilter('all');
+                            setRevCategoryFilter('all');
+                            setRevItemFilter('all');
                             setRevMinAmount('');
                             setRevMaxAmount('');
                           }}
@@ -3103,9 +3689,18 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-brand-stone">
-                      {filteredAndSortedOrders.map(o => (
+                      {filteredAndSortedOrders.map(o => {
+                        const coup = o.appliedCouponCode || extractCouponCodeFromOrder(o);
+                        return (
                         <tr key={o.id} className="hover:bg-brand-cream/50 transition-colors group">
-                          <td className="px-4 lg:px-8 py-4 font-black text-xs lg:text-sm">#{o.billNumber}</td>
+                          <td className="px-4 lg:px-8 py-4 font-black text-xs lg:text-sm">
+                            <div>#{o.billNumber}</div>
+                            {coup && (
+                              <span className="inline-block mt-0.5 text-[8px] font-black text-amber-800 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded tracking-wider">
+                                🎟️ {coup}
+                              </span>
+                            )}
+                          </td>
                           <td className="px-4 lg:px-8 py-4 text-[10px] lg:text-xs">{getISTFullDateTime(o.date)}</td>
                           <td className="px-4 lg:px-8 py-4">
                              {isStudentFreeMojitoOrder(o) ? (
@@ -3169,7 +3764,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                           </td>
                           <td className="px-4 lg:px-8 py-4 text-[9px] lg:text-[10px] font-bold uppercase text-right">{o.branchName}</td>
                         </tr>
-                      ))}
+                      );
+                    })}
                     </tbody>
                   </table>
                 ) : (
@@ -3221,45 +3817,53 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         {reportView === 'customers' && (isAdmin || user.role === 'STORE_MANAGER') && (
           <div className="space-y-8 animate-in fade-in duration-500">
             {/* Customer Overview Bar */}
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-               <div className="bg-white p-6 rounded-[2rem] border border-brand-stone shadow-xl group">
-                  <div className="flex items-center gap-2 mb-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+               <div className="bg-white p-5 rounded-[2rem] border border-brand-stone shadow-xl group">
+                  <div className="flex items-center gap-2 mb-2">
                     <Users className="w-4 h-4 text-brand-red" />
                     <p className="text-[10px] font-black uppercase text-brand-brown/40 tracking-widest">Base</p>
                   </div>
-                  <h4 className="text-3xl font-black text-brand-brown tracking-tighter">{customerOverview.totalCount}</h4>
+                  <h4 className="text-2xl lg:text-3xl font-black text-brand-brown tracking-tighter">{customerOverview.totalCount}</h4>
                   <p className="text-[9px] font-bold text-brand-brown/30 uppercase mt-1">Total Profiles</p>
                </div>
-               <div className="bg-brand-brown p-6 rounded-[2rem] shadow-xl text-white">
-                  <div className="flex items-center gap-2 mb-3">
+               <div className="bg-gradient-to-br from-brand-brown to-stone-900 p-5 rounded-[2rem] shadow-xl text-white border border-brand-yellow/30">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Zap className="w-4 h-4 text-brand-yellow fill-brand-yellow" />
+                    <p className="text-[10px] font-black uppercase text-brand-yellow tracking-widest">90D MAU</p>
+                  </div>
+                  <h4 className="text-2xl lg:text-3xl font-black text-brand-yellow tracking-tighter">{customerOverview.mauCount}</h4>
+                  <p className="text-[9px] font-bold text-stone-300 uppercase mt-1">{customerOverview.mauPct.toFixed(1)}% of pool</p>
+               </div>
+               <div className="bg-brand-brown p-5 rounded-[2rem] shadow-xl text-white">
+                  <div className="flex items-center gap-2 mb-2">
                     <History className="w-4 h-4 text-brand-yellow" />
                     <p className="text-[10px] font-black uppercase text-white/40 tracking-widest">System LTV</p>
                   </div>
-                  <h4 className="text-3xl font-black text-brand-yellow tracking-tighter">₹{Math.round(customerOverview.totalLTV).toLocaleString()}</h4>
+                  <h4 className="text-2xl lg:text-3xl font-black text-brand-yellow tracking-tighter">₹{Math.round(customerOverview.totalLTV).toLocaleString()}</h4>
                   <p className="text-[9px] font-bold text-white/40 uppercase mt-1">Lifetime Value</p>
                </div>
-               <div className="bg-white p-6 rounded-[2rem] border border-brand-stone shadow-xl">
-                  <div className="flex items-center gap-2 mb-3">
+               <div className="bg-white p-5 rounded-[2rem] border border-brand-stone shadow-xl">
+                  <div className="flex items-center gap-2 mb-2">
                     <TrendingUpIcon className="w-4 h-4 text-emerald-500" />
                     <p className="text-[10px] font-black uppercase text-brand-brown/40 tracking-widest">Avg LTV</p>
                   </div>
-                  <h4 className="text-3xl font-black text-brand-brown tracking-tighter">₹{Math.round(customerOverview.avgLTV).toLocaleString()}</h4>
+                  <h4 className="text-2xl lg:text-3xl font-black text-brand-brown tracking-tighter">₹{Math.round(customerOverview.avgLTV).toLocaleString()}</h4>
                   <p className="text-[9px] font-bold text-brand-brown/30 uppercase mt-1">Per Profile</p>
                </div>
-               <div className="bg-white p-6 rounded-[2rem] border border-brand-stone shadow-xl">
-                  <div className="flex items-center gap-2 mb-3">
+               <div className="bg-white p-5 rounded-[2rem] border border-brand-stone shadow-xl">
+                  <div className="flex items-center gap-2 mb-2">
                     <Star className="w-4 h-4 text-indigo-500" />
                     <p className="text-[10px] font-black uppercase text-brand-brown/40 tracking-widest">Retention</p>
                   </div>
-                  <h4 className="text-3xl font-black text-brand-brown tracking-tighter">{customerOverview.retentionRate.toFixed(1)}%</h4>
+                  <h4 className="text-2xl lg:text-3xl font-black text-brand-brown tracking-tighter">{customerOverview.retentionRate.toFixed(1)}%</h4>
                   <p className="text-[9px] font-bold text-brand-brown/30 uppercase mt-1">Repeat Rate</p>
                </div>
-               <div className="bg-brand-red p-6 rounded-[2rem] shadow-xl text-white">
-                  <div className="flex items-center gap-2 mb-3">
+               <div className="bg-brand-red p-5 rounded-[2rem] shadow-xl text-white">
+                  <div className="flex items-center gap-2 mb-2">
                     <Gift className="w-4 h-4 text-brand-yellow" />
                     <p className="text-[10px] font-black uppercase text-white/40 tracking-widest">New Signups</p>
                   </div>
-                  <h4 className="text-3xl font-black text-white tracking-tighter">{customerOverview.newInRange}</h4>
+                  <h4 className="text-2xl lg:text-3xl font-black text-white tracking-tighter">{customerOverview.newInRange}</h4>
                   <p className="text-[9px] font-bold text-brand-yellow/60 uppercase mt-1">This Period</p>
                </div>
             </div>
@@ -3365,12 +3969,22 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-brand-brown/30" />
                     <input 
-                      type="tel"
-                      placeholder="Search Phone..."
+                      type="text"
+                      placeholder="Search Phone, Name, or Referral Coupon (e.g. MOMO-8625-PDV)..."
                       value={customerSearchTerm}
                       onChange={e => setCustomerSearchTerm(e.target.value)}
-                      className="w-full pl-10 pr-4 py-3 bg-brand-brown/5 rounded-xl text-xs font-black uppercase outline-none focus:ring-2 ring-brand-yellow/50 transition-all"
+                      className="w-full pl-10 pr-9 py-3 bg-brand-brown/5 rounded-xl text-xs font-black uppercase outline-none focus:ring-2 ring-brand-yellow/50 transition-all placeholder:normal-case placeholder:font-bold placeholder:text-brand-brown/40"
                     />
+                    {customerSearchTerm && (
+                      <button
+                        type="button"
+                        onClick={() => setCustomerSearchTerm('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-brand-brown/40 hover:text-brand-brown transition-colors"
+                        title="Clear search"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
 
                   {/* Sorting Controls */}
@@ -3519,6 +4133,21 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         <option value="REGULAR">👤 Regular / Non-Students</option>
                       </select>
                     </div>
+
+                    <div className="space-y-1">
+                      <p className="text-[8px] font-black uppercase text-brand-brown/30 tracking-widest ml-1">Activity Recency (MAU Filter)</p>
+                      <select 
+                        value={customerRecencyFilter}
+                        onChange={(e) => setCustomerRecencyFilter(e.target.value as any)}
+                        className="w-full bg-brand-brown/5 text-[9px] font-black uppercase p-2 rounded-lg outline-none cursor-pointer font-bold"
+                      >
+                        <option value="ALL">All Recency (Entire Base)</option>
+                        <option value="MAU_90D">⚡ 90-Day Active MAU (≤90 Days)</option>
+                        <option value="POWER_30D">🔥 Power Active (≤30 Days)</option>
+                        <option value="COOLING_90D">⚠️ Cooling / At-Risk (61-90 Days)</option>
+                        <option value="DORMANT">💤 Dormant (&gt;90 Days)</option>
+                      </select>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -3547,8 +4176,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                        className={`w-full p-4 rounded-2xl flex items-center justify-between border-2 transition-all ${activeCustomer?.id === c.id ? 'bg-brand-brown border-brand-brown text-brand-yellow' : 'bg-white border-brand-stone text-brand-brown hover:border-brand-brown/20'}`}
                      >
                        <div className="text-left">
-                         <div className="flex items-center gap-2">
+                         <div className="flex items-center gap-2 flex-wrap">
                            <p className="text-sm font-black tracking-tight">{c.phone}</p>
+                           {c.name && (
+                             <span className={`text-[10px] font-bold truncate max-w-[110px] ${activeCustomer?.id === c.id ? 'text-brand-yellow/90' : 'text-brand-brown/70'}`}>
+                               ({c.name})
+                             </span>
+                           )}
                            {c.note === 'STUDENT' && (
                              <span className="text-[10px]" title="Student Customer">🎓</span>
                            )}
@@ -3558,7 +4192,19 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                              </span>
                            )}
                          </div>
-                         <p className={`text-[9px] font-bold uppercase tracking-widest ${activeCustomer?.id === c.id ? 'text-brand-yellow/60' : 'text-brand-brown/40'}`}>Joined {c.joinedDate ? getISTDateString(c.joinedDate) : 'N/A'}</p>
+                         {c.referralCode && (
+                           <div className="mt-1 flex items-center gap-1">
+                             <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-md border flex items-center gap-1 ${
+                               activeCustomer?.id === c.id 
+                                 ? 'bg-brand-yellow text-brand-brown border-brand-yellow font-black' 
+                                 : 'bg-amber-500/10 text-amber-800 border-amber-500/30'
+                             }`} title={`Referral Coupon: ${c.referralCode}`}>
+                               <span>🎁</span>
+                               <span className="font-mono font-black tracking-wider">{c.referralCode}</span>
+                             </span>
+                           </div>
+                         )}
+                         <p className={`text-[9px] font-bold uppercase tracking-widest mt-0.5 ${activeCustomer?.id === c.id ? 'text-brand-yellow/60' : 'text-brand-brown/40'}`}>Joined {c.joinedDate ? getISTDateString(c.joinedDate) : 'N/A'}</p>
                        </div>
                        <div className="text-right">
                          <p className="text-xs font-black">LTV: ₹{(c.totalSpent ?? 0).toLocaleString()}</p>
@@ -3742,6 +4388,14 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                                   <span className="text-white/20">•</span>
                                   <span className="text-[10px] uppercase font-black px-2 py-0.5 bg-emerald-500/20 rounded border border-emerald-500/30 text-emerald-400">
                                     🎓 Student
+                                  </span>
+                                </>
+                              )}
+                              {activeCustomer.referralCode && (
+                                <>
+                                  <span className="text-white/20">•</span>
+                                  <span className="text-[10px] font-mono font-black uppercase px-2.5 py-0.5 bg-amber-400 text-brand-brown rounded border border-amber-300 shadow-sm flex items-center gap-1">
+                                    <span>🎁</span> {activeCustomer.referralCode}
                                   </span>
                                 </>
                               )}
@@ -4171,6 +4825,125 @@ BENEFITS:
                         );
                       })()}
 
+                      {/* Referral Coupon & Loyalty Rewards Section */}
+                      <div className="bg-gradient-to-br from-amber-500/15 via-brand-yellow/10 to-white/5 border border-amber-400/30 rounded-3xl p-6 backdrop-blur-lg mb-8 space-y-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-2xl bg-amber-400/20 border border-amber-400/40 flex items-center justify-center text-xl shadow-inner">
+                              🎁
+                            </div>
+                            <div>
+                              <h4 className="text-xs font-black uppercase text-white tracking-[0.2em]">Referral Coupon & Loyalty Rewards</h4>
+                              <p className="text-[9px] font-bold text-amber-200/80 uppercase tracking-widest">Customer Referral Program • Searchable & Shareable</p>
+                            </div>
+                          </div>
+                          {activeCustomer.referralCode ? (
+                            <span className="self-start sm:self-auto text-[9px] font-black uppercase px-3 py-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-xl">
+                              Active Coupon
+                            </span>
+                          ) : (
+                            <span className="self-start sm:self-auto text-[9px] font-black uppercase px-3 py-1 bg-white/10 text-white/50 border border-white/10 rounded-xl">
+                              Eligible for Coupon
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+                          <div className="bg-black/20 border border-white/10 rounded-2xl p-4 flex flex-col justify-between">
+                            <span className="text-[8px] font-black uppercase text-white/50 tracking-widest">Referral Coupon Code</span>
+                            <div className="flex items-center justify-between mt-2">
+                              <span className="text-base font-black font-mono tracking-wider text-amber-300">
+                                {activeCustomer.referralCode || 'NOT ACTIVATED'}
+                              </span>
+                              {activeCustomer.referralCode && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(activeCustomer.referralCode!);
+                                    alert(`Referral code ${activeCustomer.referralCode} copied to clipboard!`);
+                                  }}
+                                  className="p-1.5 bg-white/10 hover:bg-white/20 text-amber-200 rounded-lg transition-all"
+                                  title="Copy Coupon Code"
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="bg-black/20 border border-white/10 rounded-2xl p-4 flex flex-col justify-between">
+                            <span className="text-[8px] font-black uppercase text-white/50 tracking-widest">Referral Wallet Balance</span>
+                            <p className="text-xl font-black text-amber-300 mt-2">
+                              ₹{activeCustomer.referralWallet || 0}
+                            </p>
+                          </div>
+
+                          <div className="bg-black/20 border border-white/10 rounded-2xl p-4 flex flex-col justify-between">
+                            <span className="text-[8px] font-black uppercase text-white/50 tracking-widest">Gang Coupon (Group Offer)</span>
+                            <p className="text-sm font-black font-mono tracking-wider text-white mt-2">
+                              {activeCustomer.gangCouponCode || '—'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Quick Share Buttons */}
+                        {activeCustomer.referralCode ? (
+                          <div className="flex flex-wrap gap-2 pt-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const code = activeCustomer.referralCode!;
+                                const name = activeCustomer.name ? ` from ${activeCustomer.name}` : '';
+                                const msg = `🎁 *Special MinMomas Treat${name}!* 🥟✨\n\nUse my exclusive referral coupon code *${code}* on your next visit to MinMomas to unlock surprise discounts and delicious momo treats!\n\nVisit today or order now!`;
+                                const phone = activeCustomer.phone.replace(/\D/g, '');
+                                const url = `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
+                                window.open(url, '_blank');
+                              }}
+                              className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-black uppercase text-[10px] tracking-wider py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all shadow-md active:scale-95"
+                            >
+                              <span>📱</span> Share Coupon via WhatsApp
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const code = activeCustomer.referralCode!;
+                                const msg = `Use my MinMomas referral coupon code: ${code} for exclusive discounts!`;
+                                navigator.clipboard.writeText(msg);
+                                alert('Referral message copied to clipboard!');
+                              }}
+                              className="bg-white/10 hover:bg-white/20 text-white font-black uppercase text-[10px] tracking-wider py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95"
+                            >
+                              <Copy className="w-3.5 h-3.5 text-amber-300" /> Copy Share Text
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="pt-2">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  const { generateReferralCodeForPhone } = await import('../utils/referralStorage');
+                                  const code = generateReferralCodeForPhone(activeCustomer.phone);
+                                  const { supabase } = await import('../utils/supabase');
+                                  await supabase
+                                    .from('customers')
+                                    .update({ referral_code: code, is_referral_active: true })
+                                    .eq('id', activeCustomer.id);
+                                  setActiveCustomer(prev => prev ? { ...prev, referralCode: code, isReferralActive: true } : null);
+                                  alert(`Activated referral code ${code} for ${activeCustomer.name || activeCustomer.phone}!`);
+                                } catch (e) {
+                                  console.error('Failed to generate referral code', e);
+                                  alert('Failed to activate referral coupon.');
+                                }
+                              }}
+                              className="w-full bg-amber-500 hover:bg-amber-400 text-brand-brown font-black uppercase text-[10px] tracking-wider py-3 rounded-xl flex items-center justify-center gap-2 transition-all shadow-md active:scale-95"
+                            >
+                              <span>🎁</span> Activate & Assign Referral Coupon Code
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
                       {/* Messaging Widget */}
                       <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-lg">
                         <div className="flex items-center gap-2 mb-4">
@@ -4259,51 +5032,115 @@ BENEFITS:
                   </div>
                 </>
               ) : (
-                  <div className="bg-white rounded-[2.5rem] p-10 shadow-xl border border-brand-stone space-y-12">
-                    <div className="flex flex-col items-center justify-center text-center">
-                      <div className="w-20 h-20 bg-brand-brown/5 rounded-full flex items-center justify-center mb-6">
-                        <Users className="w-10 h-10 text-brand-brown/20" />
+                <div className="space-y-8">
+                  {/* Customer Analytics Mode Switcher */}
+                  <div className="bg-white rounded-3xl p-3 shadow-md border border-brand-stone flex flex-col sm:flex-row items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 pl-3">
+                      <div className="w-8 h-8 rounded-xl bg-brand-red/10 flex items-center justify-center">
+                        <Users className="w-4 h-4 text-brand-red" />
                       </div>
-                      <h3 className="text-2xl font-black text-brand-brown uppercase italic mb-2 tracking-tighter">Customer <span className="text-brand-red">Network</span></h3>
-                      <p className="text-xs font-bold text-brand-brown/40 uppercase tracking-widest max-w-sm mx-auto">Select a profile to view deep insights, or analyze the cohort performance below.</p>
+                      <div>
+                        <h4 className="text-xs font-black text-brand-brown uppercase tracking-wider">
+                          Customer Network Intelligence
+                        </h4>
+                        <p className="text-[10px] font-bold text-brand-brown/50 uppercase tracking-widest">
+                          Active MAU Pie vs Cohort LTV Distributions
+                        </p>
+                      </div>
                     </div>
 
-                    <div className="pt-8 border-t border-brand-stone space-y-12">
-                      <CustomerHistogram customers={filteredCustomers} />
+                    <div className="flex items-center gap-1.5 bg-brand-brown/5 p-1.5 rounded-2xl w-full sm:w-auto">
+                      <button
+                        type="button"
+                        onClick={() => setCustomerNetworkTab('mau')}
+                        className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
+                          customerNetworkTab === 'mau'
+                            ? 'bg-brand-brown text-brand-yellow shadow-md scale-[1.02]'
+                            : 'text-brand-brown/60 hover:text-brand-brown hover:bg-brand-brown/5'
+                        }`}
+                      >
+                        <Zap className="w-3.5 h-3.5 text-brand-yellow" />
+                        <span>90-Day Active MAU Base</span>
+                        <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded-md bg-brand-yellow/20 text-brand-yellow font-black">
+                          {customerOverview.mauPct.toFixed(0)}% PIE
+                        </span>
+                      </button>
 
-                      <CohortRetentionChart 
-                        data={displayCohortData} 
-                        onSelectPeriod={(key) => {
-                          setCompositionPeriod(key);
-                        }}
-                        selectedPeriodKey={compositionPeriod}
-                      />
-
-                      <OrderIntervalChart data={displayCohortData} />
-
-                      {compositionPeriod && (
-                        <div className="space-y-4">
-                           <div className="flex items-center justify-between px-2">
-                             <div className="flex items-center gap-2">
-                               <TrendingUpIcon className="w-4 h-4 text-brand-red" />
-                               <h4 className="text-xs font-black uppercase text-brand-brown tracking-widest">Selected Week Breakdown</h4>
-                             </div>
-                             <button 
-                               onClick={() => setCompositionPeriod(null)}
-                               className="text-[9px] font-black uppercase text-brand-red hover:underline"
-                             >
-                               Clear Selection
-                             </button>
-                           </div>
-                           <CohortCompositionChart 
-                              data={cohortRawData} 
-                              targetPeriod={compositionPeriod} 
-                              granularity={compositionPeriod.includes('W') ? 'WEEK' : 'MONTH'} 
-                           />
-                        </div>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => setCustomerNetworkTab('cohort')}
+                        className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
+                          customerNetworkTab === 'cohort'
+                            ? 'bg-brand-brown text-brand-yellow shadow-md scale-[1.02]'
+                            : 'text-brand-brown/60 hover:text-brand-brown hover:bg-brand-brown/5'
+                        }`}
+                      >
+                        <TrendingUpIcon className="w-3.5 h-3.5" />
+                        <span>Cohort & LTV Distribution</span>
+                      </button>
                     </div>
                   </div>
+
+                  {/* Active Sub-View */}
+                  {customerNetworkTab === 'mau' ? (
+                    <MauTrackingView 
+                      customers={customers}
+                      allOrders={allOrdersRaw.length > 0 ? allOrdersRaw : orders}
+                      onSelectCustomer={setActiveCustomer}
+                    />
+                  ) : (
+                    <div className="bg-white rounded-[2.5rem] p-10 shadow-xl border border-brand-stone space-y-12">
+                      <div className="flex flex-col items-center justify-center text-center">
+                        <div className="w-20 h-20 bg-brand-brown/5 rounded-full flex items-center justify-center mb-6">
+                          <Users className="w-10 h-10 text-brand-brown/20" />
+                        </div>
+                        <h3 className="text-2xl font-black text-brand-brown uppercase italic mb-2 tracking-tighter">Customer <span className="text-brand-red">Network</span></h3>
+                        <p className="text-xs font-bold text-brand-brown/40 uppercase tracking-widest max-w-sm mx-auto">Select a profile to view deep insights, or analyze the cohort performance below.</p>
+                      </div>
+
+                      <div className="pt-8 border-t border-brand-stone space-y-12">
+                        <CustomerHistogram 
+                          customers={filteredCustomers} 
+                          allCustomers={customers} 
+                          allOrders={allOrdersRaw.length > 0 ? allOrdersRaw : orders}
+                          customerOrderStats={customerOrderStats}
+                        />
+
+                        <CohortRetentionChart 
+                          data={displayCohortData} 
+                          onSelectPeriod={(key) => {
+                            setCompositionPeriod(key);
+                          }}
+                          selectedPeriodKey={compositionPeriod}
+                        />
+
+                        <OrderIntervalChart data={displayCohortData} />
+
+                        {compositionPeriod && (
+                          <div className="space-y-4">
+                             <div className="flex items-center justify-between px-2">
+                               <div className="flex items-center gap-2">
+                                 <TrendingUpIcon className="w-4 h-4 text-brand-red" />
+                                 <h4 className="text-xs font-black uppercase text-brand-brown tracking-widest">Selected Week Breakdown</h4>
+                               </div>
+                               <button 
+                                 onClick={() => setCompositionPeriod(null)}
+                                 className="text-[9px] font-black uppercase text-brand-red hover:underline"
+                               >
+                                 Clear Selection
+                               </button>
+                             </div>
+                             <CohortCompositionChart 
+                                data={cohortRawData} 
+                                targetPeriod={compositionPeriod} 
+                                granularity={compositionPeriod.includes('W') ? 'WEEK' : 'MONTH'} 
+                             />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -4686,6 +5523,314 @@ BENEFITS:
                 className="px-6 py-2.5 bg-brand-red text-white hover:bg-brand-red/90 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95"
               >
                 Generate Snapshot
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add-On & Drink Attach Rate Details Modal */}
+      {isAddonModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-6 lg:p-10 animate-in fade-in duration-200">
+          <div 
+            className="absolute inset-0 bg-brand-brown/80 backdrop-blur-md" 
+            onClick={() => setIsAddonModalOpen(false)} 
+          />
+          <div className="relative bg-white w-full max-w-3xl max-h-[90vh] rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col border border-brand-stone animate-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="bg-[#0f6b4f] p-6 lg:p-8 text-white flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[9px] font-black uppercase tracking-widest bg-white/20 px-2.5 py-0.5 rounded-full text-emerald-200">
+                    ATTACH RATE INTELLIGENCE
+                  </span>
+                  <span className="text-[9px] font-bold text-white/60">
+                    {financialData.combinedOrdersCount} Commercial Orders
+                  </span>
+                </div>
+                <h3 className="text-xl lg:text-2xl font-black text-white tracking-tight">
+                  Add-On &amp; Drink Attach Rate Breakdown
+                </h3>
+                <p className="text-[10px] font-bold text-white/70 uppercase tracking-wider mt-0.5">
+                  Channel splits • Packaged vs Fresh handcrafted drinks
+                </p>
+              </div>
+              <button 
+                onClick={() => setIsAddonModalOpen(false)} 
+                className="p-2.5 bg-white/10 hover:bg-white/20 rounded-full transition-colors text-white"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-y-auto p-6 lg:p-8 space-y-6 no-scrollbar bg-[#faf8f5]">
+              {/* Section 1: Add-On Orders by Channel */}
+              <div className="bg-white rounded-3xl p-6 border border-brand-stone shadow-sm">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4 pb-3 border-b border-brand-stone">
+                  <div>
+                    <h4 className="text-sm font-black uppercase text-brand-brown tracking-wider flex items-center gap-1.5">
+                      <span>✨</span> Add-On Orders Attachment
+                    </h4>
+                    <p className="text-[10px] font-bold text-brand-brown/50 uppercase tracking-wider mt-0.5">
+                      Percentage of orders containing special add-on items or upsells
+                    </p>
+                  </div>
+                  <div className="flex items-baseline gap-2 bg-[#0f6b4f]/10 px-4 py-2 rounded-2xl border border-[#0f6b4f]/20">
+                    <span className="text-2xl font-black text-[#0f6b4f]">
+                      {financialData.addonPercent.toFixed(1)}%
+                    </span>
+                    <span className="text-xs font-bold text-brand-brown/60">
+                      ({financialData.addonOrdersCount} of {financialData.combinedOrdersCount} orders)
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="bg-brand-brown/5 rounded-2xl p-4 border border-brand-stone flex flex-col justify-between">
+                    <div>
+                      <span className="text-[9px] font-black uppercase text-brand-brown/60 tracking-wider">🥡 Takeaway Add-on</span>
+                      <p className="text-2xl font-black text-brand-brown mt-1">
+                        {financialData.takeawayAddonPercent.toFixed(1)}%
+                      </p>
+                    </div>
+                    <p className="text-[10px] font-bold text-brand-brown/50 mt-2">
+                      {financialData.takeawayAddonOrders} of {financialData.takeawayOrdersCount} takeaway orders
+                    </p>
+                  </div>
+
+                  <div className="bg-brand-brown/5 rounded-2xl p-4 border border-brand-stone flex flex-col justify-between">
+                    <div>
+                      <span className="text-[9px] font-black uppercase text-brand-brown/60 tracking-wider">🍽️ Dine-In Add-on</span>
+                      <p className="text-2xl font-black text-brand-brown mt-1">
+                        {financialData.dineInAddonPercent.toFixed(1)}%
+                      </p>
+                    </div>
+                    <p className="text-[10px] font-bold text-brand-brown/50 mt-2">
+                      {financialData.dineInAddonOrders} of {financialData.dineInOrdersCount} dine-in orders
+                    </p>
+                  </div>
+
+                  <div className="bg-brand-brown/5 rounded-2xl p-4 border border-brand-stone flex flex-col justify-between">
+                    <div>
+                      <span className="text-[9px] font-black uppercase text-brand-brown/60 tracking-wider">🛵 Delivery Add-on</span>
+                      <p className="text-2xl font-black text-brand-brown mt-1">
+                        {financialData.deliveryAddonPercent.toFixed(1)}%
+                      </p>
+                    </div>
+                    <p className="text-[10px] font-bold text-brand-brown/50 mt-2">
+                      {financialData.deliveryAddonOrders} of {financialData.deliveryOrdersCount} delivery orders
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-4 pt-3 border-t border-brand-stone grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div className="flex items-center justify-between p-3 bg-amber-50/80 rounded-xl border border-amber-200">
+                    <span className="font-bold text-amber-900">In-Store / Offline (Dine-In + Takeaway):</span>
+                    <span className="font-black text-amber-950">
+                      {financialData.offlineAddonPercent.toFixed(1)}% ({financialData.offlineAddonOrdersCount}/{financialData.offlineOrdersCount})
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between p-3 bg-orange-50/80 rounded-xl border border-orange-200">
+                    <span className="font-bold text-orange-900">Online Channel (Delivery):</span>
+                    <span className="font-black text-orange-950">
+                      {financialData.onlineAddonPercent.toFixed(1)}% ({financialData.onlineAddonOrdersCount}/{financialData.onlineOrdersCount})
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 2: Packaged vs Fresh Drink Attach Rate */}
+              <div className="bg-white rounded-3xl p-6 border border-brand-stone shadow-sm">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4 pb-3 border-b border-brand-stone">
+                  <div>
+                    <h4 className="text-sm font-black uppercase text-brand-brown tracking-wider flex items-center gap-1.5">
+                      <span>🥤</span> Drink Attach Rate (Total)
+                    </h4>
+                    <p className="text-[10px] font-bold text-brand-brown/50 uppercase tracking-wider mt-0.5">
+                      Bills containing at least one beverage (Packaged or Fresh)
+                    </p>
+                  </div>
+                  <div className="flex items-baseline gap-2 bg-blue-50 px-4 py-2 rounded-2xl border border-blue-200">
+                    <span className="text-2xl font-black text-blue-900">
+                      {financialData.overallDrinkAttachPercent.toFixed(1)}%
+                    </span>
+                    <span className="text-xs font-bold text-blue-700">
+                      ({financialData.drinkOrdersCount} of {financialData.combinedOrdersCount} orders)
+                    </span>
+                  </div>
+                </div>
+
+                {/* 2 Featured Breakdown Cards: Packaged vs Fresh */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* Packaged Drinks Card */}
+                  <div className="bg-amber-50/70 border-2 border-amber-300 rounded-3xl p-5 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-xs font-black uppercase tracking-wider text-amber-900 flex items-center gap-1">
+                          🍾 Packaged Drinks
+                        </span>
+                        <span className="text-[9px] font-bold bg-amber-200/70 text-amber-950 px-2.5 py-0.5 rounded-full">
+                          Bottled &amp; Canned
+                        </span>
+                      </div>
+                      <div className="flex items-baseline gap-2 mt-2">
+                        <span className="text-3xl font-black text-amber-950 tracking-tight">
+                          {financialData.packagedDrinkAttachPercent.toFixed(1)}%
+                        </span>
+                        <span className="text-xs font-bold text-amber-800">
+                          ({financialData.packagedDrinkOrdersCount} of {financialData.combinedOrdersCount} orders)
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-amber-900/80 font-medium mt-3 leading-relaxed">
+                        Pre-packaged packaged water, soda water, Campa Cola, Pepsi, Sprite, Coke, Fanta, and canned drinks.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Fresh / Non-Packaged Drinks Card */}
+                  <div className="bg-emerald-50/70 border-2 border-emerald-300 rounded-3xl p-5 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-xs font-black uppercase tracking-wider text-emerald-900 flex items-center gap-1">
+                          🍹 Fresh / In-House Drinks
+                        </span>
+                        <span className="text-[9px] font-bold bg-emerald-200/70 text-emerald-950 px-2.5 py-0.5 rounded-full">
+                          Handcrafted
+                        </span>
+                      </div>
+                      <div className="flex items-baseline gap-2 mt-2">
+                        <span className="text-3xl font-black text-emerald-950 tracking-tight">
+                          {financialData.nonPackagedDrinkAttachPercent.toFixed(1)}%
+                        </span>
+                        <span className="text-xs font-bold text-emerald-800">
+                          ({financialData.nonPackagedDrinkOrdersCount} of {financialData.combinedOrdersCount} orders)
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-emerald-900/80 font-medium mt-3 leading-relaxed">
+                        Handcrafted freshly prepared Virgin Mojitos, Mint Mojitos, Coolers, Lemonades, and Shakes.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 3: Channel-Wise Drink Attach Rates */}
+              <div className="bg-white rounded-3xl p-6 border border-brand-stone shadow-sm">
+                <div className="mb-4 pb-3 border-b border-brand-stone">
+                  <h4 className="text-sm font-black uppercase text-brand-brown tracking-wider flex items-center gap-1.5">
+                    <span>📊</span> Channel-Wise Drink Attach Rates
+                  </h4>
+                  <p className="text-[10px] font-bold text-brand-brown/50 uppercase tracking-wider mt-0.5">
+                    Takeaway vs Dine-In vs Delivery drink preferences
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Takeaway Channel */}
+                  <div className="bg-[#faf8f5] rounded-2xl p-4 border border-brand-stone flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase text-brand-brown/70 tracking-wider">Takeaway</span>
+                        <span className="text-xs font-black text-[#0f6b4f]">
+                          {financialData.takeawayDrinkAttachPercent.toFixed(1)}% Total
+                        </span>
+                      </div>
+                      <p className="text-[10px] font-bold text-brand-brown/50 mt-0.5">
+                        {financialData.takeawayDrinkOrders} of {financialData.takeawayOrdersCount} orders
+                      </p>
+
+                      <div className="mt-3 pt-3 border-t border-brand-stone space-y-2">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-brand-brown/70 flex items-center gap-1">🍾 Packaged:</span>
+                          <span className="font-black text-brand-brown">
+                            {financialData.takeawayPackagedDrinkPercent.toFixed(1)}% <span className="text-[10px] font-bold text-brand-brown/50">({financialData.takeawayPackagedDrinkOrders})</span>
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-brand-brown/70 flex items-center gap-1">🍹 Fresh:</span>
+                          <span className="font-black text-emerald-700">
+                            {financialData.takeawayNonPackagedDrinkPercent.toFixed(1)}% <span className="text-[10px] font-bold text-brand-brown/50">({financialData.takeawayNonPackagedDrinkOrders})</span>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Dine-In Channel */}
+                  <div className="bg-[#faf8f5] rounded-2xl p-4 border border-brand-stone flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase text-brand-brown/70 tracking-wider">Dine-In</span>
+                        <span className="text-xs font-black text-[#0f6b4f]">
+                          {financialData.dineInDrinkAttachPercent.toFixed(1)}% Total
+                        </span>
+                      </div>
+                      <p className="text-[10px] font-bold text-brand-brown/50 mt-0.5">
+                        {financialData.dineInDrinkOrders} of {financialData.dineInOrdersCount} orders
+                      </p>
+
+                      <div className="mt-3 pt-3 border-t border-brand-stone space-y-2">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-brand-brown/70 flex items-center gap-1">🍾 Packaged:</span>
+                          <span className="font-black text-brand-brown">
+                            {financialData.dineInPackagedDrinkPercent.toFixed(1)}% <span className="text-[10px] font-bold text-brand-brown/50">({financialData.dineInPackagedDrinkOrders})</span>
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-brand-brown/70 flex items-center gap-1">🍹 Fresh:</span>
+                          <span className="font-black text-emerald-700">
+                            {financialData.dineInNonPackagedDrinkPercent.toFixed(1)}% <span className="text-[10px] font-bold text-brand-brown/50">({financialData.dineInNonPackagedDrinkOrders})</span>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Delivery Channel */}
+                  <div className="bg-[#faf8f5] rounded-2xl p-4 border border-brand-stone flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase text-brand-brown/70 tracking-wider">Delivery</span>
+                        <span className="text-xs font-black text-[#0f6b4f]">
+                          {financialData.deliveryDrinkAttachPercent.toFixed(1)}% Total
+                        </span>
+                      </div>
+                      <p className="text-[10px] font-bold text-brand-brown/50 mt-0.5">
+                        {financialData.deliveryDrinkOrders} of {financialData.deliveryOrdersCount} orders
+                      </p>
+
+                      <div className="mt-3 pt-3 border-t border-brand-stone space-y-2">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-brand-brown/70 flex items-center gap-1">🍾 Packaged:</span>
+                          <span className="font-black text-brand-brown">
+                            {financialData.deliveryPackagedDrinkPercent.toFixed(1)}% <span className="text-[10px] font-bold text-brand-brown/50">({financialData.deliveryPackagedDrinkOrders})</span>
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-brand-brown/70 flex items-center gap-1">🍹 Fresh:</span>
+                          <span className="font-black text-emerald-700">
+                            {financialData.deliveryNonPackagedDrinkPercent.toFixed(1)}% <span className="text-[10px] font-bold text-brand-brown/50">({financialData.deliveryNonPackagedDrinkOrders})</span>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="bg-white p-4 lg:p-6 border-t border-brand-stone flex items-center justify-between">
+              <p className="text-[10px] font-bold text-brand-brown/50">
+                Data dynamically calculated from {financialData.combinedOrdersCount} commercial orders in the active filter period.
+              </p>
+              <button 
+                onClick={() => setIsAddonModalOpen(false)}
+                className="px-6 py-2.5 bg-[#0f6b4f] hover:bg-[#0c563f] text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95"
+              >
+                Close
               </button>
             </div>
           </div>

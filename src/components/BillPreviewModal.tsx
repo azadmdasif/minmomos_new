@@ -51,6 +51,8 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
       getCustomerByPhone(customerPhone).then(setCustomer);
     } else if (!isOpen) {
       setCustomer(null);
+      setManualPrice('');
+      setManualDiscount('');
     }
   }, [isOpen, customerPhone]);
 
@@ -198,8 +200,8 @@ _Thank you for visiting MinMomos!_`;
         onConfirm(
           selectedMethod, 
           useBT, 
-          manualPrice ? parseFloat(manualPrice) : undefined, 
-          manualDiscount ? parseFloat(manualDiscount) : undefined
+          orderType === 'DELIVERY' && manualPrice ? parseFloat(manualPrice) : undefined, 
+          orderType === 'DELIVERY' && manualDiscount ? parseFloat(manualDiscount) : undefined
         );
     }
   };
@@ -269,7 +271,17 @@ _Thank you for visiting MinMomos!_`;
                 </div>
 
                 {/* Coupon Redemption Area */}
-                {customer && !isHistoryView && !orderItems.some(i => i.id === 'loyalty-discount') && (() => {
+                {customer && !isHistoryView && !orderItems.some(i => 
+                  i.id === 'loyalty-discount' ||
+                  i.id === 'referral-discount' ||
+                  i.id === 'student-gang-discount' ||
+                  i.id === 'welcome-discount' ||
+                  i.id === 'promo-mojito' ||
+                  Boolean(i.id && i.id.startsWith('custom-discount-')) ||
+                  Boolean(i.id && i.id.startsWith('promo-discount-')) ||
+                  i.menuItemId === 'discount' ||
+                  (i.price < 0 && !i.id?.startsWith('free-gift-'))
+                ) && (() => {
                   const isStudent = customer.note === 'STUDENT' || customer.note?.startsWith('STUDENT|');
                   const count = customer.totalOrders;
                   let loyalty = null;
@@ -295,6 +307,20 @@ _Thank you for visiting MinMomos!_`;
                         
                         <button 
                           onClick={() => {
+                            const hasOtherCoupon = orderItems.some(i => 
+                              i.id === 'referral-discount' ||
+                              i.id === 'student-gang-discount' ||
+                              i.id === 'welcome-discount' ||
+                              i.id === 'promo-mojito' ||
+                              Boolean(i.id && i.id.startsWith('custom-discount-')) ||
+                              Boolean(i.id && i.id.startsWith('promo-discount-')) ||
+                              i.menuItemId === 'discount' ||
+                              (i.price < 0 && !i.id?.startsWith('free-gift-'))
+                            );
+                            if (hasOtherCoupon) {
+                              alert("Two coupons cannot be combined. Remove the existing coupon first.");
+                              return;
+                            }
                             const subtotal = orderItems.reduce((acc, i) => acc + (i.price > 0 && !i.paidWithCoins ? i.price * i.quantity : 0), 0);
                             if (subtotal > 0 && loyalty) {
                                onAddItem([{
@@ -546,8 +572,8 @@ _Thank you for visiting MinMomos!_`;
                   selectedMethod && onConfirm(
                     selectedMethod, 
                     false,
-                    manualPrice ? parseFloat(manualPrice) : undefined, 
-                    manualDiscount ? parseFloat(manualDiscount) : undefined
+                    orderType === 'DELIVERY' && manualPrice ? parseFloat(manualPrice) : undefined, 
+                    orderType === 'DELIVERY' && manualDiscount ? parseFloat(manualDiscount) : undefined
                   );
                 }} 
                 disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !hasSufficientCoins}
@@ -570,8 +596,8 @@ _Thank you for visiting MinMomos!_`;
                 selectedMethod && onConfirm(
                   selectedMethod, 
                   true,
-                  manualPrice ? parseFloat(manualPrice) : undefined, 
-                  manualDiscount ? parseFloat(manualDiscount) : undefined
+                  orderType === 'DELIVERY' && manualPrice ? parseFloat(manualPrice) : undefined, 
+                  orderType === 'DELIVERY' && manualDiscount ? parseFloat(manualDiscount) : undefined
                 );
               }} 
               disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !isPrinterConnected || !hasSufficientCoins}

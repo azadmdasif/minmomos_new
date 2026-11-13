@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import { assistantTools, executeReadOnlyTool, handleLocalQueryFallback } from './server/aiAssistant';
 
 dotenv.config();
 
@@ -412,6 +413,136 @@ Return ONLY a valid JSON object:
   } catch (err: any) {
     console.error('Error screening candidate:', err);
     return res.status(500).json({ error: 'Failed to screen candidate' });
+  }
+});
+
+// -------------------------------------------------------------------------
+// AI Assistant API (MomoMind) - STRICTLY READ-ONLY FOR ADMIN & COFOUNDERS
+// -------------------------------------------------------------------------
+app.post('/api/assistant/chat', async (req: Request, res: Response) => {
+  try {
+    const { messages, userRole, prompt } = req.body;
+
+    // Strict Role Enforcement: Only ADMIN and COFOUNDER
+    if (userRole !== 'ADMIN' && userRole !== 'COFOUNDER') {
+      return res.status(403).json({
+        error: 'Access Denied: The AI Assistant is exclusively reserved for Admin and Cofounder roles.'
+      });
+    }
+
+    const latestPrompt = prompt || (messages && messages.length > 0 ? messages[messages.length - 1].content : '');
+    if (!latestPrompt || typeof latestPrompt !== 'string') {
+      return res.status(400).json({ error: 'Message prompt is required.' });
+    }
+
+    // Strict Guardrail: Immediately reject any write, delete, update, or code-modification attempts
+    const forbiddenWriteRegex = /\b(insert\s+into|update\s+[a-z_]+|delete\s+from|drop\s+table|alter\s+table|create\s+table|truncate|grant|revoke|write\s+file|modify\s+code|change\s+code|delete\s+order|void\s+bill)\b/i;
+    if (forbiddenWriteRegex.test(latestPrompt)) {
+      return res.json({
+        reply: `🛡️ **Security Policy Enforcement**\n\nThe MinMomos AI Assistant is bound by an immutable **read-only policy**. Write actions, code alterations, database updates, and record deletions are permanently prohibited. I am here to analyze, query, and explain your restaurant data.`,
+        readOnlyBlocked: true
+      });
+    }
+
+    // If Gemini client is not initialized, use the live read-only Supabase NLP engine
+    if (!aiClient) {
+      const fallbackReply = await handleLocalQueryFallback(latestPrompt);
+      return res.json({
+        reply: fallbackReply,
+        isFallback: true,
+        notice: 'Live Read-Only Supabase Engine Active'
+      });
+    }
+
+    const systemInstruction = `You are MomoMind, the executive AI Business Intelligence Co-Pilot for MinMomos (The Ultimate Momo Station).
+You are consulting directly with a verified ${userRole === 'COFOUNDER' ? 'Cofounder' : 'Executive Admin'}.
+
+CRITICAL SECURITY AND OPERATIONAL MANDATES:
+1. You have STRICTLY READ-ONLY ACCESS to the live Supabase database.
+2. NEVER perform, simulate, or pretend to perform write actions, order changes, code changes, deletions, or data modifications. If asked, politely refuse and emphasize your strict read-only mandate.
+3. You have powerful read-only tools to fetch live sales metrics, best-selling menu items, customer analytics (90-day MAU, LTV, dormancy), inventory stock levels, and query allowed database tables.
+4. When asked about revenue, sales, bestselling items, customer retention, or stock, ALWAYS call the appropriate tool to fetch exact numbers.
+5. Present answers with crisp formatting: use bolding, currency in Indian Rupees (₹), bullet points, and actionable operational insights.
+6. Be friendly, energetic, highly intelligent, and focused on maximizing MinMomos profitability and customer happiness.`;
+
+    const contents: any[] = [];
+    if (Array.isArray(messages) && messages.length > 0) {
+      const recent = messages.slice(-6);
+      for (const m of recent) {
+        contents.push({
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: m.content }]
+        });
+      }
+    } else {
+      contents.push({
+        role: 'user',
+        parts: [{ text: latestPrompt }]
+      });
+    }
+
+    // Call Gemini with tools
+    let response = await aiClient.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents,
+      config: {
+        systemInstruction,
+        tools: assistantTools as any,
+        temperature: 0.4
+      }
+    });
+
+    // Handle tool invocations in a loop
+    let loopCount = 0;
+    while (response.functionCalls && response.functionCalls.length > 0 && loopCount < 3) {
+      loopCount++;
+      const call = response.functionCalls[0];
+      let toolResult: any;
+      try {
+        toolResult = await executeReadOnlyTool(call.name || '', call.args);
+      } catch (err: any) {
+        toolResult = { error: err.message };
+      }
+
+      const assistantContent = response.candidates?.[0]?.content;
+      if (assistantContent) {
+        contents.push(assistantContent);
+      }
+
+      contents.push({
+        role: 'user',
+        parts: [
+          {
+            functionResponse: {
+              name: call.name,
+              response: { result: toolResult },
+              id: (call as any).id
+            }
+          }
+        ]
+      });
+
+      response = await aiClient.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents,
+        config: {
+          systemInstruction,
+          tools: assistantTools as any,
+          temperature: 0.4
+        }
+      });
+    }
+
+    const finalAnswer = response.text || (await handleLocalQueryFallback(latestPrompt));
+    return res.json({ reply: finalAnswer, isFallback: false });
+  } catch (err: any) {
+    console.error('AI Assistant API error:', err);
+    try {
+      const fallback = await handleLocalQueryFallback(req.body.prompt || req.body.messages?.[req.body.messages.length - 1]?.content || '');
+      return res.json({ reply: fallback, isFallback: true, errorNotice: err?.message });
+    } catch (innerErr) {
+      return res.status(500).json({ error: 'Failed to process assistant query.' });
+    }
   }
 });
 

@@ -188,6 +188,7 @@ export interface AddonEngineConfig {
   DECLINE_COOLDOWN_DAYS: number; // default 14
   DECLINE_PENALTY_FACTOR: number; // default 0.4
   EXPOSURE_CAP_RATIO: number; // default 0.40 (max 40% in rolling 7 days)
+  PRICE_CAP_RATIO: number; // default 0.25 (25% cart value limit)
 }
 
 export const DEFAULT_ADDON_CONFIG: AddonEngineConfig = {
@@ -201,4 +202,5 @@ export const DEFAULT_ADDON_CONFIG: AddonEngineConfig = {
   DECLINE_COOLDOWN_DAYS: 14,
   DECLINE_PENALTY_FACTOR: 0.4,
   EXPOSURE_CAP_RATIO: 0.40,
+  PRICE_CAP_RATIO: 0.25,
 };

@@ -15,6 +15,7 @@ import DailyOperations from './components/DailyOperations';
 import { MinSlack } from './components/minslack/MinSlack';
 import { AtsView } from './components/ats/AtsView';
 import { AddonLearningDashboard } from './components/AddonLearningDashboard';
+import { AiAssistant } from './components/AiAssistant';
 import { getCurrentUser, setCurrentUser } from './utils/storage';
 import { User } from './types';
 
@@ -62,6 +63,9 @@ function App() {
         {view === 'ats' && (user.role === 'ADMIN' || user.role === 'COFOUNDER' || user.role === 'HR') && <AtsView user={user} />}
         {view === 'addon_ml' && <AddonLearningDashboard />}
       </main>
+
+      {/* Floating Draggable AI Assistant (Admin & Cofounders Only) */}
+      {(user.role === 'ADMIN' || user.role === 'COFOUNDER') && <AiAssistant user={user} />}
     </div>
   );
 }

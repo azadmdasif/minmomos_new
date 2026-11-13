@@ -381,8 +381,8 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
         method, 
         undefined,
         customerPhone,
-        manualTotal,
-        manualDiscount,
+        orderType === 'DELIVERY' ? manualTotal : undefined,
+        orderType === 'DELIVERY' ? manualDiscount : undefined,
         user.id,
         user.username
       );

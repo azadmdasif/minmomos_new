@@ -127,9 +127,9 @@ export function runAddonSimulation(cartCount: number = 1000): SimulationResult {
     else if (offer.impression?.source === 'pinned') pinnedCount++;
     else thompsonCount++;
 
-    // 1. INVARIANT CHECK: 20% Cart Price Ceiling
-    // Floor is 15 for cart <= 75; otherwise strictly <= 20%
-    const maxAllowed = cartTotal <= 75 ? 15 : Math.round(cartTotal * 0.20);
+    // 1. INVARIANT CHECK: 25% Cart Price Ceiling
+    // Floor is 15 for cart <= 60; otherwise strictly <= 25%
+    const maxAllowed = cartTotal <= 60 ? 15 : Math.round(cartTotal * 0.25);
     if (offer.price > maxAllowed) {
       under20PctViolations++;
     }

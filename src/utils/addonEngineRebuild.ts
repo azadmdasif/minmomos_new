@@ -13,7 +13,7 @@ import {
 } from '../types/addonEngine';
 import { CompletedOrder } from '../types';
 import { 
-  getAllStoredImpressions, 
+  fetchAndSyncAllImpressions,
   saveAddonStatsSnapshot, 
   saveCustomerAddonProfiles, 
   getAddonEngineConfig
@@ -375,7 +375,7 @@ export function rebuildAddonEngineStats(
  * Execute full rebuild using current storage records
  */
 export async function runFullOfflineRebuild(): Promise<AddonEngineStatsSnapshot> {
-  const impressions = getAllStoredImpressions();
+  const impressions = await fetchAndSyncAllImpressions();
   const end = new Date().toISOString().split('T')[0];
   const start = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const orders = await getOrdersForDateRange(start, end);

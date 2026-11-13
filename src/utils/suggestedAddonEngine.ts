@@ -574,8 +574,8 @@ export function determineWeekday(date: Date = new Date()): Weekday {
 export function getEligibleTargetPrices(total: number): { price: number; is50Multiple: boolean }[] {
   if (total <= 0) return [{ price: 15, is50Multiple: false }];
 
-  // Rule 1: strictly under 20% of cart value (minimum floor of 15 for low cart values <= 75)
-  const maxPrice = total <= 75 ? 15 : Math.round(total * 0.20);
+  // Rule 1: strictly under 25% of cart value (minimum floor of 15 for low cart values <= 60)
+  const maxPrice = total <= 60 ? 15 : Math.round(total * 0.25);
   const results: { price: number; is50Multiple: boolean }[] = [];
 
   // Check 50-multiple gap
@@ -634,11 +634,12 @@ export function generateDynamicAddonOffer(
   const weekday = determineWeekday(now);
 
   // 1. DETERMINISTIC LAYER: HARD CONSTRAINTS
-  // Rule 1: The add-on price MUST NOT exceed the 20% threshold of cart value!
-  // And proximity to 20% is TOP PRIORITY.
-  const target20Price = roundedTotal * 0.20;
-  // Floor to whole rupees, ensuring add-on price strictly <= 20% of cart total
-  const maxAllowedPrice = Math.max(10, Math.floor(target20Price));
+  // Rule 1: The add-on price MUST NOT exceed the 25% threshold of cart value!
+  // And proximity to 25% is TOP PRIORITY.
+  const priceCapRatio = config.PRICE_CAP_RATIO || 0.25;
+  const target25Price = roundedTotal * priceCapRatio;
+  // Floor to whole rupees, ensuring add-on price strictly <= 25% of cart total
+  const maxAllowedPrice = Math.max(10, Math.floor(target25Price));
 
   // Analyze Cart Composition
   const cartNames = cartItems.map(i => (i.name || '').toLowerCase()).join(' ');
@@ -972,9 +973,8 @@ export function generateDynamicAddonOffer(
     }
   }
 
-  // TOP PRIORITY: Proximity to 20% of Cart Value!
-  // "make sure that the recommended values ia as close to 20% of the cart value as possible. that should be the priority. but it should not exceel the 20% threshold."
-  // Filter candidate pool to the highest price tier available <= 20% cap.
+  // TOP PRIORITY: Proximity to 25% of Cart Value!
+  // Filter candidate pool to the highest price tier available <= 25% cap.
   const maxFeasiblePrice = Math.max(...validCandidates.map(c => c.price));
   const topProximityCandidates = validCandidates.filter(c => c.price >= maxFeasiblePrice - 5);
   if (topProximityCandidates.length > 0) {
@@ -1130,8 +1130,8 @@ export function generateDynamicAddonOffer(
     if (targetSum % 50 === 0) roundBonus = 1.25;
     else if (targetSum % 10 === 0) roundBonus = 1.12;
 
-    // Top Priority: Proximity to 20% cart value
-    const proximityRatio = Math.min(1.0, candidate.price / Math.max(1, target20Price));
+    // Top Priority: Proximity to 25% cart value
+    const proximityRatio = Math.min(1.0, candidate.price / Math.max(1, target25Price));
     const proximityBonus = Math.pow(proximityRatio, 3);
 
     const score = pSample * grossProfit * softMarginPenalty * cooldownFactor * exposureFactor * roundBonus * proximityBonus;

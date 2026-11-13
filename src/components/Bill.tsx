@@ -86,6 +86,31 @@ const Bill: React.FC<BillProps> = ({
   const [couponSuccessMessage, setCouponSuccessMessage] = React.useState<string | null>(null);
   const [isApplyingCoupon, setIsApplyingCoupon] = React.useState(false);
 
+  // Helper: check if an item is a coupon/discount item
+  const isCouponOrDiscountItem = (item: { id?: string; menuItemId?: string; price: number; name?: string }) => {
+    if (!item) return false;
+    return (
+      item.id === 'loyalty-discount' ||
+      item.id === 'referral-discount' ||
+      item.id === 'student-gang-discount' ||
+      item.id === 'welcome-discount' ||
+      item.id === 'promo-mojito' ||
+      Boolean(item.id && item.id.startsWith('custom-discount-')) ||
+      Boolean(item.id && item.id.startsWith('promo-discount-')) ||
+      item.menuItemId === 'discount' ||
+      (item.price < 0 && !item.id?.startsWith('free-gift-'))
+    );
+  };
+
+  // Helper: remove other active coupons/discounts so two coupons can NEVER be combined
+  const clearOtherDiscounts = (excludeId?: string) => {
+    orderItems.forEach(i => {
+      if (isCouponOrDiscountItem(i) && i.id !== excludeId) {
+        onUpdateQuantity(i.id, 0);
+      }
+    });
+  };
+
   const referralDiscountItem = orderItems.find(i => i.id === 'referral-discount');
   const hasGangDiscount = orderItems.some(i => i.id === 'student-gang-discount');
 
@@ -94,8 +119,14 @@ const Bill: React.FC<BillProps> = ({
     const referralItem = orderItems.find(i => i.id === 'referral-discount');
     if (!referralItem) return;
 
+    // Strict single-coupon enforcement: remove any accidental stacked discounts
+    const stacked = orderItems.filter(i => i.id !== 'referral-discount' && isCouponOrDiscountItem(i));
+    if (stacked.length > 0) {
+      stacked.forEach(d => onUpdateQuantity(d.id, 0));
+    }
+
     const baseSubtotal = orderItems
-      .filter(i => i.id !== 'referral-discount' && !i.id.startsWith('loyalty-discount') && !i.id.startsWith('free-gift-') && !i.id.startsWith('custom-discount-') && i.price > 0)
+      .filter(i => !isCouponOrDiscountItem(i) && i.price > 0)
       .reduce((acc, i) => acc + i.price * i.quantity, 0);
 
     const expectedDiscount = -Math.min(100, Math.round(baseSubtotal * 0.5));
@@ -115,8 +146,14 @@ const Bill: React.FC<BillProps> = ({
     const gangItem = orderItems.find(i => i.id === 'student-gang-discount');
     if (!gangItem) return;
 
+    // Strict single-coupon enforcement: remove any accidental stacked discounts
+    const stacked = orderItems.filter(i => i.id !== 'student-gang-discount' && isCouponOrDiscountItem(i));
+    if (stacked.length > 0) {
+      stacked.forEach(d => onUpdateQuantity(d.id, 0));
+    }
+
     const baseSubtotal = orderItems
-      .filter(i => i.id !== 'student-gang-discount' && i.id !== 'referral-discount' && !i.id.startsWith('loyalty-discount') && !i.id.startsWith('free-gift-') && !i.id.startsWith('custom-discount-') && i.price > 0)
+      .filter(i => !isCouponOrDiscountItem(i) && i.price > 0)
       .reduce((acc, i) => acc + i.price * i.quantity, 0);
 
     const expectedDiscount = -Math.min(200, Math.round(baseSubtotal * 0.50));
@@ -125,6 +162,33 @@ const Bill: React.FC<BillProps> = ({
     } else if (Math.abs(gangItem.price - expectedDiscount) > 0.01) {
       onAddItem([{
         ...gangItem,
+        price: expectedDiscount,
+        quantity: 1
+      }]);
+    }
+  }, [orderItems, onAddItem, onUpdateQuantity]);
+
+  // Auto-recalculate Welcome 15% discount whenever standard subtotal changes
+  React.useEffect(() => {
+    const welcomeItem = orderItems.find(i => i.id === 'welcome-discount');
+    if (!welcomeItem) return;
+
+    // Strict single-coupon enforcement: remove any accidental stacked discounts
+    const stacked = orderItems.filter(i => i.id !== 'welcome-discount' && isCouponOrDiscountItem(i));
+    if (stacked.length > 0) {
+      stacked.forEach(d => onUpdateQuantity(d.id, 0));
+    }
+
+    const baseSubtotal = orderItems
+      .filter(i => !isCouponOrDiscountItem(i) && i.price > 0)
+      .reduce((acc, i) => acc + i.price * i.quantity, 0);
+
+    const expectedDiscount = -Math.round(baseSubtotal * 0.15);
+    if (baseSubtotal <= 0) {
+      onUpdateQuantity('welcome-discount', 0);
+    } else if (Math.abs(welcomeItem.price - expectedDiscount) > 0.01) {
+      onAddItem([{
+        ...welcomeItem,
         price: expectedDiscount,
         quantity: 1
       }]);
@@ -144,6 +208,9 @@ const Bill: React.FC<BillProps> = ({
     setCouponSuccessMessage(null);
     setIsApplyingCoupon(true);
 
+    const hadStudentDiscount = orderItems.some(i => i.id === 'loyalty-discount' && (i.name.includes('Student') || customer?.note?.includes('STUDENT')));
+    const hadOtherCoupon = orderItems.some(i => isCouponOrDiscountItem(i));
+
     try {
       // 1. Check if it's a Student Gang Coupon (starts with GANG- or registered gang coupon)
       if (cleanCode.startsWith('GANG-')) {
@@ -154,9 +221,12 @@ const Bill: React.FC<BillProps> = ({
           return;
         }
 
+        // Remove any other coupon/discount so two coupons can never be combined
+        clearOtherDiscounts('student-gang-discount');
+
         setGangModalInitialCode(cleanCode);
         setShowGangModal(true);
-        setCouponSuccessMessage(`Student Gang Coupon recognized! Enlist 3+ gang members to claim Flat 50% off (up to ₹200).`);
+        setCouponSuccessMessage(`Student Gang Coupon recognized! Enlist 3+ gang members to claim Flat 50% off (up to ₹200).${hadStudentDiscount ? ' (Student discount replaced — two coupons cannot be combined)' : ''}`);
         setIsApplyingCoupon(false);
         return;
       }
@@ -177,7 +247,7 @@ const Bill: React.FC<BillProps> = ({
         }
 
         const standardSubtotal = orderItems
-          .filter(i => i.id !== 'referral-discount' && !i.id.startsWith('loyalty-discount') && !i.id.startsWith('free-gift-') && !i.id.startsWith('custom-discount-') && i.price > 0)
+          .filter(i => !isCouponOrDiscountItem(i) && i.price > 0)
           .reduce((acc, i) => acc + i.price * i.quantity, 0);
 
         if (standardSubtotal <= 0) {
@@ -185,6 +255,9 @@ const Bill: React.FC<BillProps> = ({
           setIsApplyingCoupon(false);
           return;
         }
+
+        // CRITICAL: Remove student discount, loyalty discount, or any other coupon so two coupons NEVER combine!
+        clearOtherDiscounts('referral-discount');
 
         const discountAmt = Math.min(100, Math.round(standardSubtotal * 0.5));
         onAddItem([{
@@ -197,7 +270,10 @@ const Bill: React.FC<BillProps> = ({
         }]);
 
         setCouponInputCode('');
-        setCouponSuccessMessage(`Referral discount applied! Saved ₹${discountAmt}.`);
+        const comboNotice = hadStudentDiscount 
+          ? ' (10% Student discount removed — two coupons cannot be combined).'
+          : (hadOtherCoupon ? ' (Previous coupon removed — two coupons cannot be combined).' : '.');
+        setCouponSuccessMessage(`Referral discount applied! Saved ₹${discountAmt}${comboNotice}`);
         setIsApplyingCoupon(false);
         return;
       }
@@ -205,9 +281,10 @@ const Bill: React.FC<BillProps> = ({
       // 3. Fallback: try checking gang validation in DB / local storage
       const gangCheck = await validateGangCoupon(cleanCode);
       if (gangCheck.valid) {
+        clearOtherDiscounts('student-gang-discount');
         setGangModalInitialCode(cleanCode);
         setShowGangModal(true);
-        setCouponSuccessMessage(`Student Gang Coupon recognized! Enlist 3+ gang members to claim Flat 50% off (up to ₹200).`);
+        setCouponSuccessMessage(`Student Gang Coupon recognized! Enlist 3+ gang members to claim Flat 50% off (up to ₹200).${hadStudentDiscount ? ' (Student discount replaced — two coupons cannot be combined)' : ''}`);
         setIsApplyingCoupon(false);
         return;
       }
@@ -217,7 +294,7 @@ const Bill: React.FC<BillProps> = ({
         const refCheck = await validateReferralCode(cleanCode, customerPhone);
         if (refCheck.valid) {
           const standardSubtotal = orderItems
-            .filter(i => i.id !== 'referral-discount' && !i.id.startsWith('loyalty-discount') && !i.id.startsWith('free-gift-') && !i.id.startsWith('custom-discount-') && i.price > 0)
+            .filter(i => !isCouponOrDiscountItem(i) && i.price > 0)
             .reduce((acc, i) => acc + i.price * i.quantity, 0);
 
           if (standardSubtotal <= 0) {
@@ -225,6 +302,8 @@ const Bill: React.FC<BillProps> = ({
             setIsApplyingCoupon(false);
             return;
           }
+
+          clearOtherDiscounts('referral-discount');
 
           const discountAmt = Math.min(100, Math.round(standardSubtotal * 0.5));
           onAddItem([{
@@ -237,10 +316,74 @@ const Bill: React.FC<BillProps> = ({
           }]);
 
           setCouponInputCode('');
-          setCouponSuccessMessage(`Referral discount applied! Saved ₹${discountAmt}.`);
+          const comboNotice = hadStudentDiscount 
+            ? ' (10% Student discount removed — two coupons cannot be combined).'
+            : (hadOtherCoupon ? ' (Previous coupon removed — two coupons cannot be combined).' : '.');
+          setCouponSuccessMessage(`Referral discount applied! Saved ₹${discountAmt}${comboNotice}`);
           setIsApplyingCoupon(false);
           return;
         }
+      }
+
+      // 5. Welcome Coupon (starts with DISC15- or matches customer welcome coupon code)
+      if (cleanCode.startsWith('DISC15-') || (customer?.welcomeCouponCode && cleanCode === customer.welcomeCouponCode.toUpperCase())) {
+        if (customer?.welcomeCouponUsed) {
+          setCouponError("This welcome coupon has already been redeemed.");
+          setIsApplyingCoupon(false);
+          return;
+        }
+        const standardSubtotal = orderItems
+          .filter(i => !isCouponOrDiscountItem(i) && i.price > 0)
+          .reduce((acc, i) => acc + i.price * i.quantity, 0);
+
+        if (standardSubtotal <= 0) {
+          setCouponError("Please add items to your cart before applying welcome coupon.");
+          setIsApplyingCoupon(false);
+          return;
+        }
+
+        clearOtherDiscounts('welcome-discount');
+
+        const discountAmt = Math.round(standardSubtotal * 0.15);
+        onAddItem([{
+          id: 'welcome-discount',
+          menuItemId: 'discount',
+          name: `🎉 Welcome 15% Off - Code: ${cleanCode}`,
+          price: -discountAmt,
+          quantity: 1,
+          cost: 0
+        }]);
+
+        setCouponInputCode('');
+        const comboNotice = hadStudentDiscount 
+          ? ' (Student discount removed — two coupons cannot be combined).'
+          : (hadOtherCoupon ? ' (Previous coupon removed — two coupons cannot be combined).' : '.');
+        setCouponSuccessMessage(`Welcome coupon applied! Saved ₹${discountAmt}${comboNotice}`);
+        setIsApplyingCoupon(false);
+        return;
+      }
+
+      // 6. Marketing Promo Coupon (starts with TREAT- or matches saved marketing coupon)
+      const marketingCoupons = getMarketingCoupons();
+      const matchedPromo = marketingCoupons.find(c => c.couponCode.toUpperCase() === cleanCode && !c.isUsed);
+      if (matchedPromo || cleanCode.startsWith('TREAT-')) {
+        clearOtherDiscounts('promo-mojito');
+
+        onAddItem([{
+          id: 'promo-mojito',
+          menuItemId: 'promo-mojito',
+          name: `🍹 Free Virgin Mojito - Code: ${cleanCode}`,
+          price: 0,
+          quantity: 1,
+          cost: 0
+        }]);
+        setCouponInputCode('');
+        const comboNotice = hadStudentDiscount 
+          ? ' (Student discount removed — two coupons cannot be combined).'
+          : (hadOtherCoupon ? ' (Previous coupon removed — two coupons cannot be combined).' : '.');
+        setCouponSuccessMessage(`Coupon applied! Free Virgin Mojito added to order${comboNotice}`);
+        setIsApplyingCoupon(false);
+        return;
       }
 
       setCouponError(`Unrecognized or invalid coupon "${cleanCode}".`);
@@ -599,9 +742,23 @@ const Bill: React.FC<BillProps> = ({
   React.useEffect(() => {
     const discountItems = orderItems.filter(i => i.id === 'loyalty-discount');
     const isStudentCategory = customer && (customer.note === 'STUDENT' || customer.note?.startsWith('STUDENT|'));
+
+    // CRITICAL: Two coupons can NEVER be combined!
+    // Check if ANY other coupon or discount is currently active on the cart (referral, student gang, welcome, promo, etc.)
+    const hasOtherCouponOrDiscount = orderItems.some(i => 
+      i.id !== 'loyalty-discount' && isCouponOrDiscountItem(i)
+    );
+
+    if (hasOtherCouponOrDiscount) {
+      // If another coupon is active, immediately remove loyalty/student discount so they NEVER combine
+      if (discountItems.length > 0) {
+        onUpdateQuantity('loyalty-discount', 0);
+      }
+      return;
+    }
     
     if ((isStudentCategory || (customer && customer.totalOrders > 0)) && discountItems.length === 0) {
-      const subtotal = orderItems.reduce((acc, i) => acc + (i.id !== 'loyalty-discount' && i.price > 0 ? i.price * i.quantity : 0), 0);
+      const subtotal = orderItems.reduce((acc, i) => acc + (!isCouponOrDiscountItem(i) && i.price > 0 ? i.price * i.quantity : 0), 0);
       if (subtotal > 0 && loyaltyDiscount) {
         onAddItem([{
           id: 'loyalty-discount',
@@ -613,7 +770,7 @@ const Bill: React.FC<BillProps> = ({
         }]);
       }
     } else if (discountItems.length > 0) {
-      const subtotal = orderItems.reduce((acc, i) => acc + (i.id !== 'loyalty-discount' && i.price > 0 ? i.price * i.quantity : 0), 0);
+      const subtotal = orderItems.reduce((acc, i) => acc + (!isCouponOrDiscountItem(i) && i.price > 0 ? i.price * i.quantity : 0), 0);
       
       discountItems.forEach(discountItem => {
         const pct = (loyaltyDiscount?.percentage ? loyaltyDiscount.percentage / 100 : 0);
@@ -1048,7 +1205,12 @@ const Bill: React.FC<BillProps> = ({
                         if (hasAppliedLoyaltyDiscount) {
                            onUpdateQuantity('loyalty-discount', 0);
                         } else {
-                           const subtotal = orderItems.reduce((acc, i) => acc + (i.price > 0 ? i.price * i.quantity : 0), 0);
+                           const otherDiscount = orderItems.find(i => i.id !== 'loyalty-discount' && isCouponOrDiscountItem(i));
+                           if (otherDiscount) {
+                             setCouponError(`Two coupons cannot be combined. Please remove "${otherDiscount.name}" first.`);
+                             return;
+                           }
+                           const subtotal = orderItems.reduce((acc, i) => acc + (!isCouponOrDiscountItem(i) && i.price > 0 ? i.price * i.quantity : 0), 0);
                            if (subtotal > 0) {
                               onAddItem([{
                                 id: 'loyalty-discount',
@@ -1302,7 +1464,10 @@ const Bill: React.FC<BillProps> = ({
           customerPhone={customerPhone}
           subtotal={subtotal}
           initialCouponCode={gangModalInitialCode || customer?.gangCouponCode || ''}
-          onApplyGangDiscount={(item) => onAddItem([item])}
+          onApplyGangDiscount={(item) => {
+            clearOtherDiscounts(item.id);
+            onAddItem([item]);
+          }}
         />
       )}
     </div>
