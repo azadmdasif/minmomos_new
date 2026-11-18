@@ -1,4 +1,5 @@
 import { BucketDefinition } from '../components/OrderValueHistogram';
+import { supabase } from './supabase';
 
 export type CompareChannel =
   | 'ALL'
@@ -300,6 +301,366 @@ export function getBucketConfigSignature(buckets: BucketDefinition[]): string {
     .join('|');
 }
 
+async function aggregateViaSupabaseDirect(params: {
+  startDate: string;
+  endDate: string;
+  effectiveStart: string;
+  effectiveEnd: string;
+  calendarDays: number;
+  branchName: string;
+  segmentFilter: 'ALL' | 'STUDENT' | 'REGULAR';
+  sortedBuckets: BucketDefinition[];
+}): Promise<ServerPeriodAggregation> {
+  const {
+    startDate,
+    endDate,
+    effectiveStart,
+    effectiveEnd,
+    calendarDays,
+    branchName,
+    segmentFilter,
+    sortedBuckets
+  } = params;
+
+  if (calendarDays === 0 || effectiveEnd < effectiveStart) {
+    return {
+      periodStart: startDate,
+      periodEnd: endDate,
+      effectiveStart,
+      effectiveEnd,
+      calendarDays: 0,
+      activeDays: { ALL: 0, DINE_IN: 0, TAKEAWAY: 0, DELIVERY: 0, DELIVERY_MINMOMOS: 0, DELIVERY_MINCHICKEN: 0 },
+      rows: [],
+      deliveryBrandRows: [],
+      channelTotals: {
+        ALL: { orders: 0, revenue: 0 },
+        DINE_IN: { orders: 0, revenue: 0 },
+        TAKEAWAY: { orders: 0, revenue: 0 },
+        DELIVERY: { orders: 0, revenue: 0 },
+        DELIVERY_MINMOMOS: { orders: 0, revenue: 0 },
+        DELIVERY_MINCHICKEN: { orders: 0, revenue: 0 }
+      },
+      source: 'server_aggregate'
+    };
+  }
+
+  // 1. Prefer Postgres RPC when segmentFilter === 'ALL' (pure server-side SQL aggregation)
+  if (segmentFilter === 'ALL') {
+    const { data: rpcData, error: rpcError } = await supabase.rpc('get_ticket_bucket_aggregation', {
+      p_start_date: effectiveStart,
+      p_end_date: effectiveEnd,
+      p_branch: branchName || 'All',
+      p_buckets: sortedBuckets.map(b => ({
+        id: b.id,
+        min: b.min,
+        max: b.max === Infinity ? null : b.max
+      }))
+    });
+
+    if (!rpcError && rpcData && typeof rpcData === 'object') {
+      const rawBrandRows: BucketDeliveryBrandAggregateRow[] = Array.isArray(rpcData.deliveryBrandRows)
+        ? rpcData.deliveryBrandRows
+        : [];
+      const normBrandMap = new Map<string, BucketDeliveryBrandAggregateRow>();
+      let extraUnassignedOrders = 0;
+      let extraUnassignedRevenue = 0;
+
+      for (const r of rawBrandRows) {
+        const normBrand: DeliveryBrandBucketKey = r.brand === 'MINCHICKEN' ? 'MINCHICKEN' : 'MINMOMOS';
+        if (r.brand === 'UNASSIGNED') {
+          extraUnassignedOrders += Number(r.orders || 0);
+          extraUnassignedRevenue += Number(r.revenue || 0);
+        }
+        const key = `${r.bucketId}__${normBrand}`;
+        const existing = normBrandMap.get(key);
+        if (existing) {
+          existing.orders += Number(r.orders || 0);
+          existing.revenue += Number(r.revenue || 0);
+        } else {
+          normBrandMap.set(key, {
+            bucketId: r.bucketId,
+            brand: normBrand,
+            orders: Number(r.orders || 0),
+            revenue: Number(r.revenue || 0)
+          });
+        }
+      }
+
+      const totalDelivery = rpcData.channelTotals?.DELIVERY ?? { orders: 0, revenue: 0 };
+      const rawMm = rpcData.channelTotals?.DELIVERY_MINMOMOS ?? { orders: 0, revenue: 0 };
+      const rawMc = rpcData.channelTotals?.DELIVERY_MINCHICKEN ?? { orders: 0, revenue: 0 };
+      const missingOrders = Math.max(0, (totalDelivery.orders || 0) - (rawMm.orders || 0) - (rawMc.orders || 0));
+      const missingRev = Math.max(0, (totalDelivery.revenue || 0) - (rawMm.revenue || 0) - (rawMc.revenue || 0));
+
+      return {
+        periodStart: startDate,
+        periodEnd: endDate,
+        effectiveStart,
+        effectiveEnd,
+        calendarDays,
+        activeDays: {
+          ALL: rpcData.activeDays?.ALL ?? 0,
+          DINE_IN: rpcData.activeDays?.DINE_IN ?? 0,
+          TAKEAWAY: rpcData.activeDays?.TAKEAWAY ?? 0,
+          DELIVERY: rpcData.activeDays?.DELIVERY ?? 0,
+          DELIVERY_MINMOMOS:
+            (rpcData.activeDays?.DELIVERY_MINMOMOS ?? 0) > 0 || missingOrders > 0
+              ? Math.max(rpcData.activeDays?.DELIVERY_MINMOMOS ?? 0, missingOrders > 0 ? rpcData.activeDays?.DELIVERY ?? 0 : 0)
+              : 0,
+          DELIVERY_MINCHICKEN: rpcData.activeDays?.DELIVERY_MINCHICKEN ?? 0
+        },
+        rows: Array.isArray(rpcData.rows) ? rpcData.rows : [],
+        deliveryBrandRows: Array.from(normBrandMap.values()),
+        channelTotals: {
+          ALL: rpcData.channelTotals?.ALL ?? { orders: 0, revenue: 0 },
+          DINE_IN: rpcData.channelTotals?.DINE_IN ?? { orders: 0, revenue: 0 },
+          TAKEAWAY: rpcData.channelTotals?.TAKEAWAY ?? { orders: 0, revenue: 0 },
+          DELIVERY: totalDelivery,
+          DELIVERY_MINMOMOS: {
+            orders: (rawMm.orders || 0) + Math.max(extraUnassignedOrders, missingOrders),
+            revenue: (rawMm.revenue || 0) + Math.max(extraUnassignedRevenue, missingRev)
+          },
+          DELIVERY_MINCHICKEN: rawMc
+        },
+        fromCache: false,
+        source: 'rpc'
+      };
+    }
+  }
+
+  // 2. Fallback: minimal-field paginated query via Supabase client (handles STUDENT/REGULAR segment filter or missing RPC)
+  const normPhone = (p: string | null | undefined) => {
+    if (!p) return '';
+    const cleaned = p.toString().replace(/\D/g, '');
+    return cleaned.length >= 10 ? cleaned.slice(-10) : cleaned;
+  };
+  const toISTDay = (dt: string | number | Date) =>
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date(dt));
+
+  let allOrders: any[] = [];
+  let page = 0;
+  const pageSize = 1000;
+  let hasMore = true;
+  let includeDeliveryBrand = true;
+
+  while (hasMore) {
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
+    const selectCols =
+      segmentFilter === 'ALL'
+        ? includeDeliveryBrand
+          ? 'id, type, total, manual_total, status, date, branch_name, delivery_brand'
+          : 'id, type, total, manual_total, status, date, branch_name'
+        : includeDeliveryBrand
+        ? 'id, type, total, manual_total, status, date, branch_name, customer_phone, delivery_brand'
+        : 'id, type, total, manual_total, status, date, branch_name, customer_phone';
+
+    let query = supabase
+      .from('orders')
+      .select(selectCols)
+      .gte('date', `${effectiveStart}T00:00:00+05:30`)
+      .lte('date', `${effectiveEnd}T23:59:59+05:30`)
+      .is('deletion_info', null)
+      .order('bill_number', { ascending: false })
+      .range(from, to);
+
+    if (branchName && branchName !== 'All') {
+      query = query.eq('branch_name', branchName);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      if (includeDeliveryBrand && (error.code === '42703' || error.message?.includes('delivery_brand'))) {
+        includeDeliveryBrand = false;
+        continue;
+      }
+      throw new Error(error.message || 'Supabase query error');
+    } else if (!data || data.length === 0) {
+      hasMore = false;
+    } else {
+      allOrders = allOrders.concat(data);
+      if (data.length < pageSize) hasMore = false;
+      else page++;
+    }
+  }
+
+  const studentPhones = new Set<string>();
+  const studentOrderIdsFromItems = new Set<string>();
+  if (segmentFilter !== 'ALL' && allOrders.length > 0) {
+    let sPage = 0;
+    let sMore = true;
+    while (sMore) {
+      const sFrom = sPage * 1000;
+      const { data: sData, error: sErr } = await supabase
+        .from('customers')
+        .select('phone, note')
+        .or('note.eq.STUDENT,note.ilike.STUDENT|%')
+        .range(sFrom, sFrom + 999);
+      if (sErr || !sData || sData.length === 0) {
+        sMore = false;
+      } else {
+        for (const r of sData) {
+          const np = normPhone(r.phone);
+          if (np) studentPhones.add(np);
+        }
+        if (sData.length < 1000) sMore = false;
+        else sPage++;
+      }
+    }
+
+    const needItemCheckIds = allOrders
+      .filter(o => {
+        const np = normPhone(o.customer_phone);
+        return !np || !studentPhones.has(np);
+      })
+      .map(o => o.id);
+
+    for (let i = 0; i < needItemCheckIds.length; i += 200) {
+      const chunk = needItemCheckIds.slice(i, i + 200);
+      const { data: itemRows } = await supabase
+        .from('order_items')
+        .select('order_id, name, menu_item_id')
+        .in('order_id', chunk);
+      if (itemRows) {
+        for (const it of itemRows) {
+          const name = it.name || '';
+          const mId = it.menu_item_id || '';
+          if (mId === 'promo-mojito' || name.includes('Student')) {
+            studentOrderIdsFromItems.add(it.order_id);
+          }
+        }
+      }
+    }
+  }
+
+  const activeDaySets = {
+    ALL: new Set<string>(),
+    DINE_IN: new Set<string>(),
+    TAKEAWAY: new Set<string>(),
+    DELIVERY: new Set<string>(),
+    DELIVERY_MINMOMOS: new Set<string>(),
+    DELIVERY_MINCHICKEN: new Set<string>()
+  };
+  const channelTotals = {
+    ALL: { orders: 0, revenue: 0 },
+    DINE_IN: { orders: 0, revenue: 0 },
+    TAKEAWAY: { orders: 0, revenue: 0 },
+    DELIVERY: { orders: 0, revenue: 0 },
+    DELIVERY_MINMOMOS: { orders: 0, revenue: 0 },
+    DELIVERY_MINCHICKEN: { orders: 0, revenue: 0 }
+  };
+  const aggMap = new Map<string, BucketChannelAggregateRow>();
+  const brandAggMap = new Map<string, BucketDeliveryBrandAggregateRow>();
+
+  for (const order of allOrders) {
+    if (order.status === 'CANCELLED') continue;
+    const istDay = toISTDay(order.date);
+    if (istDay < effectiveStart || istDay > effectiveEnd) continue;
+
+    if (segmentFilter !== 'ALL') {
+      const np = normPhone(order.customer_phone);
+      const isStudent = (np && studentPhones.has(np)) || studentOrderIdsFromItems.has(order.id);
+      if (segmentFilter === 'STUDENT' && !isStudent) continue;
+      if (segmentFilter === 'REGULAR' && isStudent) continue;
+    }
+
+    const rawType = (order.type || '').toUpperCase();
+    const channel: OrderOnlyChannel =
+      rawType === 'DINE_IN' ? 'DINE_IN' : rawType === 'DELIVERY' ? 'DELIVERY' : 'TAKEAWAY';
+    const val =
+      rawType === 'DELIVERY' && order.manual_total != null ? Number(order.manual_total) : Number(order.total || 0);
+    const effectiveVal = Math.max(0, val);
+
+    activeDaySets.ALL.add(istDay);
+    activeDaySets[channel].add(istDay);
+    channelTotals.ALL.orders += 1;
+    channelTotals.ALL.revenue += effectiveVal;
+    channelTotals[channel].orders += 1;
+    channelTotals[channel].revenue += effectiveVal;
+
+    const dBrand: DeliveryBrandBucketKey =
+      channel === 'DELIVERY' && (order.delivery_brand || '').toUpperCase() === 'MINCHICKEN'
+        ? 'MINCHICKEN'
+        : 'MINMOMOS';
+
+    if (channel === 'DELIVERY') {
+      if (dBrand === 'MINCHICKEN') {
+        activeDaySets.DELIVERY_MINCHICKEN.add(istDay);
+        channelTotals.DELIVERY_MINCHICKEN.orders += 1;
+        channelTotals.DELIVERY_MINCHICKEN.revenue += effectiveVal;
+      } else {
+        activeDaySets.DELIVERY_MINMOMOS.add(istDay);
+        channelTotals.DELIVERY_MINMOMOS.orders += 1;
+        channelTotals.DELIVERY_MINMOMOS.revenue += effectiveVal;
+      }
+    }
+
+    const matchedBucket = sortedBuckets.find(b => {
+      const maxVal = b.max === null || b.max === undefined ? Infinity : Number(b.max);
+      return effectiveVal >= b.min && effectiveVal < maxVal;
+    });
+    if (matchedBucket) {
+      const key = `${matchedBucket.id}__${channel}`;
+      const existing = aggMap.get(key);
+      if (existing) {
+        existing.orders += 1;
+        existing.revenue += effectiveVal;
+      } else {
+        aggMap.set(key, { bucketId: matchedBucket.id, channel, orders: 1, revenue: effectiveVal });
+      }
+      if (channel === 'DELIVERY') {
+        const bKey = `${matchedBucket.id}__${dBrand}`;
+        const existingBrand = brandAggMap.get(bKey);
+        if (existingBrand) {
+          existingBrand.orders += 1;
+          existingBrand.revenue += effectiveVal;
+        } else {
+          brandAggMap.set(bKey, { bucketId: matchedBucket.id, brand: dBrand, orders: 1, revenue: effectiveVal });
+        }
+      }
+    }
+  }
+
+  return {
+    periodStart: startDate,
+    periodEnd: endDate,
+    effectiveStart,
+    effectiveEnd,
+    calendarDays,
+    activeDays: {
+      ALL: activeDaySets.ALL.size,
+      DINE_IN: activeDaySets.DINE_IN.size,
+      TAKEAWAY: activeDaySets.TAKEAWAY.size,
+      DELIVERY: activeDaySets.DELIVERY.size,
+      DELIVERY_MINMOMOS: activeDaySets.DELIVERY_MINMOMOS.size,
+      DELIVERY_MINCHICKEN: activeDaySets.DELIVERY_MINCHICKEN.size
+    },
+    rows: Array.from(aggMap.values()).map(r => ({ ...r, revenue: Math.round(r.revenue) })),
+    deliveryBrandRows: Array.from(brandAggMap.values()).map(r => ({ ...r, revenue: Math.round(r.revenue) })),
+    channelTotals: {
+      ALL: { orders: channelTotals.ALL.orders, revenue: Math.round(channelTotals.ALL.revenue) },
+      DINE_IN: { orders: channelTotals.DINE_IN.orders, revenue: Math.round(channelTotals.DINE_IN.revenue) },
+      TAKEAWAY: { orders: channelTotals.TAKEAWAY.orders, revenue: Math.round(channelTotals.TAKEAWAY.revenue) },
+      DELIVERY: { orders: channelTotals.DELIVERY.orders, revenue: Math.round(channelTotals.DELIVERY.revenue) },
+      DELIVERY_MINMOMOS: {
+        orders: channelTotals.DELIVERY_MINMOMOS.orders,
+        revenue: Math.round(channelTotals.DELIVERY_MINMOMOS.revenue)
+      },
+      DELIVERY_MINCHICKEN: {
+        orders: channelTotals.DELIVERY_MINCHICKEN.orders,
+        revenue: Math.round(channelTotals.DELIVERY_MINCHICKEN.revenue)
+      }
+    },
+    fromCache: false,
+    source: 'server_aggregate'
+  };
+}
+
 export async function fetchTicketBucketPeriod(params: {
   startDate: string;
   endDate: string;
@@ -310,14 +671,14 @@ export async function fetchTicketBucketPeriod(params: {
   forceRefresh?: boolean;
 }): Promise<ServerPeriodAggregation> {
   const sortedBuckets = [...params.buckets].sort((a, b) => a.min - b.min);
-  const { effectiveStart, effectiveEnd } = getEffectiveRange(
+  const { effectiveStart, effectiveEnd, calendarDays } = getEffectiveRange(
     params.startDate,
     params.endDate,
     params.excludeToday
   );
 
   const cacheKey = JSON.stringify({
-    v: 2,
+    v: 3,
     s: effectiveStart,
     e: effectiveEnd,
     b: params.branchName || 'All',
@@ -333,33 +694,50 @@ export async function fetchTicketBucketPeriod(params: {
     }
   }
 
-  const response = await fetch('/api/analytics/ticket-buckets', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      startDate: params.startDate,
-      endDate: params.endDate,
-      branchName: params.branchName || 'All',
-      segmentFilter: params.segmentFilter || 'ALL',
-      excludeToday: params.excludeToday,
-      forceRefresh: Boolean(params.forceRefresh),
-      buckets: sortedBuckets.map(b => ({
-        id: b.id,
-        label: b.label,
-        min: b.min,
-        max: b.max === Infinity ? null : b.max
-      }))
-    })
-  });
+  try {
+    const response = await fetch('/api/analytics/ticket-buckets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        startDate: params.startDate,
+        endDate: params.endDate,
+        branchName: params.branchName || 'All',
+        segmentFilter: params.segmentFilter || 'ALL',
+        excludeToday: params.excludeToday,
+        forceRefresh: Boolean(params.forceRefresh),
+        buckets: sortedBuckets.map(b => ({
+          id: b.id,
+          label: b.label,
+          min: b.min,
+          max: b.max === Infinity ? null : b.max
+        }))
+      })
+    });
 
-  if (!response.ok) {
-    const errText = await response.text().catch(() => 'Server error');
-    throw new Error(`Failed to fetch period aggregation (${response.status}): ${errText}`);
+    if (response.ok) {
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data: ServerPeriodAggregation = await response.json();
+        clientPeriodCache.set(cacheKey, { timestamp: Date.now(), data });
+        return data;
+      }
+    }
+  } catch {
+    // Backend route unreachable (e.g. static host); fall back to direct Supabase RPC aggregation
   }
 
-  const data: ServerPeriodAggregation = await response.json();
-  clientPeriodCache.set(cacheKey, { timestamp: Date.now(), data });
-  return data;
+  const directData = await aggregateViaSupabaseDirect({
+    startDate: params.startDate,
+    endDate: params.endDate,
+    effectiveStart,
+    effectiveEnd,
+    calendarDays,
+    branchName: params.branchName || 'All',
+    segmentFilter: params.segmentFilter || 'ALL',
+    sortedBuckets
+  });
+  clientPeriodCache.set(cacheKey, { timestamp: Date.now(), data: directData });
+  return directData;
 }
 
 // ---------------------------------------------------------------------------
