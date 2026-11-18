@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { MenuItem as MenuItemType, OrderItem, OrderType, PaymentMethod, User as UserType, MenuSection, Customer } from '../types';
+import { MenuItem as MenuItemType, OrderItem, OrderType, PaymentMethod, User as UserType, MenuSection, Customer, DeliveryBrand } from '../types';
 import Menu from './Menu';
 import Bill from './Bill';
 import VariantSelectionModal from './VariantSelectionModal';
@@ -365,8 +365,18 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
     setPendingBillPrintAfterPrompt(false);
   };
 
-  const handleConfirmOrder = async (method: PaymentMethod, useBluetooth: boolean = false, manualTotal?: number, manualDiscount?: number) => {
+  const handleConfirmOrder = async (
+    method: PaymentMethod,
+    useBluetooth: boolean = false,
+    manualTotal?: number,
+    manualDiscount?: number,
+    deliveryBrand?: DeliveryBrand
+  ) => {
     if (isSaving) return;
+    if (orderType === 'DELIVERY' && !deliveryBrand) {
+      alert('Please select a Zomato brand (MinMomos or MinChicken) before finalizing this delivery order.');
+      return;
+    }
     setIsSaving(true);
     
     try {
@@ -384,7 +394,8 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
         orderType === 'DELIVERY' ? manualTotal : undefined,
         orderType === 'DELIVERY' ? manualDiscount : undefined,
         user.id,
-        user.username
+        user.username,
+        orderType === 'DELIVERY' ? deliveryBrand : undefined
       );
       
       if (savedNum) {
@@ -453,7 +464,8 @@ const POS: React.FC<{ branchName: string, user: UserType }> = ({ branchName, use
             billNumber: savedNum,
             paymentMethod: method,
             branchName,
-            orderType
+            orderType,
+            deliveryBrand: orderType === 'DELIVERY' ? deliveryBrand : undefined
           });
           
           if (success) {

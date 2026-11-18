@@ -24,17 +24,34 @@ import {
   Trash2,
   X,
   SlidersHorizontal,
-  Check
+  Check,
+  GitCompareArrows
 } from 'lucide-react';
 import { CompletedOrder, OrderType } from '../types';
+import TicketBucketCompare from './TicketBucketCompare';
+import {
+  readCompareStateFromUrl,
+  writeCompareStateToUrl,
+  getISTTodayString
+} from '../utils/ticketBucketCompare';
 
 interface OrderValueHistogramProps {
   orders: CompletedOrder[];
   title?: string;
+  dashboardStartDate?: string;
+  dashboardEndDate?: string;
+  branchName?: string;
+  segmentFilter?: 'ALL' | 'STUDENT' | 'REGULAR';
 }
 
 export type HistogramMetric = 'orders' | 'revenue' | 'comparison';
-export type ChannelFilter = 'ALL' | 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
+export type ChannelFilter =
+  | 'ALL'
+  | 'DINE_IN'
+  | 'TAKEAWAY'
+  | 'DELIVERY'
+  | 'DELIVERY_MINMOMOS'
+  | 'DELIVERY_MINCHICKEN';
 
 export interface BucketDefinition {
   id: string;
@@ -62,8 +79,21 @@ const STORAGE_KEY_SELECTED = 'MOMOMAYA_ORDER_VALUE_SELECTED_RANGES_V1';
 
 export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
   orders,
-  title = 'Order Ticket Size & Value Distribution'
+  title = 'Order Ticket Size & Value Distribution',
+  dashboardStartDate,
+  dashboardEndDate,
+  branchName = 'All',
+  segmentFilter = 'ALL'
 }) => {
+  const initialUrlState = useMemo(() => readCompareStateFromUrl(), []);
+  const todayIST = useMemo(() => getISTTodayString(), []);
+  const resolvedStartDate = dashboardStartDate || todayIST;
+  const resolvedEndDate = dashboardEndDate || todayIST;
+
+  const [viewMode, setViewMode] = useState<'single' | 'compare'>(() =>
+    initialUrlState?.mode === 'compare' ? 'compare' : 'single'
+  );
+
   // Toggle between 'orders' (number of orders), 'revenue' (rupees), or 'comparison' (% share)
   const [metric, setMetric] = useState<HistogramMetric>('orders');
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>('ALL');
@@ -91,8 +121,11 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
     return DEFAULT_ORDER_VALUE_BUCKETS;
   });
 
-  // Selected range IDs for dynamic filtering
+  // Selected range IDs for dynamic filtering (URL state takes precedence when restoring Compare links)
   const [selectedBucketIds, setSelectedBucketIds] = useState<string[]>(() => {
+    if (initialUrlState?.selectedBucketIds && initialUrlState.selectedBucketIds.length > 0) {
+      return initialUrlState.selectedBucketIds;
+    }
     try {
       const saved = localStorage.getItem(STORAGE_KEY_SELECTED);
       if (saved) {
@@ -106,6 +139,13 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
     }
     return DEFAULT_ORDER_VALUE_BUCKETS.map(b => b.id);
   });
+
+  const handleSwitchViewMode = (nextMode: 'single' | 'compare') => {
+    setViewMode(nextMode);
+    if (nextMode === 'single') {
+      writeCompareStateToUrl({ mode: 'single' });
+    }
+  };
 
   // Save changes to localStorage
   useEffect(() => {
@@ -146,11 +186,17 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
     }
   }, [newRangeMin, newRangeMax, newRangeNoLimit]);
 
-  // Filter orders by channel if selected
+  // Filter orders by channel (and delivery brand) if selected
   const filteredOrders = useMemo(() => {
     if (channelFilter === 'ALL') return orders;
     return orders.filter(o => {
       const type = (o.type || '').toUpperCase();
+      if (channelFilter === 'DELIVERY_MINMOMOS') {
+        return type === 'DELIVERY' && (o.deliveryBrand || '').toUpperCase() !== 'MINCHICKEN';
+      }
+      if (channelFilter === 'DELIVERY_MINCHICKEN') {
+        return type === 'DELIVERY' && (o.deliveryBrand || '').toUpperCase() === 'MINCHICKEN';
+      }
       return type === channelFilter;
     });
   }, [orders, channelFilter]);
@@ -175,7 +221,11 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
       takeawayCount: 0,
       takeawayRevenue: 0,
       deliveryCount: 0,
-      deliveryRevenue: 0
+      deliveryRevenue: 0,
+      minmomosCount: 0,
+      minmomosRevenue: 0,
+      minchickenCount: 0,
+      minchickenRevenue: 0
     }));
 
     let totalSelectedOrders = 0;
@@ -210,6 +260,14 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
         } else if (type === 'DELIVERY') {
           bucket.deliveryCount += 1;
           bucket.deliveryRevenue += effectiveVal;
+          const dBrand = (order.deliveryBrand || '').toUpperCase();
+          if (dBrand === 'MINCHICKEN') {
+            bucket.minchickenCount += 1;
+            bucket.minchickenRevenue += effectiveVal;
+          } else {
+            bucket.minmomosCount += 1;
+            bucket.minmomosRevenue += effectiveVal;
+          }
         }
       }
     });
@@ -236,7 +294,11 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
         takeawayCount: b.takeawayCount,
         takeawayRevenue: Math.round(b.takeawayRevenue),
         deliveryCount: b.deliveryCount,
-        deliveryRevenue: Math.round(b.deliveryRevenue)
+        deliveryRevenue: Math.round(b.deliveryRevenue),
+        minmomosCount: b.minmomosCount,
+        minmomosRevenue: Math.round(b.minmomosRevenue),
+        minchickenCount: b.minchickenCount,
+        minchickenRevenue: Math.round(b.minchickenRevenue)
       };
     });
 
@@ -335,10 +397,10 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
     setIsAddModalOpen(false);
   };
 
-  // Custom label renderers to display both count/revenue AND percentage above bars
+  // Custom label renderers keyed by bucket ID (fixes Recharts shifting labels when leading buckets are zero)
   const renderSingleBarLabel = (props: any) => {
-    const { x, y, width, index, payload } = props;
-    const d = payload || chartData[index];
+    const { x, y, width, index, payload, value } = props;
+    const d = (value !== undefined ? chartData.find(item => item.id === value) : undefined) || payload || chartData[index];
     if (!d) return null;
 
     const centerX = Number(x) + Number(width) / 2;
@@ -388,8 +450,8 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
   };
 
   const renderComparisonOrderLabel = (props: any) => {
-    const { x, y, width, index, payload } = props;
-    const d = payload || chartData[index];
+    const { x, y, width, index, payload, value } = props;
+    const d = (value !== undefined ? chartData.find(item => item.id === value) : undefined) || payload || chartData[index];
     if (!d || !d.orderCount || d.orderCount <= 0) return null;
     const centerX = Number(x) + Number(width) / 2;
     const topY = Number(y);
@@ -406,8 +468,8 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
   };
 
   const renderComparisonRevenueLabel = (props: any) => {
-    const { x, y, width, index, payload } = props;
-    const d = payload || chartData[index];
+    const { x, y, width, index, payload, value } = props;
+    const d = (value !== undefined ? chartData.find(item => item.id === value) : undefined) || payload || chartData[index];
     if (!d || !d.totalRevenue || d.totalRevenue <= 0) return null;
     const centerX = Number(x) + Number(width) / 2;
     const topY = Number(y);
@@ -448,64 +510,100 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
           </div>
         </div>
 
-        {/* Controls: Mode Toggle, Channel Selector & Customize Button */}
+        {/* Controls: Single/Compare Switch, Single-Period Controls & Customize Button */}
         <div className="flex flex-wrap items-center gap-3">
-          {/* Channel Filter */}
-          <div className="flex items-center bg-brand-brown/5 p-1 rounded-2xl border border-brand-brown/10">
-            {(['ALL', 'DINE_IN', 'TAKEAWAY', 'DELIVERY'] as ChannelFilter[]).map(ch => (
-              <button
-                key={ch}
-                onClick={() => setChannelFilter(ch)}
-                className={`px-3 py-1.5 text-[8px] lg:text-[9px] font-black uppercase tracking-wider rounded-xl transition-all ${
-                  channelFilter === ch
-                    ? 'bg-brand-brown text-brand-yellow shadow-sm'
-                    : 'text-brand-brown/50 hover:text-brand-brown hover:bg-brand-brown/5'
-                }`}
-              >
-                {ch === 'ALL' ? 'All Channels' : ch.replace('_', ' ')}
-              </button>
-            ))}
+          {/* Single Period vs Compare Mode Switch */}
+          <div className="flex items-center bg-brand-brown/10 p-1 rounded-2xl border border-brand-brown/15">
+            <button
+              onClick={() => handleSwitchViewMode('single')}
+              className={`px-3.5 py-1.5 text-[9px] lg:text-[10px] font-black uppercase tracking-wider rounded-xl transition-all ${
+                viewMode === 'single'
+                  ? 'bg-brand-brown text-brand-yellow shadow-sm'
+                  : 'text-brand-brown/60 hover:text-brand-brown'
+              }`}
+            >
+              Single period
+            </button>
+            <button
+              onClick={() => handleSwitchViewMode('compare')}
+              className={`px-3.5 py-1.5 text-[9px] lg:text-[10px] font-black uppercase tracking-wider rounded-xl transition-all flex items-center gap-1.5 ${
+                viewMode === 'compare'
+                  ? 'bg-brand-red text-white shadow-sm'
+                  : 'text-brand-brown/60 hover:text-brand-brown'
+              }`}
+            >
+              <GitCompareArrows className="w-3.5 h-3.5" />
+              <span>Compare</span>
+            </button>
           </div>
 
-          {/* Primary View Toggle: Orders vs Revenue vs Combined Share */}
-          <div className="flex items-center bg-brand-stone/40 p-1.5 rounded-2xl border border-brand-brown/15 shadow-inner">
-            <button
-              onClick={() => setMetric('orders')}
-              className={`px-4 py-2 text-[9px] lg:text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center gap-1.5 ${
-                metric === 'orders'
-                  ? 'bg-brand-red text-white shadow-md'
-                  : 'text-brand-brown/50 hover:text-brand-brown hover:bg-white/50'
-              }`}
-              title="View number of orders in each ticket size range"
-            >
-              <ShoppingBag className="w-3.5 h-3.5" />
-              <span>No. of Orders</span>
-            </button>
-            <button
-              onClick={() => setMetric('revenue')}
-              className={`px-4 py-2 text-[9px] lg:text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center gap-1.5 ${
-                metric === 'revenue'
-                  ? 'bg-brand-brown text-brand-yellow shadow-md'
-                  : 'text-brand-brown/50 hover:text-brand-brown hover:bg-white/50'
-              }`}
-              title="View total rupee revenue from orders in each ticket size range"
-            >
-              <DollarSign className="w-3.5 h-3.5" />
-              <span>Revenue (₹)</span>
-            </button>
-            <button
-              onClick={() => setMetric('comparison')}
-              className={`px-3.5 py-2 text-[9px] lg:text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center gap-1.5 ${
-                metric === 'comparison'
-                  ? 'bg-amber-600 text-white shadow-md'
-                  : 'text-brand-brown/50 hover:text-brand-brown hover:bg-white/50'
-              }`}
-              title="Side-by-side percentage comparison of volume vs revenue"
-            >
-              <Layers className="w-3.5 h-3.5" />
-              <span>% Share</span>
-            </button>
-          </div>
+          {viewMode === 'single' && (
+            <>
+              {/* Channel Filter */}
+              <div className="flex flex-wrap items-center bg-brand-brown/5 p-1 rounded-2xl border border-brand-brown/10 gap-0.5">
+                {([
+                  { id: 'ALL', label: 'All Channels' },
+                  { id: 'DINE_IN', label: 'Dine In' },
+                  { id: 'TAKEAWAY', label: 'Takeaway' },
+                  { id: 'DELIVERY', label: 'Delivery (All)' },
+                  { id: 'DELIVERY_MINMOMOS', label: '🥟 MinMomos' },
+                  { id: 'DELIVERY_MINCHICKEN', label: '🍗 MinChicken' }
+                ] as Array<{ id: ChannelFilter; label: string }>).map(ch => (
+                  <button
+                    key={ch.id}
+                    onClick={() => setChannelFilter(ch.id)}
+                    className={`px-3 py-1.5 text-[8px] lg:text-[9px] font-black uppercase tracking-wider rounded-xl transition-all ${
+                      channelFilter === ch.id
+                        ? 'bg-brand-brown text-brand-yellow shadow-sm'
+                        : 'text-brand-brown/50 hover:text-brand-brown hover:bg-brand-brown/5'
+                    }`}
+                  >
+                    {ch.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Primary View Toggle: Orders vs Revenue vs Combined Share */}
+              <div className="flex items-center bg-brand-stone/40 p-1.5 rounded-2xl border border-brand-brown/15 shadow-inner">
+                <button
+                  onClick={() => setMetric('orders')}
+                  className={`px-4 py-2 text-[9px] lg:text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center gap-1.5 ${
+                    metric === 'orders'
+                      ? 'bg-brand-red text-white shadow-md'
+                      : 'text-brand-brown/50 hover:text-brand-brown hover:bg-white/50'
+                  }`}
+                  title="View number of orders in each ticket size range"
+                >
+                  <ShoppingBag className="w-3.5 h-3.5" />
+                  <span>No. of Orders</span>
+                </button>
+                <button
+                  onClick={() => setMetric('revenue')}
+                  className={`px-4 py-2 text-[9px] lg:text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center gap-1.5 ${
+                    metric === 'revenue'
+                      ? 'bg-brand-brown text-brand-yellow shadow-md'
+                      : 'text-brand-brown/50 hover:text-brand-brown hover:bg-white/50'
+                  }`}
+                  title="View total rupee revenue from orders in each ticket size range"
+                >
+                  <DollarSign className="w-3.5 h-3.5" />
+                  <span>Revenue (₹)</span>
+                </button>
+                <button
+                  onClick={() => setMetric('comparison')}
+                  className={`px-3.5 py-2 text-[9px] lg:text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center gap-1.5 ${
+                    metric === 'comparison'
+                      ? 'bg-amber-600 text-white shadow-md'
+                      : 'text-brand-brown/50 hover:text-brand-brown hover:bg-white/50'
+                  }`}
+                  title="Side-by-side percentage comparison of volume vs revenue"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>% Share</span>
+                </button>
+              </div>
+            </>
+          )}
 
           {/* Customize Ranges Button */}
           <button
@@ -598,6 +696,18 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
         </div>
       )}
 
+      {viewMode === 'compare' ? (
+        <TicketBucketCompare
+          activeBuckets={activeBuckets}
+          dashboardStartDate={resolvedStartDate}
+          dashboardEndDate={resolvedEndDate}
+          branchName={branchName}
+          segmentFilter={segmentFilter}
+          onSelectAllBuckets={handleSelectAll}
+          initialUrlState={initialUrlState}
+        />
+      ) : (
+        <>
       {/* Summary KPI Highlights */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
         <div className="bg-brand-cream/60 border border-brand-stone/60 p-4 rounded-2xl">
@@ -729,6 +839,7 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
                   barSize={Math.max(12, Math.min(30, Math.floor(600 / (chartData.length * 2.5))))}
                 >
                   <LabelList
+                    dataKey="id"
                     content={renderComparisonOrderLabel}
                   />
                 </Bar>
@@ -740,6 +851,7 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
                   barSize={Math.max(12, Math.min(30, Math.floor(600 / (chartData.length * 2.5))))}
                 >
                   <LabelList
+                    dataKey="id"
                     content={renderComparisonRevenueLabel}
                   />
                 </Bar>
@@ -839,6 +951,12 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
                                   {d.deliveryCount} ord (₹{d.deliveryRevenue.toLocaleString()})
                                 </span>
                               </div>
+                              {(d.minmomosCount > 0 || d.minchickenCount > 0) && (
+                                <div className="flex justify-between text-[8.5px] text-white/60 pl-2">
+                                  <span>↳ 🥟 {d.minmomosCount} (₹{d.minmomosRevenue.toLocaleString()})</span>
+                                  <span>🍗 {d.minchickenCount} (₹{d.minchickenRevenue.toLocaleString()})</span>
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -872,6 +990,7 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
                     );
                   })}
                   <LabelList
+                    dataKey="id"
                     content={renderSingleBarLabel}
                   />
                 </Bar>
@@ -903,6 +1022,7 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
                   <th className="py-3 px-4 text-right">% of Selected Revenue</th>
                   <th className="py-3 px-4 text-right">Avg Ticket Size</th>
                   <th className="py-3 px-4 text-right">Dine-In / Takeaway / Delivery</th>
+                  <th className="py-3 px-4 text-right">🥟 MinMomos / 🍗 MinChicken</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-brand-stone/40">
@@ -917,6 +1037,9 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
                     <td className="py-3 px-4 text-right text-[10px] text-gray-500">
                       {b.dineInCount} / {b.takeawayCount} / {b.deliveryCount}
                     </td>
+                    <td className="py-3 px-4 text-right text-[10px] font-bold text-brand-brown/70">
+                      {b.minmomosCount} (₹{b.minmomosRevenue.toLocaleString()}) / {b.minchickenCount} (₹{b.minchickenRevenue.toLocaleString()})
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -929,12 +1052,15 @@ export const OrderValueHistogram: React.FC<OrderValueHistogramProps> = ({
                   <td className="py-3 px-4 text-right">100%</td>
                   <td className="py-3 px-4 text-right">₹{totals.aov}</td>
                   <td className="py-3 px-4 text-right text-[10px] text-brand-brown/70">—</td>
+                  <td className="py-3 px-4 text-right text-[10px] text-brand-brown/70">—</td>
                 </tr>
               </tfoot>
             </table>
           </div>
         )}
       </div>
+        </>
+      )}
 
       {/* Modal: Add New Custom Range */}
       {isAddModalOpen && (

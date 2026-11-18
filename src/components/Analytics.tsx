@@ -14,8 +14,8 @@ import {
   ItemNormalization
 } from '../utils/mlExportHelper';
 import { getMarketingCoupons } from '../utils/marketingStorage';
-import { CompletedOrder, PaymentMethod, Station, User, Customer } from '../types';
-import { MENU_ITEMS } from '../constants';
+import { CompletedOrder, PaymentMethod, Station, User, Customer, DeliveryBrandFilter } from '../types';
+import { MENU_ITEMS, getDeliveryBrandLabel } from '../constants';
 import PrintReceipt from './PrintReceipt';
 import DeleteBillModal from './DeleteBillModal';
 import ItemSalesReport from './ItemSalesReport';
@@ -516,6 +516,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [normMap, setNormMap] = useState<Record<string, ItemNormalization>>({});
   const [normSearchTerm, setNormSearchTerm] = useState('');
   const [isAddonModalOpen, setIsAddonModalOpen] = useState(false);
+  const [deliveryBrandCardFilter, setDeliveryBrandCardFilter] = useState<DeliveryBrandFilter>('ALL');
+  const [addonDeliveryBrandFilter, setAddonDeliveryBrandFilter] = useState<DeliveryBrandFilter>('ALL');
   
   const [searchTerm, setSearchTerm] = useState('');
   const [searchMode, setSearchMode] = useState<'bill' | 'item' | 'coupon'>('bill');
@@ -533,13 +535,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
   const [customerSortField, setCustomerSortField] = useState<'totalSpent' | 'joinedDate' | 'totalOrders' | 'lastVisit'>('totalSpent');
   const [customerSortOrder, setCustomerSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [customerClassFilter, setCustomerClassFilter] = useState<'ALL' | 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY' | 'UNCLASSIFIED'>('ALL');
+  const [customerClassFilter, setCustomerClassFilter] = useState<'ALL' | 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY' | 'DELIVERY_MINMOMOS' | 'DELIVERY_MINCHICKEN' | 'UNCLASSIFIED'>('ALL');
   const [customerTypeFilter, setCustomerTypeFilter] = useState<'ALL' | 'STUDENT' | 'REGULAR'>('ALL');
   const [customerRecencyFilter, setCustomerRecencyFilter] = useState<'ALL' | 'MAU_90D' | 'POWER_30D' | 'COOLING_90D' | 'DORMANT'>('ALL');
   const [customerNetworkTab, setCustomerNetworkTab] = useState<'mau' | 'cohort'>('mau');
   const [segmentFilter, setSegmentFilter] = useState<'ALL' | 'STUDENT' | 'REGULAR'>('ALL');
   const [isStudentScorecardOpen, setIsStudentScorecardOpen] = useState(false);
-  const [customerOrderStats, setCustomerOrderStats] = useState<Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }>>({});
+  const [customerOrderStats, setCustomerOrderStats] = useState<Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, DELIVERY_MINMOMOS?: number, DELIVERY_MINCHICKEN?: number, total: number }>>({});
   const [minLtv, setMinLtv] = useState<string>('');
   const [maxLtv, setMaxLtv] = useState<string>('');
   const [minOrders, setMinOrders] = useState<string>('');
@@ -847,15 +849,21 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         const matchesPayment = o.paymentMethod && o.paymentMethod.toLowerCase().includes(query);
         const coup = o.appliedCouponCode || extractCouponCodeFromOrder(o);
         const matchesCoupon = Boolean(coup && coup.toLowerCase().includes(query));
+        const resolvedBrand = o.type === 'DELIVERY' ? ((o.deliveryBrand || '').toUpperCase() === 'MINCHICKEN' ? 'MINCHICKEN' : 'MINMOMOS') : null;
+        const matchesDeliveryBrand = Boolean(resolvedBrand && resolvedBrand.toLowerCase().includes(query));
         
-        if (!matchesBillNum && !matchesItem && !matchesCashier && !matchesPayment && !matchesCoupon) {
+        if (!matchesBillNum && !matchesItem && !matchesCashier && !matchesPayment && !matchesCoupon && !matchesDeliveryBrand) {
           return false;
         }
       }
 
       // Order Mode / Type
       if (revTypeFilter !== 'all') {
-        if (o.type.toLowerCase() !== revTypeFilter.toLowerCase()) {
+        if (revTypeFilter === 'delivery_minmomos') {
+          if (o.type !== 'DELIVERY' || (o.deliveryBrand || '').toUpperCase() === 'MINCHICKEN') return false;
+        } else if (revTypeFilter === 'delivery_minchicken') {
+          if (o.type !== 'DELIVERY' || (o.deliveryBrand || '').toUpperCase() !== 'MINCHICKEN') return false;
+        } else if (o.type.toLowerCase() !== revTypeFilter.toLowerCase()) {
           return false;
         }
       }
@@ -1020,7 +1028,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       repeat: { count: 0, revenue: 0 },
       new: { count: 0, revenue: 0 },
       unregistered: { count: 0, revenue: 0 },
-      delivery: { count: 0, revenue: 0 }
+      delivery: { count: 0, revenue: 0 },
+      deliveryMinMomos: { count: 0, revenue: 0 },
+      deliveryMinChicken: { count: 0, revenue: 0 }
     };
 
     let matchedRevenue = 0;
@@ -1040,6 +1050,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       if (o.type === 'DELIVERY') {
         compositionStats.delivery.count++;
         compositionStats.delivery.revenue += rev;
+        if ((o.deliveryBrand || '').toUpperCase() === 'MINCHICKEN') {
+          compositionStats.deliveryMinChicken.count++;
+          compositionStats.deliveryMinChicken.revenue += rev;
+        } else {
+          compositionStats.deliveryMinMomos.count++;
+          compositionStats.deliveryMinMomos.revenue += rev;
+        }
       } else if (!uid || uid === 'GUEST') {
         compositionStats.unregistered.count++;
         compositionStats.unregistered.revenue += rev;
@@ -1828,6 +1845,23 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     let deliveryPackagedDrinkOrders = 0;
     let deliveryNonPackagedDrinkOrders = 0;
 
+    // Per-brand Delivery stats (MinMomos vs MinChicken)
+    const createBrandAcc = () => ({
+      revenue: 0,
+      discount: 0,
+      menuTotal: 0,
+      cogs: 0,
+      ordersCount: 0,
+      addonOrders: 0,
+      drinkOrders: 0,
+      packagedDrinkOrders: 0,
+      nonPackagedDrinkOrders: 0
+    });
+    const brandAcc = {
+      MINMOMOS: createBrandAcc(),
+      MINCHICKEN: createBrandAcc()
+    };
+
     const breakdown: Record<PaymentMethod, number> = { 'Cash': 0, 'UPI': 0, 'Card': 0 };
 
     displayOrders.forEach(order => {
@@ -1841,9 +1875,19 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         deliveryCogs += Math.round(orderCogs);
         
         const dRev = order.manualTotal != null ? Math.round(order.manualTotal) : Math.round(order.total);
+        const dDiscount = order.manualDiscount || 0;
+        const dMenuTotal = Math.round(order.total || 0);
         deliveryRevenue += dRev;
-        deliveryDiscount += (order.manualDiscount || 0);
-        deliveryMenuTotal += Math.round(order.total || 0);
+        deliveryDiscount += dDiscount;
+        deliveryMenuTotal += dMenuTotal;
+
+        const resolvedBrand = (order.deliveryBrand || '').toUpperCase() === 'MINCHICKEN' ? 'MINCHICKEN' : 'MINMOMOS';
+        const b = brandAcc[resolvedBrand];
+        b.ordersCount++;
+        b.cogs += Math.round(orderCogs);
+        b.revenue += dRev;
+        b.discount += dDiscount;
+        b.menuTotal += dMenuTotal;
         
         // Use manual total for breakdown for consistency if it's a delivery order
         if (order.paymentMethod && order.paymentMethod in breakdown) {
@@ -1927,6 +1971,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
           if (hasDrink) deliveryDrinkOrders++;
           if (hasPackagedDrink) deliveryPackagedDrinkOrders++;
           if (hasNonPackagedDrink) deliveryNonPackagedDrinkOrders++;
+
+          const resolvedBrand = (order.deliveryBrand || '').toUpperCase() === 'MINCHICKEN' ? 'MINCHICKEN' : 'MINMOMOS';
+          const b = brandAcc[resolvedBrand];
+          if (hasAddon) b.addonOrders++;
+          if (hasDrink) b.drinkOrders++;
+          if (hasPackagedDrink) b.packagedDrinkOrders++;
+          if (hasNonPackagedDrink) b.nonPackagedDrinkOrders++;
         }
       }
     });
@@ -1943,6 +1994,42 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     const effectiveDeliveryDiscountPercent = deliveryMenuTotal > 0
       ? ((deliveryMenuTotal - (deliveryRevenue * 0.55)) / deliveryMenuTotal) * 100
       : 0;
+
+    const buildBrandSummary = (b: {
+      revenue: number;
+      discount: number;
+      menuTotal: number;
+      cogs: number;
+      ordersCount: number;
+      addonOrders: number;
+      drinkOrders: number;
+      packagedDrinkOrders: number;
+      nonPackagedDrinkOrders: number;
+    }) => {
+      const netPayout = Math.round(b.revenue * 0.55);
+      const profit = b.revenue - b.cogs;
+      const effectiveDiscountPercent = b.menuTotal > 0
+        ? ((b.menuTotal - (b.revenue * 0.55)) / b.menuTotal) * 100
+        : 0;
+      return {
+        revenue: b.revenue,
+        discount: b.discount,
+        menuTotal: b.menuTotal,
+        cogs: b.cogs,
+        ordersCount: b.ordersCount,
+        netPayout,
+        profit,
+        effectiveDiscountPercent,
+        addonOrders: b.addonOrders,
+        addonPercent: b.ordersCount > 0 ? (b.addonOrders / b.ordersCount) * 100 : 0,
+        drinkOrders: b.drinkOrders,
+        drinkAttachPercent: b.ordersCount > 0 ? (b.drinkOrders / b.ordersCount) * 100 : 0,
+        packagedDrinkOrders: b.packagedDrinkOrders,
+        packagedDrinkPercent: b.ordersCount > 0 ? (b.packagedDrinkOrders / b.ordersCount) * 100 : 0,
+        nonPackagedDrinkOrders: b.nonPackagedDrinkOrders,
+        nonPackagedDrinkPercent: b.ordersCount > 0 ? (b.nonPackagedDrinkOrders / b.ordersCount) * 100 : 0
+      };
+    };
 
     const totalCommercialOrders = inStoreOrdersCount + deliveryOrdersCount;
     const addonPercent = totalCommercialOrders > 0 ? (addonOrdersCount / totalCommercialOrders) * 100 : 0;
@@ -1969,6 +2056,22 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
     const deliveryPackagedDrinkPercent = deliveryOrdersCount > 0 ? (deliveryPackagedDrinkOrders / deliveryOrdersCount) * 100 : 0;
     const deliveryNonPackagedDrinkPercent = deliveryOrdersCount > 0 ? (deliveryNonPackagedDrinkOrders / deliveryOrdersCount) * 100 : 0;
 
+    const deliveryByBrand = {
+      ALL: buildBrandSummary({
+        revenue: deliveryRevenue,
+        discount: deliveryDiscount,
+        menuTotal: deliveryMenuTotal,
+        cogs: deliveryCogs,
+        ordersCount: deliveryOrdersCount,
+        addonOrders: deliveryAddonOrders,
+        drinkOrders: deliveryDrinkOrders,
+        packagedDrinkOrders: deliveryPackagedDrinkOrders,
+        nonPackagedDrinkOrders: deliveryNonPackagedDrinkOrders
+      }),
+      MINMOMOS: buildBrandSummary(brandAcc.MINMOMOS),
+      MINCHICKEN: buildBrandSummary(brandAcc.MINCHICKEN)
+    };
+
     return { 
       totalRevenue: revenue, 
       deliveryRevenue: deliveryRevenue,
@@ -1992,6 +2095,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
       deliveryOrdersCount,
       deliveryCogs,
       deliveryProfit,
+      deliveryByBrand,
       
       combinedOrdersCount: nonStudentTotalOrders,
       combinedRevenue,
@@ -2256,7 +2360,11 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
         const dineInRate = stats.DINE_IN / stats.total;
         const takeawayRate = stats.TAKEAWAY / stats.total;
         const deliveryRate = stats.DELIVERY / stats.total;
+        const minmomosRate = (stats.DELIVERY_MINMOMOS || 0) / stats.total;
+        const minchickenRate = (stats.DELIVERY_MINCHICKEN || 0) / stats.total;
         
+        if (customerClassFilter === 'DELIVERY_MINMOMOS') return minmomosRate > 0.7;
+        if (customerClassFilter === 'DELIVERY_MINCHICKEN') return minchickenRate > 0.7;
         // Use a 70% threshold for classification. 
         // For customers with only 1 order, rate will be 100%, so they will be correctly classified.
         if (dineInRate > 0.7) return customerClassFilter === 'DINE_IN';
@@ -2551,7 +2659,11 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                       </div>
                       <div className="bg-brand-brown/5 p-5 rounded-2xl border border-brand-brown/5">
                          <p className="text-[9px] font-black text-brand-brown/40 uppercase tracking-widest mb-1">Type</p>
-                         <p className="font-black text-brand-red uppercase italic text-sm">{foundOrder.type.replace('_', ' ')}</p>
+                         <p className="font-black text-brand-red uppercase italic text-sm">
+                           {foundOrder.type === 'DELIVERY'
+                             ? `DELIVERY • ${getDeliveryBrandLabel(foundOrder.deliveryBrand)}`
+                             : foundOrder.type.replace('_', ' ')}
+                         </p>
                       </div>
                       <div className="bg-brand-brown/5 p-5 rounded-2xl border border-brand-brown/5">
                          <p className="text-[9px] font-black text-brand-brown/40 uppercase tracking-widest mb-1">Method</p>
@@ -2718,6 +2830,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         earnedCoinsValue={foundOrderEarnedCoins}
                         nextOrderCoupon={foundOrderNextCoupon}
                         orderType={foundOrder.type}
+                        deliveryBrand={foundOrder.deliveryBrand}
                         totalValue={foundOrder.type === 'DELIVERY' && foundOrder.manualTotal != null ? foundOrder.manualTotal : foundOrder.total}
                         couponCode={foundOrderCoupon}
                        />
@@ -2751,6 +2864,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
             earnedCoinsValue={foundOrderEarnedCoins}
             nextOrderCoupon={foundOrderNextCoupon}
             orderType={foundOrder.type}
+            deliveryBrand={foundOrder.deliveryBrand}
             totalValue={foundOrder.type === 'DELIVERY' && foundOrder.manualTotal != null ? foundOrder.manualTotal : foundOrder.total}
             couponCode={foundOrderCoupon}
           />,
@@ -2885,7 +2999,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
             </div>
 
             {/* Order Value & Ticket Size Distribution Histogram */}
-            <OrderValueHistogram orders={displayOrders} />
+            <OrderValueHistogram
+              orders={displayOrders}
+              dashboardStartDate={startDate}
+              dashboardEndDate={endDate}
+              branchName={isAdmin ? selectedStore : (user.stationName || 'All')}
+              segmentFilter={segmentFilter}
+            />
 
             {/* 2. Insight Summary Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
@@ -3229,70 +3349,125 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
               </div>
 
               {/* Card 2: Delivery Performance */}
-              <div className="bg-brand-red p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-md relative overflow-hidden group border border-black/5 flex flex-col justify-between text-white">
-                <div>
-                  <p className="text-[9px] lg:text-[10px] font-black uppercase tracking-[0.2em] mb-2 text-white/60">DELIVERY SALES</p>
-                  <h3 className="text-3xl lg:text-4xl font-black tracking-tighter text-white">₹{(financialData.deliveryRevenue ?? 0).toLocaleString()}</h3>
-                  <p className="text-[8px] lg:text-[9px] font-bold uppercase tracking-widest mt-1 text-white/40">HOME &amp; APP DELIVERY</p>
-                  
-                  {/* In-store equivalent and effective discount vs offline comparison */}
-                  <div className="mt-4 bg-white/10 rounded-2xl p-3 border border-white/15 flex flex-col gap-2.5">
+              {(() => {
+                const activeDelivery = financialData.deliveryByBrand[deliveryBrandCardFilter];
+                const mm = financialData.deliveryByBrand.MINMOMOS;
+                const mc = financialData.deliveryByBrand.MINCHICKEN;
+                return (
+                  <div className="bg-brand-red p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-md relative overflow-hidden group border border-black/5 flex flex-col justify-between text-white">
                     <div>
-                      <p className="text-[8px] font-black uppercase text-white/70 tracking-wider">In-Store Value Equivalent</p>
-                      <div className="flex flex-wrap items-baseline gap-1.5 mt-0.5">
-                        <span className="text-base font-black text-[#ffeaa7]">
-                          ₹{(financialData.deliveryMenuTotal ?? 0).toLocaleString()}
-                        </span>
-                        <span className="text-[9px] font-black text-white/80">
-                          ({(financialData.deliveryRevenue > 0 ? ((financialData.deliveryMenuTotal ?? 0) / financialData.deliveryRevenue) * 100 : 0).toFixed(1)}% of Delivery)
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Effective Discount relative to Offline Channel assuming 55% sale value */}
-                    <div className="pt-2 border-t border-white/15">
-                      <div className="flex items-center justify-between gap-1">
-                        <p className="text-[8px] font-black uppercase text-white/75 tracking-wider">
-                          Effective Discount vs Offline
-                        </p>
-                        <span className="text-[7.5px] font-bold text-white/60">
-                          @ 55% Sale Value
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap items-baseline justify-between gap-1.5 mt-0.5">
-                        <div className="flex items-baseline gap-1">
-                          <span className={`text-base font-black tracking-tight ${
-                            (financialData.effectiveDeliveryDiscountPercent ?? 0) >= 0 ? 'text-[#ffeaa7]' : 'text-emerald-300'
-                          }`}>
-                            {Math.abs(financialData.effectiveDeliveryDiscountPercent ?? 0).toFixed(1)}%
-                          </span>
-                          <span className="text-[8px] font-black uppercase text-white/80 tracking-wider">
-                            {(financialData.effectiveDeliveryDiscountPercent ?? 0) >= 0 ? 'Discount' : 'Premium'}
-                          </span>
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <p className="text-[9px] lg:text-[10px] font-black uppercase tracking-[0.2em] text-white/60">DELIVERY SALES</p>
+                        <div className="inline-flex bg-black/20 p-0.5 rounded-xl border border-white/15">
+                          {([
+                            { id: 'ALL', label: 'All' },
+                            { id: 'MINMOMOS', label: '🥟 MM' },
+                            { id: 'MINCHICKEN', label: '🍗 MC' }
+                          ] as const).map(opt => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => setDeliveryBrandCardFilter(opt.id)}
+                              className={`px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                                deliveryBrandCardFilter === opt.id
+                                  ? 'bg-[#ffeaa7] text-brand-brown shadow-sm'
+                                  : 'text-white/75 hover:text-white'
+                              }`}
+                              title={opt.id === 'ALL' ? 'All Zomato Brands' : opt.id === 'MINMOMOS' ? 'MinMomos Brand Only' : 'MinChicken Brand Only'}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
                         </div>
-                        <span className="text-[8px] font-semibold text-white/65">
-                          (₹{(financialData.deliveryNetPayout ?? 0).toLocaleString()} realized)
-                        </span>
+                      </div>
+                      <h3 className="text-3xl lg:text-4xl font-black tracking-tighter text-white">₹{(activeDelivery.revenue ?? 0).toLocaleString()}</h3>
+                      <p className="text-[8px] lg:text-[9px] font-bold uppercase tracking-widest mt-1 text-white/40">
+                        {deliveryBrandCardFilter === 'ALL' ? 'HOME & APP DELIVERY (ALL BRANDS)' : deliveryBrandCardFilter === 'MINMOMOS' ? 'ZOMATO • MINMOMOS ONLY' : 'ZOMATO • MINCHICKEN ONLY'}
+                      </p>
+
+                      {deliveryBrandCardFilter === 'ALL' && (
+                        <div className="mt-3 grid grid-cols-2 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setDeliveryBrandCardFilter('MINMOMOS')}
+                            className="bg-black/15 hover:bg-black/25 border border-white/15 rounded-xl px-2.5 py-1.5 text-left transition-all cursor-pointer"
+                          >
+                            <span className="text-[7.5px] font-black uppercase tracking-wider text-white/70 block">🥟 MinMomos</span>
+                            <span className="text-xs font-black text-[#ffeaa7]">₹{mm.revenue.toLocaleString()}</span>
+                            <span className="text-[8px] font-bold text-white/70 ml-1">({mm.ordersCount})</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDeliveryBrandCardFilter('MINCHICKEN')}
+                            className="bg-black/15 hover:bg-black/25 border border-white/15 rounded-xl px-2.5 py-1.5 text-left transition-all cursor-pointer"
+                          >
+                            <span className="text-[7.5px] font-black uppercase tracking-wider text-white/70 block">🍗 MinChicken</span>
+                            <span className="text-xs font-black text-[#ffeaa7]">₹{mc.revenue.toLocaleString()}</span>
+                            <span className="text-[8px] font-bold text-white/70 ml-1">({mc.ordersCount})</span>
+                          </button>
+                        </div>
+                      )}
+                      
+                      {/* In-store equivalent and effective discount vs offline comparison */}
+                      <div className="mt-4 bg-white/10 rounded-2xl p-3 border border-white/15 flex flex-col gap-2.5">
+                        <div>
+                          <p className="text-[8px] font-black uppercase text-white/70 tracking-wider">In-Store Value Equivalent</p>
+                          <div className="flex flex-wrap items-baseline gap-1.5 mt-0.5">
+                            <span className="text-base font-black text-[#ffeaa7]">
+                              ₹{(activeDelivery.menuTotal ?? 0).toLocaleString()}
+                            </span>
+                            <span className="text-[9px] font-black text-white/80">
+                              ({(activeDelivery.revenue > 0 ? ((activeDelivery.menuTotal ?? 0) / activeDelivery.revenue) * 100 : 0).toFixed(1)}% of Delivery)
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Effective Discount relative to Offline Channel assuming 55% sale value */}
+                        <div className="pt-2 border-t border-white/15">
+                          <div className="flex items-center justify-between gap-1">
+                            <p className="text-[8px] font-black uppercase text-white/75 tracking-wider">
+                              Effective Discount vs Offline
+                            </p>
+                            <span className="text-[7.5px] font-bold text-white/60">
+                              @ 55% Sale Value
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-baseline justify-between gap-1.5 mt-0.5">
+                            <div className="flex items-baseline gap-1">
+                              <span className={`text-base font-black tracking-tight ${
+                                (activeDelivery.effectiveDiscountPercent ?? 0) >= 0 ? 'text-[#ffeaa7]' : 'text-emerald-300'
+                              }`}>
+                                {Math.abs(activeDelivery.effectiveDiscountPercent ?? 0).toFixed(1)}%
+                              </span>
+                              <span className="text-[8px] font-black uppercase text-white/80 tracking-wider">
+                                {(activeDelivery.effectiveDiscountPercent ?? 0) >= 0 ? 'Discount' : 'Premium'}
+                              </span>
+                            </div>
+                            <span className="text-[8px] font-semibold text-white/65">
+                              (₹{(activeDelivery.netPayout ?? 0).toLocaleString()} realized)
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="mt-6 pt-4 border-t border-white/10 grid grid-cols-3 gap-2">
+                      <div>
+                        <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Orders</p>
+                        <p className="text-sm lg:text-base font-black text-white">{activeDelivery.ordersCount}</p>
+                      </div>
+                      <div>
+                        <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Profit</p>
+                        <p className="text-sm lg:text-base font-black text-[#ffeaa7]">₹{(activeDelivery.profit ?? 0).toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">COGS</p>
+                        <p className="text-sm lg:text-base font-black text-white/60">₹{(activeDelivery.cogs ?? 0).toLocaleString()}</p>
                       </div>
                     </div>
                   </div>
-                </div>
-                
-                <div className="mt-6 pt-4 border-t border-white/10 grid grid-cols-3 gap-2">
-                  <div>
-                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Orders</p>
-                    <p className="text-sm lg:text-base font-black text-white">{financialData.deliveryOrdersCount}</p>
-                  </div>
-                  <div>
-                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">Profit</p>
-                    <p className="text-sm lg:text-base font-black text-[#ffeaa7]">₹{(financialData.deliveryProfit ?? 0).toLocaleString()}</p>
-                  </div>
-                  <div>
-                    <p className="text-[7.5px] font-black uppercase text-white/50 tracking-wider">COGS</p>
-                    <p className="text-sm lg:text-base font-black text-white/60">₹{(financialData.deliveryCogs ?? 0).toLocaleString()}</p>
-                  </div>
-                </div>
-              </div>
+                );
+              })()}
 
               {/* Card 3: Combined Performance */}
               <div className="bg-brand-brown p-6 lg:p-8 rounded-[2rem] lg:rounded-[3rem] shadow-md relative overflow-hidden group border border-black/5 flex flex-col justify-between text-white">
@@ -3389,7 +3564,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
             </div>
 
             {/* Order Value & Ticket Size Distribution Histogram */}
-            <OrderValueHistogram orders={displayOrders} />
+            <OrderValueHistogram
+              orders={displayOrders}
+              dashboardStartDate={startDate}
+              dashboardEndDate={endDate}
+              branchName={isAdmin ? selectedStore : (user.stationName || 'All')}
+              segmentFilter={segmentFilter}
+            />
 
             <TimeWiseRevenueChart orders={displayOrders} />
             
@@ -3460,7 +3641,9 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                           <option value="all">All Modes</option>
                           <option value="dine_in">Dine-In</option>
                           <option value="takeaway">Takeaway</option>
-                          <option value="delivery">Delivery</option>
+                          <option value="delivery">Delivery (All Brands)</option>
+                          <option value="delivery_minmomos">Delivery — 🥟 MinMomos</option>
+                          <option value="delivery_minchicken">Delivery — 🍗 MinChicken</option>
                         </select>
                       </div>
 
@@ -3707,8 +3890,14 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                                <span className="px-2 py-0.5 rounded text-[8px] font-black uppercase bg-emerald-600 text-white">
                                  Students
                                </span>
+                             ) : o.type === 'DELIVERY' ? (
+                               <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase text-white whitespace-nowrap ${(o.deliveryBrand || '').toUpperCase() === 'MINCHICKEN' ? 'bg-amber-600' : 'bg-brand-red'}`}>
+                                 {(o.deliveryBrand || '').toUpperCase() === 'MINCHICKEN'
+                                   ? 'DELIVERY • 🍗 MINCHICKEN'
+                                   : 'DELIVERY • 🥟 MINMOMOS'}
+                               </span>
                              ) : (
-                               <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${o.type === 'DELIVERY' ? 'bg-brand-red text-white' : 'bg-brand-brown/5 text-brand-brown/40'}`}>
+                               <span className="px-2 py-0.5 rounded text-[8px] font-black uppercase bg-brand-brown/5 text-brand-brown/40">
                                  {o.type.replace('_', ' ')}
                                </span>
                              )}
@@ -4117,6 +4306,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                         <option value="DINE_IN">Dine-in Enthusiast (&gt;70%)</option>
                         <option value="TAKEAWAY">Takeaway Focused (&gt;70%)</option>
                         <option value="DELIVERY">Delivery Only (&gt;70%)</option>
+                        <option value="DELIVERY_MINMOMOS">Delivery • MinMomos (&gt;70%)</option>
+                        <option value="DELIVERY_MINCHICKEN">Delivery • MinChicken (&gt;70%)</option>
                         <option value="UNCLASSIFIED">Unclassified / Mixed</option>
                       </select>
                     </div>
@@ -4159,12 +4350,20 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                    const dineInRate = stats ? stats.DINE_IN / stats.total : 0;
                    const takeawayRate = stats ? stats.TAKEAWAY / stats.total : 0;
                    const deliveryRate = stats ? stats.DELIVERY / stats.total : 0;
+                   const minmomosRate = stats ? (stats.DELIVERY_MINMOMOS || 0) / stats.total : 0;
+                   const minchickenRate = stats ? (stats.DELIVERY_MINCHICKEN || 0) / stats.total : 0;
                    let label = '';
                    let labelColor = 'bg-brand-red text-white';
                    
                    if (dineInRate > 0.7) label = 'Dine-in';
                    else if (takeawayRate > 0.7) label = 'Takeaway';
-                   else if (deliveryRate > 0.7) {
+                   else if (minmomosRate > 0.7) {
+                     label = '🥟 MinMomos';
+                     labelColor = 'bg-[#D95323] text-white';
+                   } else if (minchickenRate > 0.7) {
+                     label = '🍗 MinChicken';
+                     labelColor = 'bg-amber-600 text-white';
+                   } else if (deliveryRate > 0.7) {
                      label = 'Delivery';
                      labelColor = 'bg-blue-500 text-white';
                    }
@@ -4232,9 +4431,13 @@ const Analytics: React.FC<AnalyticsProps> = ({ user }) => {
                             const dineInRate = stats ? stats.DINE_IN / stats.total : 0;
                             const takeawayRate = stats ? stats.TAKEAWAY / stats.total : 0;
                             const deliveryRate = stats ? stats.DELIVERY / stats.total : 0;
+                            const minmomosRate = stats ? (stats.DELIVERY_MINMOMOS || 0) / stats.total : 0;
+                            const minchickenRate = stats ? (stats.DELIVERY_MINCHICKEN || 0) / stats.total : 0;
 
                             if (dineInRate > 0.7) return <span className="bg-brand-yellow text-brand-brown text-[8px] font-black px-2 py-0.5 rounded-full uppercase">Dine-in Enthusiast</span>;
                             if (takeawayRate > 0.7) return <span className="bg-brand-yellow text-brand-brown text-[8px] font-black px-2 py-0.5 rounded-full uppercase">Takeaway Focused</span>;
+                            if (minmomosRate > 0.7) return <span className="bg-[#D95323] text-white text-[8px] font-black px-2 py-0.5 rounded-full uppercase">🥟 MinMomos Delivery</span>;
+                            if (minchickenRate > 0.7) return <span className="bg-amber-600 text-white text-[8px] font-black px-2 py-0.5 rounded-full uppercase">🍗 MinChicken Delivery</span>;
                             if (deliveryRate > 0.7) return <span className="bg-blue-400 text-white text-[8px] font-black px-2 py-0.5 rounded-full uppercase">Delivery Only</span>;
                             return <span className="bg-white/10 text-white/60 text-[8px] font-black px-2 py-0.5 rounded-full uppercase italic">Mixed Preferences</span>;
                           })()}
@@ -5614,13 +5817,31 @@ BENEFITS:
 
                   <div className="bg-brand-brown/5 rounded-2xl p-4 border border-brand-stone flex flex-col justify-between">
                     <div>
-                      <span className="text-[9px] font-black uppercase text-brand-brown/60 tracking-wider">🛵 Delivery Add-on</span>
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[9px] font-black uppercase text-brand-brown/60 tracking-wider">🛵 Delivery Add-on</span>
+                        <div className="inline-flex bg-white p-0.5 rounded-lg border border-brand-stone">
+                          {(['ALL', 'MINMOMOS', 'MINCHICKEN'] as const).map(b => (
+                            <button
+                              key={b}
+                              type="button"
+                              onClick={() => setAddonDeliveryBrandFilter(b)}
+                              className={`px-1.5 py-0.5 rounded text-[7.5px] font-black uppercase cursor-pointer ${
+                                addonDeliveryBrandFilter === b
+                                  ? 'bg-[#0f6b4f] text-white'
+                                  : 'text-brand-brown/50 hover:text-brand-brown'
+                              }`}
+                            >
+                              {b === 'ALL' ? 'All' : b === 'MINMOMOS' ? '🥟 MM' : '🍗 MC'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                       <p className="text-2xl font-black text-brand-brown mt-1">
-                        {financialData.deliveryAddonPercent.toFixed(1)}%
+                        {financialData.deliveryByBrand[addonDeliveryBrandFilter].addonPercent.toFixed(1)}%
                       </p>
                     </div>
                     <p className="text-[10px] font-bold text-brand-brown/50 mt-2">
-                      {financialData.deliveryAddonOrders} of {financialData.deliveryOrdersCount} delivery orders
+                      {financialData.deliveryByBrand[addonDeliveryBrandFilter].addonOrders} of {financialData.deliveryByBrand[addonDeliveryBrandFilter].ordersCount} {addonDeliveryBrandFilter === 'ALL' ? 'delivery' : addonDeliveryBrandFilter === 'MINMOMOS' ? 'MinMomos' : 'MinChicken'} orders
                     </p>
                   </div>
                 </div>
@@ -5632,11 +5853,17 @@ BENEFITS:
                       {financialData.offlineAddonPercent.toFixed(1)}% ({financialData.offlineAddonOrdersCount}/{financialData.offlineOrdersCount})
                     </span>
                   </div>
-                  <div className="flex items-center justify-between p-3 bg-orange-50/80 rounded-xl border border-orange-200">
-                    <span className="font-bold text-orange-900">Online Channel (Delivery):</span>
-                    <span className="font-black text-orange-950">
-                      {financialData.onlineAddonPercent.toFixed(1)}% ({financialData.onlineAddonOrdersCount}/{financialData.onlineOrdersCount})
-                    </span>
+                  <div className="flex flex-col gap-1 p-3 bg-orange-50/80 rounded-xl border border-orange-200">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-orange-900">Online Channel (Delivery):</span>
+                      <span className="font-black text-orange-950">
+                        {financialData.onlineAddonPercent.toFixed(1)}% ({financialData.onlineAddonOrdersCount}/{financialData.onlineOrdersCount})
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] font-bold text-orange-800/80">
+                      <span>🥟 MinMomos: {financialData.deliveryByBrand.MINMOMOS.addonPercent.toFixed(1)}% ({financialData.deliveryByBrand.MINMOMOS.addonOrders}/{financialData.deliveryByBrand.MINMOMOS.ordersCount})</span>
+                      <span>🍗 MinChicken: {financialData.deliveryByBrand.MINCHICKEN.addonPercent.toFixed(1)}% ({financialData.deliveryByBrand.MINCHICKEN.addonOrders}/{financialData.deliveryByBrand.MINCHICKEN.ordersCount})</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -5791,28 +6018,34 @@ BENEFITS:
                   {/* Delivery Channel */}
                   <div className="bg-[#faf8f5] rounded-2xl p-4 border border-brand-stone flex flex-col justify-between">
                     <div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-black uppercase text-brand-brown/70 tracking-wider">Delivery</span>
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[10px] font-black uppercase text-brand-brown/70 tracking-wider">
+                          Delivery {addonDeliveryBrandFilter === 'MINMOMOS' ? '• 🥟 MM' : addonDeliveryBrandFilter === 'MINCHICKEN' ? '• 🍗 MC' : ''}
+                        </span>
                         <span className="text-xs font-black text-[#0f6b4f]">
-                          {financialData.deliveryDrinkAttachPercent.toFixed(1)}% Total
+                          {financialData.deliveryByBrand[addonDeliveryBrandFilter].drinkAttachPercent.toFixed(1)}% Total
                         </span>
                       </div>
                       <p className="text-[10px] font-bold text-brand-brown/50 mt-0.5">
-                        {financialData.deliveryDrinkOrders} of {financialData.deliveryOrdersCount} orders
+                        {financialData.deliveryByBrand[addonDeliveryBrandFilter].drinkOrders} of {financialData.deliveryByBrand[addonDeliveryBrandFilter].ordersCount} orders
                       </p>
 
                       <div className="mt-3 pt-3 border-t border-brand-stone space-y-2">
                         <div className="flex items-center justify-between text-xs">
                           <span className="text-brand-brown/70 flex items-center gap-1">🍾 Packaged:</span>
                           <span className="font-black text-brand-brown">
-                            {financialData.deliveryPackagedDrinkPercent.toFixed(1)}% <span className="text-[10px] font-bold text-brand-brown/50">({financialData.deliveryPackagedDrinkOrders})</span>
+                            {financialData.deliveryByBrand[addonDeliveryBrandFilter].packagedDrinkPercent.toFixed(1)}% <span className="text-[10px] font-bold text-brand-brown/50">({financialData.deliveryByBrand[addonDeliveryBrandFilter].packagedDrinkOrders})</span>
                           </span>
                         </div>
                         <div className="flex items-center justify-between text-xs">
                           <span className="text-brand-brown/70 flex items-center gap-1">🍹 Fresh:</span>
                           <span className="font-black text-emerald-700">
-                            {financialData.deliveryNonPackagedDrinkPercent.toFixed(1)}% <span className="text-[10px] font-bold text-brand-brown/50">({financialData.deliveryNonPackagedDrinkOrders})</span>
+                            {financialData.deliveryByBrand[addonDeliveryBrandFilter].nonPackagedDrinkPercent.toFixed(1)}% <span className="text-[10px] font-bold text-brand-brown/50">({financialData.deliveryByBrand[addonDeliveryBrandFilter].nonPackagedDrinkOrders})</span>
                           </span>
+                        </div>
+                        <div className="flex items-center justify-between pt-1.5 border-t border-brand-stone/60 text-[9.5px] font-bold text-brand-brown/60">
+                          <span>🥟 {financialData.deliveryByBrand.MINMOMOS.drinkAttachPercent.toFixed(1)}%</span>
+                          <span>🍗 {financialData.deliveryByBrand.MINCHICKEN.drinkAttachPercent.toFixed(1)}%</span>
                         </div>
                       </div>
                     </div>

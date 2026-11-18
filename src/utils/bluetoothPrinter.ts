@@ -1,5 +1,5 @@
 
-import { OrderItem, PaymentMethod, OrderType } from '../types';
+import { OrderItem, PaymentMethod, OrderType, DeliveryBrand } from '../types';
 
 // Standard ESC/POS Commands
 const ESC = 0x1B;
@@ -128,6 +128,7 @@ export class BluetoothPrinter {
     paymentMethod: PaymentMethod;
     branchName: string;
     orderType: OrderType;
+    deliveryBrand?: DeliveryBrand | null;
   }): Promise<boolean> {
     if (!this.characteristic) {
       console.error('Printer not connected');
@@ -135,7 +136,7 @@ export class BluetoothPrinter {
     }
 
     try {
-      const { orderItems, billNumber, paymentMethod, branchName, orderType } = params;
+      const { orderItems, billNumber, paymentMethod, branchName, orderType, deliveryBrand } = params;
       const total = orderItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
       const date = new Date().toLocaleString();
 
@@ -145,14 +146,19 @@ export class BluetoothPrinter {
         ESC, 0x45, 0x01, // Bold on
       ];
 
+      const brandTitle = orderType === 'DELIVERY' && deliveryBrand === 'MINCHICKEN' ? 'minchicken' : 'minmomos';
+      const typeLabel = orderType === 'DELIVERY'
+        ? `*** DELIVERY - ${deliveryBrand === 'MINCHICKEN' ? 'MINCHICKEN' : 'MINMOMOS'} ***`
+        : `*** ${orderType} ***`;
+
       // Header Content
       const header = [
-        ...Array.from(this.encode('minmomos\n')),
+        ...Array.from(this.encode(`${brandTitle}\n`)),
         ESC, 0x45, 0x00, // Bold off
         ...Array.from(this.encode('the ultimate momo station\n')),
         ...Array.from(this.encode(`${branchName}\n`)),
         ...Array.from(this.encode('--------------------------------\n')),
-        ...Array.from(this.encode(`*** ${orderType} ***\n\n`)),
+        ...Array.from(this.encode(`${typeLabel}\n\n`)),
       ];
       commands.push(...header);
 

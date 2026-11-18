@@ -13,6 +13,8 @@ export interface MenuSection {
   created_at?: string;
 }
 export type OrderType = 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
+export type DeliveryBrand = 'MINMOMOS' | 'MINCHICKEN';
+export type DeliveryBrandFilter = 'ALL' | DeliveryBrand;
 export type OrderStatus = 'ORDERED' | 'PREPARING' | 'READY' | 'SERVED' | 'COMPLETED' | 'CANCELLED' | 'REVIEW_COLLECTED' | 'REVIEW_DENIED';
 export type UserRole = 'ADMIN' | 'STORE_MANAGER' | 'CASHIER' | 'COFOUNDER' | 'HR';
 export type MaterialCategory = 'MOMO' | 'PACKET' | 'INGREDIENT';
@@ -205,6 +207,7 @@ export interface CompletedOrder {
   manualDiscount?: number;
   cashierId?: string;
   cashierName?: string;
+  deliveryBrand?: DeliveryBrand | null;
   deletionInfo?: {
     reason: string;
     date: string;

@@ -1,5 +1,5 @@
 
-import { CompletedOrder, OrderItem, PaymentMethod, OrderType, OrderStatus, RawMaterial, User, Station, CentralMaterial, MaterialCategory, MenuItem, MenuSection, Size, StockAllocation, Customer, RecipeRequirement } from '../types';
+import { CompletedOrder, OrderItem, PaymentMethod, OrderType, DeliveryBrand, OrderStatus, RawMaterial, User, Station, CentralMaterial, MaterialCategory, MenuItem, MenuSection, Size, StockAllocation, Customer, RecipeRequirement } from '../types';
 import { supabase } from './supabase';
 import { RAW_MATERIALS_LIST, MENU_ITEMS, DEFAULT_MENU_SECTIONS } from '../constants';
 import { generateReferralCodeForPhone, generateGangCouponForPhone, checkReferralEligibility, applyReferralReward, isReferralCodeSent, isGangCouponSent } from './referralStorage';
@@ -1369,6 +1369,9 @@ function mapDatabaseOrderToType(o: any): CompletedOrder {
     manualDiscount: o.manual_discount,
     cashierId: o.cashier_id,
     cashierName: o.cashier_name,
+    deliveryBrand: (o.type || '').toUpperCase() === 'DELIVERY'
+      ? ((o.delivery_brand || '').toUpperCase() === 'MINCHICKEN' ? 'MINCHICKEN' : 'MINMOMOS')
+      : null,
     deletionInfo: o.deletion_info,
     appliedCouponCode: extractCouponCodeFromOrder({ items: rawItems }) || undefined,
     items: rawItems.map((i: any) => ({ 
@@ -1617,9 +1620,13 @@ export async function saveOrder(
   manualTotal?: number,
   manualDiscount?: number,
   cashierId?: string,
-  cashierName?: string
+  cashierName?: string,
+  deliveryBrand?: DeliveryBrand | null
 ): Promise<number | null> {
   try {
+    if (type === 'DELIVERY' && !deliveryBrand) {
+      throw new Error('Please select a Zomato brand (MinMomos or MinChicken) before billing a delivery order.');
+    }
     const nextBillNumber = await peekNextBillNumber();
     
     if (customerPhone) {
@@ -1675,11 +1682,15 @@ export async function saveOrder(
       manual_total: type === 'DELIVERY' && manualTotal != null ? Math.round(manualTotal) : null,
       manual_discount: type === 'DELIVERY' && manualDiscount != null ? Math.round(manualDiscount) : null,
       cashier_id: cashierId || null,
-      cashier_name: cashierName || null
+      cashier_name: cashierName || null,
+      delivery_brand: type === 'DELIVERY' ? (deliveryBrand || null) : null
     }).select().single();
     
     if (orderError) {
       console.error("Order Insert Error:", orderError);
+      if (orderError.code === '42703' || orderError.message?.includes('delivery_brand')) {
+        throw new Error("Supabase column 'orders.delivery_brand' is missing. Please run the SQL migration in Supabase SQL Editor first.");
+      }
       throw orderError;
     }
 
@@ -2563,19 +2574,30 @@ export async function getOrdersForDateRange(startDate: string, endDate: string, 
   const pageSize = 1000;
   let hasMore = true;
 
+  let includeBrandCol = true;
   while (hasMore) {
     const from = page * pageSize;
     const to = from + pageSize - 1;
     
+    const selectCols = includeBrandCol
+      ? 'id, bill_number, total, payment_method, branch_name, type, status, table_id, customer_phone, date, manual_total, manual_discount, customer_id, cashier_id, cashier_name, delivery_brand, deletion_info'
+      : 'id, bill_number, total, payment_method, branch_name, type, status, table_id, customer_phone, date, manual_total, manual_discount, customer_id, cashier_id, cashier_name, deletion_info';
+
     // Select order fields directly without nested join to prevent PostgREST statement timeout (>3s) on large ranges (>60d)
     const { data, error } = await supabase
       .from('orders')
-      .select('id, bill_number, total, payment_method, branch_name, type, status, table_id, customer_phone, date, manual_total, manual_discount, customer_id, cashier_id, cashier_name, deletion_info')
+      .select(selectCols)
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`)
       .is('deletion_info', null)
       .order('bill_number', { ascending: false })
       .range(from, to);
+
+    if (error && includeBrandCol && (error.code === '42703' || error.message?.includes('delivery_brand'))) {
+      console.warn("orders.delivery_brand column missing in Supabase; falling back without delivery_brand. Run supabase_delivery_brand_migration.sql.");
+      includeBrandCol = false;
+      continue;
+    }
 
     if (error || !data || data.length === 0) {
       if (error) console.error("Error querying orders for range:", error);
@@ -2775,18 +2797,28 @@ export async function getDeletedOrdersForDateRange(startDate: string, endDate: s
   const pageSize = 1000;
   let hasMore = true;
 
+  let includeBrandCol = true;
   while (hasMore) {
     const from = page * pageSize;
     const to = from + pageSize - 1;
     
+    const selectCols = includeBrandCol
+      ? 'id, bill_number, total, payment_method, branch_name, type, status, table_id, customer_phone, date, manual_total, manual_discount, customer_id, cashier_id, cashier_name, delivery_brand, deletion_info'
+      : 'id, bill_number, total, payment_method, branch_name, type, status, table_id, customer_phone, date, manual_total, manual_discount, customer_id, cashier_id, cashier_name, deletion_info';
+
     const { data, error } = await supabase
       .from('orders')
-      .select('id, bill_number, total, payment_method, branch_name, type, status, table_id, customer_phone, date, manual_total, manual_discount, customer_id, cashier_id, cashier_name, deletion_info')
+      .select(selectCols)
       .gte('date', `${startDate}T00:00:00+05:30`)
       .lte('date', `${endDate}T23:59:59+05:30`)
       .not('deletion_info', 'is', null)
       .order('bill_number', { ascending: false })
       .range(from, to);
+
+    if (error && includeBrandCol && (error.code === '42703' || error.message?.includes('delivery_brand'))) {
+      includeBrandCol = false;
+      continue;
+    }
 
     if (error || !data || data.length === 0) {
       if (error) console.error("Error querying deleted orders:", error);
@@ -3383,44 +3415,61 @@ export async function fetchMauOrders(forceRefresh = false): Promise<CompletedOrd
   return mapped;
 }
 
-let customerClassificationCache: { timestamp: number; data: Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }> } | null = null;
+let customerClassificationCache: { timestamp: number; data: Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, DELIVERY_MINMOMOS: number, DELIVERY_MINCHICKEN: number, total: number }> } | null = null;
 const CLASSIFICATION_CACHE_TTL = 15 * 60 * 1000;
 
 export function invalidateClassificationCache(): void {
   customerClassificationCache = null;
 }
 
-export async function fetchCustomerClassificationStats(forceRefresh = false): Promise<Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }>> {
+export async function fetchCustomerClassificationStats(forceRefresh = false): Promise<Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, DELIVERY_MINMOMOS: number, DELIVERY_MINCHICKEN: number, total: number }>> {
   if (!forceRefresh && customerClassificationCache && (Date.now() - customerClassificationCache.timestamp < CLASSIFICATION_CACHE_TTL)) {
     return customerClassificationCache.data;
   }
 
-  const { data: allOrders, error } = await supabase
+  let { data: allOrders, error } = await supabase
     .from('orders')
-    .select('customer_phone, type')
+    .select('customer_phone, type, delivery_brand')
     .is('deletion_info', null)
     .not('customer_phone', 'is', null)
     .order('date', { ascending: false })
     .limit(3000);
 
+  if (error && (error.code === '42703' || error.message?.includes('delivery_brand'))) {
+    const fallback = await supabase
+      .from('orders')
+      .select('customer_phone, type')
+      .is('deletion_info', null)
+      .not('customer_phone', 'is', null)
+      .order('date', { ascending: false })
+      .limit(3000);
+    allOrders = (fallback.data || []).map((o: any) => ({ ...o, delivery_brand: null }));
+    error = fallback.error;
+  }
+
   if (error || !allOrders) return customerClassificationCache?.data || {};
 
-  const stats: Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, total: number }> = {};
+  const stats: Record<string, { DINE_IN: number, TAKEAWAY: number, DELIVERY: number, DELIVERY_MINMOMOS: number, DELIVERY_MINCHICKEN: number, total: number }> = {};
 
-  allOrders.forEach(o => {
+  allOrders.forEach((o: any) => {
     const rawPhone = o.customer_phone?.toString();
     if (!rawPhone) return;
 
     const normalized = normalizePhone(rawPhone);
     if (!stats[normalized]) {
-      stats[normalized] = { DINE_IN: 0, TAKEAWAY: 0, DELIVERY: 0, total: 0 };
+      stats[normalized] = { DINE_IN: 0, TAKEAWAY: 0, DELIVERY: 0, DELIVERY_MINMOMOS: 0, DELIVERY_MINCHICKEN: 0, total: 0 };
     }
 
     stats[normalized].total++;
     const type = o.type?.toUpperCase();
+    const brand = o.delivery_brand?.toUpperCase();
     if (type === 'DINE_IN') stats[normalized].DINE_IN++;
     else if (type === 'TAKEAWAY') stats[normalized].TAKEAWAY++;
-    else if (type === 'DELIVERY') stats[normalized].DELIVERY++;
+    else if (type === 'DELIVERY') {
+      stats[normalized].DELIVERY++;
+      if (brand === 'MINCHICKEN') stats[normalized].DELIVERY_MINCHICKEN++;
+      else stats[normalized].DELIVERY_MINMOMOS++;
+    }
   });
 
   customerClassificationCache = { timestamp: Date.now(), data: stats };

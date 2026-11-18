@@ -122,8 +122,9 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
   const [itemSearchQuery, setItemSearchQuery] = useState<string>('');
 
   // Channel & Segment Filters
-  const [channelFilter, setChannelFilter] = useState<'ALL' | 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY'>('ALL');
+  const [channelFilter, setChannelFilter] = useState<'ALL' | 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY' | 'DELIVERY_MINMOMOS' | 'DELIVERY_MINCHICKEN'>('ALL');
   const [segmentFilter, setSegmentFilter] = useState<'ALL' | 'STUDENT' | 'REGULAR'>('ALL');
+  const [splitDeliveryBrands, setSplitDeliveryBrands] = useState<boolean>(false);
 
   // Curve Breakdowns
   const [curveMode, setCurveMode] = useState<'unified' | 'splitChannel' | 'splitSegment'>('unified');
@@ -294,6 +295,8 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
       dineInUnits: number;
       takeawayUnits: number;
       deliveryUnits: number;
+      minmomosUnits: number;
+      minchickenUnits: number;
       studentUnits: number;
       regularUnits: number;
       revenue: number;
@@ -318,6 +321,8 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
         dineInUnits: 0,
         takeawayUnits: 0,
         deliveryUnits: 0,
+        minmomosUnits: 0,
+        minchickenUnits: 0,
         studentUnits: 0,
         regularUnits: 0,
         revenue: 0,
@@ -330,6 +335,8 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
     let overallDineIn = 0;
     let overallTakeaway = 0;
     let overallDelivery = 0;
+    let overallMinMomos = 0;
+    let overallMinChicken = 0;
     let overallStudent = 0;
     let overallRegular = 0;
 
@@ -339,7 +346,11 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
       if (!dayEntry) return;
 
       // Channel Filter check
-      if (channelFilter !== 'ALL' && order.type !== channelFilter) {
+      if (channelFilter === 'DELIVERY_MINMOMOS') {
+        if (order.type !== 'DELIVERY' || (order.deliveryBrand || '').toUpperCase() === 'MINCHICKEN') return;
+      } else if (channelFilter === 'DELIVERY_MINCHICKEN') {
+        if (order.type !== 'DELIVERY' || (order.deliveryBrand || '').toUpperCase() !== 'MINCHICKEN') return;
+      } else if (channelFilter !== 'ALL' && order.type !== channelFilter) {
         return;
       }
 
@@ -377,7 +388,11 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
 
         if (order.type === 'DINE_IN') dayEntry.dineInUnits += qty;
         else if (order.type === 'TAKEAWAY') dayEntry.takeawayUnits += qty;
-        else if (order.type === 'DELIVERY') dayEntry.deliveryUnits += qty;
+        else if (order.type === 'DELIVERY') {
+          dayEntry.deliveryUnits += qty;
+          if ((order.deliveryBrand || '').toUpperCase() === 'MINCHICKEN') dayEntry.minchickenUnits += qty;
+          else dayEntry.minmomosUnits += qty;
+        }
 
         if (isStudent) dayEntry.studentUnits += qty;
         else dayEntry.regularUnits += qty;
@@ -386,7 +401,11 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
         overallRevenue += rev;
         if (order.type === 'DINE_IN') overallDineIn += qty;
         else if (order.type === 'TAKEAWAY') overallTakeaway += qty;
-        else if (order.type === 'DELIVERY') overallDelivery += qty;
+        else if (order.type === 'DELIVERY') {
+          overallDelivery += qty;
+          if ((order.deliveryBrand || '').toUpperCase() === 'MINCHICKEN') overallMinChicken += qty;
+          else overallMinMomos += qty;
+        }
 
         if (isStudent) overallStudent += qty;
         else overallRegular += qty;
@@ -424,6 +443,8 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
           dineIn: overallDineIn,
           takeaway: overallTakeaway,
           delivery: overallDelivery,
+          minmomos: overallMinMomos,
+          minchicken: overallMinChicken,
           dineInPct: overallUnits > 0 ? Math.round((overallDineIn / overallUnits) * 100) : 0,
           takeawayPct: overallUnits > 0 ? Math.round((overallTakeaway / overallUnits) * 100) : 0,
           deliveryPct: overallUnits > 0 ? Math.round((overallDelivery / overallUnits) * 100) : 0,
@@ -714,6 +735,30 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
               <Truck className="w-3 h-3" />
               Delivery
             </button>
+
+            <button
+              type="button"
+              onClick={() => setChannelFilter('DELIVERY_MINMOMOS')}
+              className={`px-2.5 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-tight transition-all border cursor-pointer flex items-center justify-center gap-1 ${
+                channelFilter === 'DELIVERY_MINMOMOS'
+                  ? 'bg-[#D95323] text-white border-[#D95323] shadow-xs'
+                  : 'bg-white text-[#D95323] border-brand-stone hover:border-[#D95323]/40'
+              }`}
+            >
+              🥟 MinMomos
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setChannelFilter('DELIVERY_MINCHICKEN')}
+              className={`px-2.5 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-tight transition-all border cursor-pointer flex items-center justify-center gap-1 ${
+                channelFilter === 'DELIVERY_MINCHICKEN'
+                  ? 'bg-[#D97706] text-white border-[#D97706] shadow-xs'
+                  : 'bg-white text-amber-800 border-brand-stone hover:border-amber-500/40'
+              }`}
+            >
+              🍗 MinChicken
+            </button>
           </div>
         </div>
 
@@ -923,6 +968,12 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
               <span className="text-rose-700">Delv:</span>
               <span className="font-mono">{summaryMetrics.channelSplit.deliveryPct}% ({summaryMetrics.channelSplit.delivery}u)</span>
             </div>
+            {(summaryMetrics.channelSplit.minmomos > 0 || summaryMetrics.channelSplit.minchicken > 0) && (
+              <div className="flex justify-between items-center text-[8.5px] font-bold text-brand-brown/60 pt-0.5 border-t border-brand-stone/50">
+                <span>🥟 {summaryMetrics.channelSplit.minmomos}u</span>
+                <span>🍗 {summaryMetrics.channelSplit.minchicken}u</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1019,6 +1070,21 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
             </button>
           </div>
 
+          {curveMode === 'splitChannel' && (
+            <button
+              type="button"
+              onClick={() => setSplitDeliveryBrands(prev => !prev)}
+              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider border cursor-pointer transition-all ${
+                splitDeliveryBrands
+                  ? 'bg-[#D95323] text-white border-[#D95323] shadow-xs'
+                  : 'bg-white text-brand-brown/70 border-brand-stone hover:border-[#D95323]/40'
+              }`}
+              title="Split Delivery curve into MinMomos vs MinChicken"
+            >
+              {splitDeliveryBrands ? '🥟🍗 Brands Split' : 'Split Zomato Brands'}
+            </button>
+          )}
+
           {/* Toggle Table Breakdown */}
           <button
             type="button"
@@ -1079,7 +1145,14 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
                   <>
                     <Bar dataKey="dineInUnits" name="Dine In" stackId="a" fill="#10B981" isAnimationActive={false} />
                     <Bar dataKey="takeawayUnits" name="Takeaway" stackId="a" fill="#3B82F6" isAnimationActive={false} />
-                    <Bar dataKey="deliveryUnits" name="Delivery" stackId="a" fill="#E11D48" isAnimationActive={false} />
+                    {splitDeliveryBrands ? (
+                      <>
+                        <Bar dataKey="minmomosUnits" name="🥟 MinMomos" stackId="a" fill="#D95323" isAnimationActive={false} />
+                        <Bar dataKey="minchickenUnits" name="🍗 MinChicken" stackId="a" fill="#D97706" isAnimationActive={false} />
+                      </>
+                    ) : (
+                      <Bar dataKey="deliveryUnits" name="Delivery" stackId="a" fill="#E11D48" isAnimationActive={false} />
+                    )}
                   </>
                 )}
 
@@ -1133,7 +1206,14 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
                   <>
                     <Line type="monotone" dataKey="dineInUnits" name="Dine In" stroke="#10B981" strokeWidth={2.5} dot={{ fill: '#10B981', r: 3 }} isAnimationActive={false} />
                     <Line type="monotone" dataKey="takeawayUnits" name="Takeaway" stroke="#3B82F6" strokeWidth={2.5} dot={{ fill: '#3B82F6', r: 3 }} isAnimationActive={false} />
-                    <Line type="monotone" dataKey="deliveryUnits" name="Delivery" stroke="#E11D48" strokeWidth={2.5} dot={{ fill: '#E11D48', r: 3 }} isAnimationActive={false} />
+                    {splitDeliveryBrands ? (
+                      <>
+                        <Line type="monotone" dataKey="minmomosUnits" name="🥟 MinMomos" stroke="#D95323" strokeWidth={2.5} dot={{ fill: '#D95323', r: 3 }} isAnimationActive={false} />
+                        <Line type="monotone" dataKey="minchickenUnits" name="🍗 MinChicken" stroke="#D97706" strokeWidth={2.5} dot={{ fill: '#D97706', r: 3 }} isAnimationActive={false} />
+                      </>
+                    ) : (
+                      <Line type="monotone" dataKey="deliveryUnits" name="Delivery" stroke="#E11D48" strokeWidth={2.5} dot={{ fill: '#E11D48', r: 3 }} isAnimationActive={false} />
+                    )}
                   </>
                 )}
 
@@ -1162,6 +1242,14 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
                   <linearGradient id="colorDelv" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#E11D48" stopOpacity={0.8}/>
                     <stop offset="95%" stopColor="#E11D48" stopOpacity={0.05}/>
+                  </linearGradient>
+                  <linearGradient id="colorMinMomos" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#D95323" stopOpacity={0.8}/>
+                    <stop offset="95%" stopColor="#D95323" stopOpacity={0.05}/>
+                  </linearGradient>
+                  <linearGradient id="colorMinChicken" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#D97706" stopOpacity={0.8}/>
+                    <stop offset="95%" stopColor="#D97706" stopOpacity={0.05}/>
                   </linearGradient>
                   <linearGradient id="colorStudent" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#8B5CF6" stopOpacity={0.8}/>
@@ -1213,7 +1301,14 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
                   <>
                     <Area type="monotone" dataKey="dineInUnits" name="Dine In" stroke="#10B981" strokeWidth={2} fillOpacity={0.6} fill="url(#colorDine)" isAnimationActive={false} />
                     <Area type="monotone" dataKey="takeawayUnits" name="Takeaway" stroke="#3B82F6" strokeWidth={2} fillOpacity={0.6} fill="url(#colorTake)" isAnimationActive={false} />
-                    <Area type="monotone" dataKey="deliveryUnits" name="Delivery" stroke="#E11D48" strokeWidth={2} fillOpacity={0.6} fill="url(#colorDelv)" isAnimationActive={false} />
+                    {splitDeliveryBrands ? (
+                      <>
+                        <Area type="monotone" dataKey="minmomosUnits" name="🥟 MinMomos" stroke="#D95323" strokeWidth={2} fillOpacity={0.6} fill="url(#colorMinMomos)" isAnimationActive={false} />
+                        <Area type="monotone" dataKey="minchickenUnits" name="🍗 MinChicken" stroke="#D97706" strokeWidth={2} fillOpacity={0.6} fill="url(#colorMinChicken)" isAnimationActive={false} />
+                      </>
+                    ) : (
+                      <Area type="monotone" dataKey="deliveryUnits" name="Delivery" stroke="#E11D48" strokeWidth={2} fillOpacity={0.6} fill="url(#colorDelv)" isAnimationActive={false} />
+                    )}
                   </>
                 )}
 
@@ -1282,7 +1377,14 @@ export const ItemSalesTrend: React.FC<ItemSalesTrendProps> = ({
                     </td>
                     <td className="px-4 py-2.5 text-center text-emerald-800">{day.dineInUnits}</td>
                     <td className="px-4 py-2.5 text-center text-blue-800">{day.takeawayUnits}</td>
-                    <td className="px-4 py-2.5 text-center text-rose-800">{day.deliveryUnits}</td>
+                    <td className="px-4 py-2.5 text-center text-rose-800">
+                      {day.deliveryUnits}
+                      {(day.minmomosUnits > 0 || day.minchickenUnits > 0) && (
+                        <span className="block text-[8px] font-bold text-brand-brown/50">
+                          🥟{day.minmomosUnits} • 🍗{day.minchickenUnits}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-2.5 text-center text-purple-800">{day.studentUnits}</td>
                     <td className="px-4 py-2.5 text-center text-amber-800">{day.regularUnits}</td>
                     <td className="px-4 py-2.5 text-right font-black font-mono">₹{Math.round(day.revenue).toLocaleString()}</td>

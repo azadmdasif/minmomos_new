@@ -3,6 +3,7 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { assistantTools, executeReadOnlyTool, handleLocalQueryFallback } from './server/aiAssistant';
+import { aggregateTicketBucketsForPeriod } from './server/ticketBuckets';
 
 dotenv.config();
 
@@ -546,20 +547,103 @@ CRITICAL SECURITY AND OPERATIONAL MANDATES:
   }
 });
 
+// -------------------------------------------------------------------------
+// Analytics API: Server-side Ticket Bucket Aggregation (IST)
+// -------------------------------------------------------------------------
+app.post('/api/analytics/ticket-buckets', async (req: Request, res: Response) => {
+  try {
+    const { startDate, endDate, branchName, segmentFilter, excludeToday, buckets, forceRefresh } = req.body || {};
+
+    if (!startDate || !endDate || !Array.isArray(buckets)) {
+      return res.status(400).json({ error: 'startDate, endDate, and buckets array are required.' });
+    }
+
+    const result = await aggregateTicketBucketsForPeriod({
+      startDate,
+      endDate,
+      branchName: branchName || 'All',
+      segmentFilter: segmentFilter || 'ALL',
+      excludeToday: excludeToday !== false,
+      buckets,
+      forceRefresh: Boolean(forceRefresh)
+    });
+
+    return res.json(result);
+  } catch (err: any) {
+    console.error('Ticket bucket aggregation error:', err);
+    return res.status(500).json({ error: err?.message || 'Failed to aggregate ticket buckets' });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', service: 'Momomaya POS & ATS Backend', timestamp: new Date().toISOString() });
 });
 
 // -------------------------------------------------------------------------
-// Vite Middleware / Static Serving
+// Service Worker Cleanup & Vite Middleware / Static Serving
 // -------------------------------------------------------------------------
+const CLEANUP_SW_SCRIPT = `// Self-destroying cleanup Service Worker
+self.addEventListener('install', () => { self.skipWaiting(); });
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    try {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    } catch (_) {}
+    try { await self.registration.unregister(); } catch (_) {}
+    try {
+      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of clients) {
+        if ('navigate' in client) client.navigate(client.url);
+      }
+    } catch (_) {}
+  })());
+});
+`;
+
+function setNoCacheHeaders(res: Response) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+}
+
+app.get(['/sw.js', '/service-worker.js'], (_req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  setNoCacheHeaders(res);
+  res.send(CLEANUP_SW_SCRIPT);
+});
+
 async function startServer() {
   if (process.env.NODE_ENV === 'production') {
     const distPath = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req: Request, res: Response) => {
-      res.sendFile(path.resolve(distPath, 'index.html'));
+
+    // Never cache index.html or manifest so hashed CSS/JS references are always fresh
+    app.use(
+      express.static(distPath, {
+        index: false,
+        setHeaders: (res, filePath) => {
+          if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          } else {
+            setNoCacheHeaders(res as unknown as Response);
+          }
+        }
+      })
+    );
+
+    // Do NOT return index.html for missing asset/file requests (prevents CSS MIME text/html errors)
+    app.get('*', (req: Request, res: Response) => {
+      const reqPath = req.path || '';
+      if (
+        reqPath.startsWith('/assets/') ||
+        reqPath.startsWith('/api/') ||
+        /\.(css|js|mjs|map|svg|png|jpe?g|webp|gif|ico|woff2?|ttf|json|webmanifest)$/i.test(reqPath)
+      ) {
+        return res.status(404).end();
+      }
+      setNoCacheHeaders(res);
+      return res.sendFile(path.resolve(distPath, 'index.html'));
     });
   } else {
     const { createServer: createViteServer } = await import('vite');

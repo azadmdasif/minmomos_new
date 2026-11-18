@@ -1,5 +1,25 @@
 
-import { MenuItem, OrderItem, DiningTable, MenuSection } from './types';
+import { MenuItem, OrderItem, DiningTable, MenuSection, DeliveryBrand } from './types';
+
+export const DELIVERY_BRANDS: {
+  id: DeliveryBrand;
+  label: string;
+  emoji: string;
+  color: string;
+}[] = [
+  { id: 'MINMOMOS', label: 'MinMomos', emoji: '🥟', color: '#D95323' },
+  { id: 'MINCHICKEN', label: 'MinChicken', emoji: '🍗', color: '#D97706' }
+];
+
+export function normalizeDeliveryBrand(brand?: DeliveryBrand | string | null): DeliveryBrand {
+  return (brand || '').toUpperCase() === 'MINCHICKEN' ? 'MINCHICKEN' : 'MINMOMOS';
+}
+
+export function getDeliveryBrandLabel(brand?: DeliveryBrand | string | null): string {
+  const upper = (brand || '').toUpperCase();
+  if (upper === 'MINCHICKEN') return 'MinChicken';
+  return 'MinMomos';
+}
 
 export const DEFAULT_MENU_SECTIONS: MenuSection[] = [
   { id: 'momo', name: 'Momos', icon: '♨️', display_order: 1, is_active: true },

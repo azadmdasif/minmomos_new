@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { OrderItem, PaymentMethod, OrderType } from '../types';
+import { OrderItem, PaymentMethod, OrderType, DeliveryBrand } from '../types';
 import { extractCouponCodeFromOrder } from '../utils/storage';
 
 interface PrintReceiptProps {
@@ -10,6 +10,7 @@ interface PrintReceiptProps {
   branchName?: string | null;
   date?: string | Date | null;
   orderType?: OrderType;
+  deliveryBrand?: DeliveryBrand | null;
   customerPhone?: string;
   customerCoins?: number;
   customerInitialBalance?: number;
@@ -27,6 +28,7 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
   branchName, 
   date,
   orderType,
+  deliveryBrand,
   customerPhone,
   customerCoins,
   customerInitialBalance,
@@ -102,15 +104,21 @@ const PrintReceipt: React.FC<PrintReceiptProps> = ({
   return (
     <div style={styles.container} id="printable-receipt">
       <div style={styles.center}>
-        <div style={styles.brand}>minmomos</div>
-        <div style={styles.tagline}>the ultimate momo station</div>
+        <div style={styles.brand}>
+          {orderType === 'DELIVERY' && deliveryBrand === 'MINCHICKEN' ? 'minchicken' : 'minmomos'}
+        </div>
+        <div style={styles.tagline}>
+          {orderType === 'DELIVERY' && deliveryBrand === 'MINCHICKEN' ? 'zomato delivery brand' : 'the ultimate momo station'}
+        </div>
         {branchName && <div style={{fontWeight: 'bold', fontSize: '8pt'}}>{branchName}</div>}
       </div>
       
       <div style={styles.divider}></div>
       
       <div style={{fontSize: '8pt', fontWeight: 'bold', textAlign: 'center'}}>
-        *** {orderType?.replace('_', ' ') || 'ORDER'} ***
+        {orderType === 'DELIVERY'
+          ? `*** DELIVERY • ${deliveryBrand === 'MINCHICKEN' ? 'MINCHICKEN' : 'MINMOMOS'} ***`
+          : `*** ${orderType?.replace('_', ' ') || 'ORDER'} ***`}
       </div>
 
       <div style={styles.metaRow}>

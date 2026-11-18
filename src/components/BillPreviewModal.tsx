@@ -3,15 +3,15 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'motion/react';
 import { Send } from 'lucide-react';
-import { OrderItem, PaymentMethod, OrderType, Customer, MenuItem, PreparationType, Size } from '../types';
+import { OrderItem, PaymentMethod, OrderType, DeliveryBrand, Customer, MenuItem, PreparationType, Size } from '../types';
 import PrintReceipt from './PrintReceipt';
 import { getCustomerByPhone } from '../utils/storage';
-import { POPUP_SIDE_ADDONS } from '../constants';
+import { POPUP_SIDE_ADDONS, DELIVERY_BRANDS } from '../constants';
 
 interface BillPreviewModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onConfirm: (paymentMethod: PaymentMethod, useBluetooth?: boolean, manualTotal?: number, manualDiscount?: number) => void;
+  onConfirm: (paymentMethod: PaymentMethod, useBluetooth?: boolean, manualTotal?: number, manualDiscount?: number, deliveryBrand?: DeliveryBrand) => void;
   orderItems: OrderItem[];
   billNumber: number | null;
   branchName: string | null;
@@ -42,6 +42,7 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
   isHistoryView = false
 }) => {
   const [selectedMethod, setSelectedMethod] = useState<PaymentMethod | null>(null);
+  const [selectedBrand, setSelectedBrand] = useState<DeliveryBrand | null>(null);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [manualPrice, setManualPrice] = useState<string>('');
   const [manualDiscount, setManualDiscount] = useState<string>('');
@@ -53,8 +54,18 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
       setCustomer(null);
       setManualPrice('');
       setManualDiscount('');
+      setSelectedBrand(null);
+      setSelectedMethod(null);
     }
   }, [isOpen, customerPhone]);
+
+  useEffect(() => {
+    if (orderType !== 'DELIVERY') {
+      setSelectedBrand(null);
+    }
+  }, [orderType]);
+
+  const isDeliveryBrandMissing = orderType === 'DELIVERY' && !selectedBrand;
 
   const rawTotal = orderItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
   const total = Math.round(rawTotal);
@@ -148,6 +159,10 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
 
   const handleWhatsAppSend = (useBT: boolean = false) => {
     if (!customerPhone) return;
+    if (isDeliveryBrandMissing) {
+      alert('Please select a Zomato brand (MinMomos or MinChicken) before confirming this delivery order.');
+      return;
+    }
     if (coinsRequired > 0 && !hasSufficientCoins) {
         alert(`Insufficient MinCoins balance. Required: ${coinsRequired}, Available: ${customer?.minCoins || 0}. Coins earned from this bill can only be used on your next visit.`);
         return;
@@ -173,7 +188,8 @@ const BillPreviewModal: React.FC<BillPreviewModalProps> = ({
         giftMsg = `\n\n🎁 *CELEBRATION!* 🎁\nYou unlocked a *FREE Celebratory Campa Cola*! Enjoy your treat!`;
       }
 
-      const message = `*MinMomos Bill #${billNumber || '---'}*
+      const brandDisplayName = orderType === 'DELIVERY' && selectedBrand === 'MINCHICKEN' ? 'MinChicken' : 'MinMomos';
+      const message = `*${brandDisplayName} Bill #${billNumber || '---'}*
 --------------------------
 ${orderDetails}
 --------------------------
@@ -188,7 +204,7 @@ ${coinsRequired > 0 ? `Coins Redeemed: -${coinsRequired}\n` : ''}*Final Balance:
 Please leave us a 5-star review here: https://g.page/r/CTktYzZw4C0KEBE/review
 Recieve your free campa cola after replying the  review screenshot here.
 
-_Thank you for visiting MinMomos!_`;
+_Thank you for ordering from ${brandDisplayName}!_`;
 
     const encodedMessage = encodeURIComponent(message);
     const whatsappUrl = `https://wa.me/${customerPhone.replace(/\D/g, '')}?text=${encodedMessage}`;
@@ -201,7 +217,8 @@ _Thank you for visiting MinMomos!_`;
           selectedMethod, 
           useBT, 
           orderType === 'DELIVERY' && manualPrice ? parseFloat(manualPrice) : undefined, 
-          orderType === 'DELIVERY' && manualDiscount ? parseFloat(manualDiscount) : undefined
+          orderType === 'DELIVERY' && manualDiscount ? parseFloat(manualDiscount) : undefined,
+          orderType === 'DELIVERY' ? (selectedBrand || undefined) : undefined
         );
     }
   };
@@ -234,6 +251,7 @@ _Thank you for visiting MinMomos!_`;
                   billNumber={billNumber} 
                   branchName={branchName} 
                   orderType={orderType}
+                  deliveryBrand={orderType === 'DELIVERY' ? selectedBrand : undefined}
                   customerPhone={customerPhone}
                   customerInitialBalance={customer?.minCoins}
                   customerFinalBalance={finalBalance}
@@ -416,15 +434,62 @@ _Thank you for visiting MinMomos!_`;
                   </div>
                 </div>
 
-                {/* Delivery Manual Pricing */}
+                {/* Delivery Manual Pricing & Compulsory Zomato Brand */}
                 {orderType === 'DELIVERY' && (
-                  <div className="bg-brand-red/5 border-2 border-brand-red/10 p-6 rounded-3xl animate-in fade-in slide-in-from-top-4 duration-500">
-                    <div className="flex items-center gap-3 mb-4">
-                      <div className="w-10 h-10 bg-brand-red rounded-xl flex items-center justify-center text-white text-xl shadow-lg">🛵</div>
-                      <div>
-                        <h3 className="text-sm font-black text-brand-brown uppercase italic leading-none">Delivery <span className="text-brand-red">Configuration</span></h3>
-                        <p className="text-[8px] font-black text-brand-red/40 uppercase tracking-widest mt-1">Zomato / Swiggy Pricing</p>
+                  <div className={`border-2 p-6 rounded-3xl animate-in fade-in slide-in-from-top-4 duration-500 ${
+                    isDeliveryBrandMissing
+                      ? 'bg-brand-red/5 border-brand-red/40 ring-2 ring-brand-red/15'
+                      : 'bg-brand-red/5 border-brand-red/15'
+                  }`}>
+                    <div className="flex items-center justify-between gap-3 mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-brand-red rounded-xl flex items-center justify-center text-white text-xl shadow-lg">🛵</div>
+                        <div>
+                          <h3 className="text-sm font-black text-brand-brown uppercase italic leading-none">Delivery <span className="text-brand-red">Configuration</span></h3>
+                          <p className="text-[8px] font-black text-brand-red/60 uppercase tracking-widest mt-1">Zomato Brand Selection &amp; Pricing</p>
+                        </div>
                       </div>
+                      <span className={`px-2.5 py-1 rounded-full text-[8px] font-black uppercase tracking-widest ${
+                        selectedBrand
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                          : 'bg-brand-red text-white animate-pulse'
+                      }`}>
+                        {selectedBrand ? `✓ ${selectedBrand}` : 'Brand Required *'}
+                      </span>
+                    </div>
+
+                    {/* Compulsory Zomato Brand Selector */}
+                    <div className="mb-5">
+                      <label className="text-[9px] font-black text-brand-brown/70 uppercase tracking-widest ml-1 block mb-2">
+                        Select Zomato Brand <span className="text-brand-red">* (Compulsory)</span>
+                      </label>
+                      <div className="grid grid-cols-2 gap-3">
+                        {DELIVERY_BRANDS.map(b => {
+                          const isActive = selectedBrand === b.id;
+                          return (
+                            <button
+                              key={b.id}
+                              type="button"
+                              onClick={() => setSelectedBrand(b.id)}
+                              className={`py-3.5 px-4 rounded-2xl border-2 flex items-center justify-center gap-2.5 font-black uppercase tracking-wider text-xs transition-all cursor-pointer ${
+                                isActive
+                                  ? b.id === 'MINMOMOS'
+                                    ? 'bg-brand-red border-brand-red text-white shadow-lg scale-[1.02]'
+                                    : 'bg-amber-600 border-amber-600 text-white shadow-lg scale-[1.02]'
+                                  : 'bg-white border-brand-brown/15 text-brand-brown hover:border-brand-red/40'
+                              }`}
+                            >
+                              <span className="text-lg">{b.emoji}</span>
+                              <span>{b.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {isDeliveryBrandMissing && (
+                        <p className="text-[10px] font-bold text-brand-red mt-2 ml-1">
+                          Select MinMomos or MinChicken before confirming this delivery order.
+                        </p>
+                      )}
                     </div>
                     
                     <div className="grid grid-cols-2 gap-4">
@@ -560,9 +625,16 @@ _Thank you for visiting MinMomos!_`;
 
       {/* Action Buttons */}
       {!isHistoryView && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-3">
+        <div className="space-y-2 pt-3">
+          {isDeliveryBrandMissing && (
+            <div className="px-4 py-2 rounded-xl bg-brand-red/10 border border-brand-red/30 text-brand-red text-[10px] font-black uppercase tracking-wider text-center">
+              ⚠️ Select Zomato Brand (MinMomos or MinChicken) to enable billing
+            </div>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <button 
                 onClick={() => {
+                  if (isDeliveryBrandMissing) return;
                   if (coinsRequired > 0 && !hasSufficientCoins) {
                       return;
                   }
@@ -573,10 +645,11 @@ _Thank you for visiting MinMomos!_`;
                     selectedMethod, 
                     false,
                     orderType === 'DELIVERY' && manualPrice ? parseFloat(manualPrice) : undefined, 
-                    orderType === 'DELIVERY' && manualDiscount ? parseFloat(manualDiscount) : undefined
+                    orderType === 'DELIVERY' && manualDiscount ? parseFloat(manualDiscount) : undefined,
+                    orderType === 'DELIVERY' ? (selectedBrand || undefined) : undefined
                   );
                 }} 
-                disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !hasSufficientCoins}
+                disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !hasSufficientCoins || isDeliveryBrandMissing}
                 className="bg-brand-brown text-brand-yellow font-black py-4 rounded-2xl transition-all shadow-lg text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-brand-brown"
             >
                 Confirm System Print
@@ -584,7 +657,7 @@ _Thank you for visiting MinMomos!_`;
             
             <button 
               onClick={() => handleWhatsAppSend(false)}
-              disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !hasSufficientCoins}
+              disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !hasSufficientCoins || isDeliveryBrandMissing}
               className="bg-white text-brand-brown font-black py-4 rounded-2xl transition-all shadow-lg text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-brand-brown"
             >
               Confirm & WhatsApp
@@ -592,15 +665,16 @@ _Thank you for visiting MinMomos!_`;
 
             <button 
               onClick={() => {
-                if (isRedemptionOverLimit || !hasSufficientCoins) return;
+                if (isDeliveryBrandMissing || isRedemptionOverLimit || !hasSufficientCoins) return;
                 selectedMethod && onConfirm(
                   selectedMethod, 
                   true,
                   orderType === 'DELIVERY' && manualPrice ? parseFloat(manualPrice) : undefined, 
-                  orderType === 'DELIVERY' && manualDiscount ? parseFloat(manualDiscount) : undefined
+                  orderType === 'DELIVERY' && manualDiscount ? parseFloat(manualDiscount) : undefined,
+                  orderType === 'DELIVERY' ? (selectedBrand || undefined) : undefined
                 );
               }} 
-              disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !isPrinterConnected || !hasSufficientCoins}
+              disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !isPrinterConnected || !hasSufficientCoins || isDeliveryBrandMissing}
               className="bg-mountain-green text-white font-black py-4 rounded-2xl transition-all shadow-lg text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-mountain-green"
             >
               Confirm & BT Print
@@ -608,11 +682,12 @@ _Thank you for visiting MinMomos!_`;
 
             <button 
               onClick={() => handleWhatsAppSend(true)}
-              disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !isPrinterConnected || !hasSufficientCoins}
+              disabled={isSaving || !selectedMethod || isRedemptionOverLimit || !isPrinterConnected || !hasSufficientCoins || isDeliveryBrandMissing}
               className="bg-brand-red text-white font-black py-4 rounded-2xl transition-all shadow-2xl scale-105 ring-4 ring-brand-red/20 text-[9px] uppercase tracking-[0.2em] disabled:opacity-30 border-2 border-brand-red animate-pulse"
             >
               🚀 WhatsApp + BT Print
             </button>
+          </div>
         </div>
       )}
             </div>
@@ -627,6 +702,7 @@ _Thank you for visiting MinMomos!_`;
           billNumber={billNumber} 
           branchName={branchName} 
           orderType={orderType}
+          deliveryBrand={orderType === 'DELIVERY' ? selectedBrand : undefined}
           customerPhone={customerPhone}
           customerInitialBalance={customer?.minCoins}
           customerFinalBalance={finalBalance}

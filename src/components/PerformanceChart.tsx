@@ -27,6 +27,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
   const [showSegments, setShowSegments] = useState(false);
   const [showSitTake, setShowSitTake] = useState(false);
   const [showDelivery, setShowDelivery] = useState(false);
+  const [deliveryBrandMode, setDeliveryBrandMode] = useState<'ALL' | 'SPLIT' | 'MINMOMOS' | 'MINCHICKEN'>('ALL');
   const [showBaseMetric, setShowBaseMetric] = useState(true);
   const [showSecondaryMetric, setShowSecondaryMetric] = useState(true);
   const [showAvgTicket, setShowAvgTicket] = useState(true);
@@ -55,8 +56,11 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
       
       const dailyData: Record<string, { 
         totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; deliveryRevenue: number;
+        minmomosRevenue: number; minchickenRevenue: number;
         totalCogs: number; dineInCogs: number; takeawayCogs: number; deliveryCogs: number;
+        minmomosCogs: number; minchickenCogs: number;
         totalOrders: number; dineInOrders: number; takeawayOrders: number; deliveryOrders: number;
+        minmomosOrders: number; minchickenOrders: number;
         repeatRev: number; newRegRev: number; unregRev: number; zomatoRev: number;
         repeatOrders: number; newRegOrders: number; unregOrders: number; zomatoOrders: number;
         studentOrders: number;
@@ -69,8 +73,11 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           const ds = getISTDateString(curr);
           dailyData[ds] = { 
             totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, deliveryRevenue: 0,
+            minmomosRevenue: 0, minchickenRevenue: 0,
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, deliveryCogs: 0,
+            minmomosCogs: 0, minchickenCogs: 0,
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0, deliveryOrders: 0,
+            minmomosOrders: 0, minchickenOrders: 0,
             repeatRev: 0, newRegRev: 0, unregRev: 0, zomatoRev: 0,
             repeatOrders: 0, newRegOrders: 0, unregOrders: 0, zomatoOrders: 0,
             studentOrders: 0,
@@ -132,6 +139,15 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
               dailyData[dateStr].deliveryRevenue += actualRev;
               dailyData[dateStr].deliveryOrders += 1;
               dailyData[dateStr].deliveryCogs += totalCost;
+              if ((order.deliveryBrand || '').toUpperCase() === 'MINCHICKEN') {
+                dailyData[dateStr].minchickenRevenue += actualRev;
+                dailyData[dateStr].minchickenOrders += 1;
+                dailyData[dateStr].minchickenCogs += totalCost;
+              } else {
+                dailyData[dateStr].minmomosRevenue += actualRev;
+                dailyData[dateStr].minmomosOrders += 1;
+                dailyData[dateStr].minmomosCogs += totalCost;
+              }
             }
           }
         }
@@ -155,15 +171,23 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             dineInRev: values.dineInRevenue,
             takeawayRev: values.takeawayRevenue,
             deliveryRev: values.deliveryRevenue,
+            minmomosRev: values.minmomosRevenue,
+            minchickenRev: values.minchickenRevenue,
             dineInOrders: values.dineInOrders,
             takeawayOrders: values.takeawayOrders,
             deliveryOrders: values.deliveryOrders,
+            minmomosOrders: values.minmomosOrders,
+            minchickenOrders: values.minchickenOrders,
             dineInProfit: values.dineInRevenue - values.dineInCogs,
             takeawayProfit: values.takeawayRevenue - values.takeawayCogs,
             deliveryProfit: values.deliveryRevenue - values.deliveryCogs,
+            minmomosProfit: values.minmomosRevenue - values.minmomosCogs,
+            minchickenProfit: values.minchickenRevenue - values.minchickenCogs,
             dineInAOV: values.dineInOrders > 0 ? values.dineInRevenue / values.dineInOrders : 0,
             takeawayAOV: values.takeawayOrders > 0 ? values.takeawayRevenue / values.takeawayOrders : 0,
             deliveryAOV: values.deliveryOrders > 0 ? values.deliveryRevenue / values.deliveryOrders : 0,
+            minmomosAOV: values.minmomosOrders > 0 ? values.minmomosRevenue / values.minmomosOrders : 0,
+            minchickenAOV: values.minchickenOrders > 0 ? values.minchickenRevenue / values.minchickenOrders : 0,
             repeatRev: values.repeatRev,
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
@@ -237,6 +261,12 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           deliveryRevSMA: calculateWMA(arr, idx, 'deliveryRev'),
           deliveryOrdersSMA: calculateWMA(arr, idx, 'deliveryOrders'),
           deliveryProfitSMA: calculateWMA(arr, idx, 'deliveryProfit'),
+          minmomosRevSMA: calculateWMA(arr, idx, 'minmomosRev'),
+          minmomosOrdersSMA: calculateWMA(arr, idx, 'minmomosOrders'),
+          minmomosProfitSMA: calculateWMA(arr, idx, 'minmomosProfit'),
+          minchickenRevSMA: calculateWMA(arr, idx, 'minchickenRev'),
+          minchickenOrdersSMA: calculateWMA(arr, idx, 'minchickenOrders'),
+          minchickenProfitSMA: calculateWMA(arr, idx, 'minchickenProfit'),
           dineInAOVSMA: calculateWMA(arr, idx, 'dineInAOV'),
           takeawayAOVSMA: calculateWMA(arr, idx, 'takeawayAOV'),
         };
@@ -261,8 +291,11 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
 
       const weeklyData: Record<string, { 
         totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; deliveryRevenue: number;
+        minmomosRevenue: number; minchickenRevenue: number;
         totalCogs: number; dineInCogs: number; takeawayCogs: number; deliveryCogs: number;
+        minmomosCogs: number; minchickenCogs: number;
         totalOrders: number; dineInOrders: number; takeawayOrders: number; deliveryOrders: number;
+        minmomosOrders: number; minchickenOrders: number;
         repeatRev: number; newRegRev: number; unregRev: number; zomatoRev: number;
         repeatOrders: number; newRegOrders: number; unregOrders: number; zomatoOrders: number;
         studentOrders: number;
@@ -300,8 +333,11 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
           const sun = getSunday(orderDate);
           weeklyData[key] = {
             totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, deliveryRevenue: 0,
+            minmomosRevenue: 0, minchickenRevenue: 0,
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, deliveryCogs: 0,
+            minmomosCogs: 0, minchickenCogs: 0,
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0, deliveryOrders: 0,
+            minmomosOrders: 0, minchickenOrders: 0,
             repeatRev: 0, newRegRev: 0, unregRev: 0, zomatoRev: 0,
             repeatOrders: 0, newRegOrders: 0, unregOrders: 0, zomatoOrders: 0,
             studentOrders: 0,
@@ -361,6 +397,15 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             weeklyData[key].deliveryRevenue += actualRev;
             weeklyData[key].deliveryOrders += 1;
             weeklyData[key].deliveryCogs += totalCost;
+            if ((order.deliveryBrand || '').toUpperCase() === 'MINCHICKEN') {
+              weeklyData[key].minchickenRevenue += actualRev;
+              weeklyData[key].minchickenOrders += 1;
+              weeklyData[key].minchickenCogs += totalCost;
+            } else {
+              weeklyData[key].minmomosRevenue += actualRev;
+              weeklyData[key].minmomosOrders += 1;
+              weeklyData[key].minmomosCogs += totalCost;
+            }
           }
         }
       });
@@ -383,15 +428,23 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             dineInRev: values.dineInRevenue,
             takeawayRev: values.takeawayRevenue,
             deliveryRev: values.deliveryRevenue,
+            minmomosRev: values.minmomosRevenue,
+            minchickenRev: values.minchickenRevenue,
             dineInOrders: values.dineInOrders,
             takeawayOrders: values.takeawayOrders,
             deliveryOrders: values.deliveryOrders,
+            minmomosOrders: values.minmomosOrders,
+            minchickenOrders: values.minchickenOrders,
             dineInProfit: values.dineInRevenue - values.dineInCogs,
             takeawayProfit: values.takeawayRevenue - values.takeawayCogs,
             deliveryProfit: values.deliveryRevenue - values.deliveryCogs,
+            minmomosProfit: values.minmomosRevenue - values.minmomosCogs,
+            minchickenProfit: values.minchickenRevenue - values.minchickenCogs,
             dineInAOV: values.dineInOrders > 0 ? values.dineInRevenue / values.dineInOrders : 0,
             takeawayAOV: values.takeawayOrders > 0 ? values.takeawayRevenue / values.takeawayOrders : 0,
             deliveryAOV: values.deliveryOrders > 0 ? values.deliveryRevenue / values.deliveryOrders : 0,
+            minmomosAOV: values.minmomosOrders > 0 ? values.minmomosRevenue / values.minmomosOrders : 0,
+            minchickenAOV: values.minchickenOrders > 0 ? values.minchickenRevenue / values.minchickenOrders : 0,
             repeatRev: values.repeatRev,
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
@@ -415,8 +468,11 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
       // Monthly view
       const monthlyData: Record<string, { 
         totalRevenue: number; dineInRevenue: number; takeawayRevenue: number; deliveryRevenue: number;
+        minmomosRevenue: number; minchickenRevenue: number;
         totalCogs: number; dineInCogs: number; takeawayCogs: number; deliveryCogs: number;
+        minmomosCogs: number; minchickenCogs: number;
         totalOrders: number; dineInOrders: number; takeawayOrders: number; deliveryOrders: number;
+        minmomosOrders: number; minchickenOrders: number;
         repeatRev: number; newRegRev: number; unregRev: number; zomatoRev: number;
         repeatOrders: number; newRegOrders: number; unregOrders: number; zomatoOrders: number;
         studentOrders: number;
@@ -439,8 +495,11 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
         if (!monthlyData[key]) {
           monthlyData[key] = {
             totalRevenue: 0, dineInRevenue: 0, takeawayRevenue: 0, deliveryRevenue: 0,
+            minmomosRevenue: 0, minchickenRevenue: 0,
             totalCogs: 0, dineInCogs: 0, takeawayCogs: 0, deliveryCogs: 0,
+            minmomosCogs: 0, minchickenCogs: 0,
             totalOrders: 0, dineInOrders: 0, takeawayOrders: 0, deliveryOrders: 0,
+            minmomosOrders: 0, minchickenOrders: 0,
             repeatRev: 0, newRegRev: 0, unregRev: 0, zomatoRev: 0,
             repeatOrders: 0, newRegOrders: 0, unregOrders: 0, zomatoOrders: 0,
             studentOrders: 0,
@@ -498,6 +557,15 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             monthlyData[key].deliveryRevenue += actualRev;
             monthlyData[key].deliveryOrders += 1;
             monthlyData[key].deliveryCogs += totalCost;
+            if ((order.deliveryBrand || '').toUpperCase() === 'MINCHICKEN') {
+              monthlyData[key].minchickenRevenue += actualRev;
+              monthlyData[key].minchickenOrders += 1;
+              monthlyData[key].minchickenCogs += totalCost;
+            } else {
+              monthlyData[key].minmomosRevenue += actualRev;
+              monthlyData[key].minmomosOrders += 1;
+              monthlyData[key].minmomosCogs += totalCost;
+            }
           }
         }
       });
@@ -520,15 +588,23 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
             dineInRev: values.dineInRevenue,
             takeawayRev: values.takeawayRevenue,
             deliveryRev: values.deliveryRevenue,
+            minmomosRev: values.minmomosRevenue,
+            minchickenRev: values.minchickenRevenue,
             dineInOrders: values.dineInOrders,
             takeawayOrders: values.takeawayOrders,
             deliveryOrders: values.deliveryOrders,
+            minmomosOrders: values.minmomosOrders,
+            minchickenOrders: values.minchickenOrders,
             dineInProfit: values.dineInRevenue - values.dineInCogs,
             takeawayProfit: values.takeawayRevenue - values.takeawayCogs,
             deliveryProfit: values.deliveryRevenue - values.deliveryCogs,
+            minmomosProfit: values.minmomosRevenue - values.minmomosCogs,
+            minchickenProfit: values.minchickenRevenue - values.minchickenCogs,
             dineInAOV: values.dineInOrders > 0 ? values.dineInRevenue / values.dineInOrders : 0,
             takeawayAOV: values.takeawayOrders > 0 ? values.takeawayRevenue / values.takeawayOrders : 0,
             deliveryAOV: values.deliveryOrders > 0 ? values.deliveryRevenue / values.deliveryOrders : 0,
+            minmomosAOV: values.minmomosOrders > 0 ? values.minmomosRevenue / values.minmomosOrders : 0,
+            minchickenAOV: values.minchickenOrders > 0 ? values.minchickenRevenue / values.minchickenOrders : 0,
             repeatRev: values.repeatRev,
             newRegRev: values.newRegRev,
             unregRev: values.unregRev,
@@ -813,24 +889,65 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
               </div>
             )}
             {showDelivery && (
-              <div className="flex flex-wrap gap-x-8 gap-y-4">
-                {showBaseMetric && (
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-3 h-3 rounded-full bg-[#db2777] shadow-sm" />
-                    <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery {metricLabel}</span>
-                  </div>
-                )}
-                {showAvgTicket && (
-                  <div className="flex items-center gap-2.5 opacity-80">
-                    <div className="w-3 h-3 rounded-full border-2 border-dashed border-[#db2777]" />
-                    <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery AOV</span>
-                  </div>
-                )}
-                {showSecondaryMetric && (
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-2.5 h-2.5 bg-[#db2777] opacity-20 rounded-sm" />
-                    <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery {secondaryMetricLabel}</span>
-                  </div>
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+                <div className="inline-flex items-center gap-1 bg-white p-1 rounded-xl border border-brand-brown/15 shadow-xs">
+                  {([
+                    { id: 'ALL', label: 'All Delivery' },
+                    { id: 'SPLIT', label: 'Split Brands' },
+                    { id: 'MINMOMOS', label: '🥟 MinMomos' },
+                    { id: 'MINCHICKEN', label: '🍗 MinChicken' }
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setDeliveryBrandMode(opt.id)}
+                      className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                        deliveryBrandMode === opt.id
+                          ? (opt.id === 'MINMOMOS' ? 'bg-[#D95323] text-white' : opt.id === 'MINCHICKEN' ? 'bg-amber-600 text-white' : 'bg-brand-brown text-brand-yellow')
+                          : 'text-brand-brown/60 hover:text-brand-brown'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+
+                {deliveryBrandMode === 'ALL' ? (
+                  <>
+                    {showBaseMetric && (
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-3 h-3 rounded-full bg-[#db2777] shadow-sm" />
+                        <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery {metricLabel}</span>
+                      </div>
+                    )}
+                    {showAvgTicket && (
+                      <div className="flex items-center gap-2.5 opacity-80">
+                        <div className="w-3 h-3 rounded-full border-2 border-dashed border-[#db2777]" />
+                        <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery AOV</span>
+                      </div>
+                    )}
+                    {showSecondaryMetric && (
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-2.5 h-2.5 bg-[#db2777] opacity-20 rounded-sm" />
+                        <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">Delivery {secondaryMetricLabel}</span>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {(deliveryBrandMode === 'SPLIT' || deliveryBrandMode === 'MINMOMOS') && (
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-3 h-3 rounded-full bg-[#D95323] shadow-sm" />
+                        <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">🥟 MinMomos {metricLabel}</span>
+                      </div>
+                    )}
+                    {(deliveryBrandMode === 'SPLIT' || deliveryBrandMode === 'MINCHICKEN') && (
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-3 h-3 rounded-full bg-[#D97706] shadow-sm" />
+                        <span className="text-[10px] font-black uppercase text-brand-brown tracking-widest">🍗 MinChicken {metricLabel}</span>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -978,39 +1095,77 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                         )}
                         {/* Delivery Breakdown */}
                         {showDelivery && (
-                          <div className="pt-2 border-t border-brand-brown/5 space-y-3">
+                          <div className="pt-2 border-t border-brand-brown/5 space-y-2.5">
                             <p className="text-[9px] font-black uppercase text-brand-brown/40 tracking-widest">Delivery Breakdown</p>
-                            <div className="flex flex-col gap-1 bg-brand-brown/5 p-2 rounded-lg">
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                  <div className="w-1.5 h-1.5 rounded-full bg-[#db2777]" />
-                                  <span className="text-[9px] font-black uppercase text-brand-brown tracking-wider">Zomato/Delivery</span>
+                            {deliveryBrandMode !== 'MINMOMOS' && deliveryBrandMode !== 'MINCHICKEN' && (
+                              <div className="flex flex-col gap-1 bg-brand-brown/5 p-2 rounded-lg">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-[#db2777]" />
+                                    <span className="text-[9px] font-black uppercase text-brand-brown tracking-wider">Zomato Total</span>
+                                  </div>
+                                  {showBaseMetric && (
+                                    <span className="text-[9px] font-black text-brand-brown/40">
+                                      {totalBase > 0 ? (((analysisBasis === 'REVENUE' ? data.deliveryRev : data.deliveryOrders) / totalBase) * 100).toFixed(0) : 0}%
+                                    </span>
+                                  )}
                                 </div>
-                                {showBaseMetric && (
-                                  <span className="text-[9px] font-black text-brand-brown/40">
-                                    {totalBase > 0 ? (((analysisBasis === 'REVENUE' ? data.deliveryRev : data.deliveryOrders) / totalBase) * 100).toFixed(0) : 0}%
-                                  </span>
-                                )}
+                                <div className="flex flex-col gap-0.5">
+                                  {showBaseMetric && <div className="flex justify-between items-baseline px-1">
+                                    <span className="text-[8px] font-bold text-brand-brown/40 uppercase">{metricLabel}</span>
+                                    <span className="text-[10px] font-black text-brand-brown">
+                                      {analysisBasis === 'REVENUE' ? `₹${data.deliveryRev.toLocaleString()}` : `${data.deliveryOrders} Orders`}
+                                    </span>
+                                  </div>}
+                                  {showSecondaryMetric && <div className="flex justify-between items-baseline px-1">
+                                    <span className="text-[8px] font-bold text-brand-brown/40 uppercase">{secondaryMetricLabel}</span>
+                                    <span className="text-[10px] font-black text-pink-600">
+                                      {analysisBasis === 'REVENUE' ? `₹${data.deliveryProfit.toLocaleString()}` : `₹${data.deliveryRev.toLocaleString()}`}
+                                    </span>
+                                  </div>}
+                                  {showAvgTicket && <div className="flex justify-between items-baseline px-1">
+                                    <span className="text-[8px] font-bold text-brand-brown/40 uppercase">AOV</span>
+                                    <span className="text-[10px] font-black text-pink-600">₹{data.deliveryAOV.toFixed(1)}</span>
+                                  </div>}
+                                </div>
                               </div>
-                              <div className="flex flex-col gap-0.5">
-                                {showBaseMetric && <div className="flex justify-between items-baseline px-1">
-                                  <span className="text-[8px] font-bold text-brand-brown/40 uppercase">{metricLabel}</span>
-                                  <span className="text-[10px] font-black text-brand-brown">
-                                    {analysisBasis === 'REVENUE' ? `₹${data.deliveryRev.toLocaleString()}` : `${data.deliveryOrders} Orders`}
+                            )}
+
+                            {(deliveryBrandMode !== 'MINCHICKEN' && (data.minmomosOrders > 0 || deliveryBrandMode !== 'ALL')) && (
+                              <div className="flex flex-col gap-1 bg-orange-50/80 p-2 rounded-lg border border-orange-200/60">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-1.5">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-[#D95323]" />
+                                    <span className="text-[9px] font-black uppercase text-[#D95323] tracking-wider">🥟 MinMomos</span>
+                                  </div>
+                                  <span className="text-[9px] font-black text-brand-brown">
+                                    {analysisBasis === 'REVENUE' ? `₹${data.minmomosRev.toLocaleString()}` : `${data.minmomosOrders} Orders`}
                                   </span>
-                                </div>}
-                                {showSecondaryMetric && <div className="flex justify-between items-baseline px-1">
-                                  <span className="text-[8px] font-bold text-brand-brown/40 uppercase">{secondaryMetricLabel}</span>
-                                  <span className="text-[10px] font-black text-pink-600">
-                                    {analysisBasis === 'REVENUE' ? `₹${data.deliveryProfit.toLocaleString()}` : `₹${data.deliveryRev.toLocaleString()}`}
-                                  </span>
-                                </div>}
-                                {showAvgTicket && <div className="flex justify-between items-baseline px-1">
-                                  <span className="text-[8px] font-bold text-brand-brown/40 uppercase">AOV</span>
-                                  <span className="text-[10px] font-black text-pink-600">₹{data.deliveryAOV.toFixed(1)}</span>
-                                </div>}
+                                </div>
+                                <div className="flex justify-between text-[8px] font-bold text-brand-brown/60 px-1">
+                                  <span>{data.minmomosOrders} orders</span>
+                                  <span>AOV: ₹{data.minmomosAOV.toFixed(0)}</span>
+                                </div>
                               </div>
-                            </div>
+                            )}
+
+                            {(deliveryBrandMode !== 'MINMOMOS' && (data.minchickenOrders > 0 || deliveryBrandMode !== 'ALL')) && (
+                              <div className="flex flex-col gap-1 bg-amber-50/80 p-2 rounded-lg border border-amber-200/60">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-1.5">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-[#D97706]" />
+                                    <span className="text-[9px] font-black uppercase text-amber-800 tracking-wider">🍗 MinChicken</span>
+                                  </div>
+                                  <span className="text-[9px] font-black text-brand-brown">
+                                    {analysisBasis === 'REVENUE' ? `₹${data.minchickenRev.toLocaleString()}` : `${data.minchickenOrders} Orders`}
+                                  </span>
+                                </div>
+                                <div className="flex justify-between text-[8px] font-bold text-brand-brown/60 px-1">
+                                  <span>{data.minchickenOrders} orders</span>
+                                  <span>AOV: ₹{data.minchickenAOV.toFixed(0)}</span>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -1315,48 +1470,146 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ orders, customers, 
                 )}
               </>
             )}
-            {showDelivery && (
+            {showDelivery && isCurveVisible('delivery') && (
               <>
-                {showBaseMetric && isCurveVisible('delivery') && (
-                  <Area 
-                    yAxisId="left"
-                    type="monotone" 
-                    dataKey={analysisBasis === 'REVENUE' ? "deliveryRev" : "deliveryOrders"} 
-                    name={`Delivery ${metricLabel}`} 
-                    stroke="#db2777" 
-                    fill="#fce7f3" 
-                    strokeWidth={2}
-                    fillOpacity={0.2}
-                  />
-                )}
-                {showSecondaryMetric && isCurveVisible('delivery') && (
-                  <Line 
-                    yAxisId="left"
-                    type="monotone" 
-                    dataKey={analysisBasis === 'REVENUE' ? "deliveryProfit" : "deliveryRev"} 
-                    name={`Delivery ${secondaryMetricLabel}`} 
-                    stroke="#db2777" 
-                    strokeWidth={2}
-                    strokeDasharray="2 2"
-                    dot={false}
-                  />
-                )}
-                {showAvgTicket && isCurveVisible('delivery') && (
-                  <Line 
-                    yAxisId="right"
-                    type="monotone" 
-                    dataKey="deliveryAOV" 
-                    name="Delivery AOV" 
-                    stroke="#db2777" 
-                    strokeWidth={2}
-                    strokeDasharray="4 4"
-                    dot={false}
-                  />
-                )}
-                {showSMA && (
+                {deliveryBrandMode === 'ALL' && (
                   <>
-                    {showBaseMetric && <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "deliveryRevSMA" : "deliveryOrdersSMA"} name={`Delivery ${metricLabel} (WMA)`} stroke="#db2777" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />}
-                    {showSecondaryMetric && <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "deliveryProfitSMA" : "deliveryRevSMA"} name={`Delivery ${secondaryMetricLabel} (WMA)`} stroke="#db2777" strokeWidth={1} strokeDasharray="1 3" dot={false} />}
+                    {showBaseMetric && (
+                      <Area 
+                        yAxisId="left"
+                        type="monotone" 
+                        dataKey={analysisBasis === 'REVENUE' ? "deliveryRev" : "deliveryOrders"} 
+                        name={`Delivery ${metricLabel}`} 
+                        stroke="#db2777" 
+                        fill="#fce7f3" 
+                        strokeWidth={2}
+                        fillOpacity={0.2}
+                      />
+                    )}
+                    {showSecondaryMetric && (
+                      <Line 
+                        yAxisId="left"
+                        type="monotone" 
+                        dataKey={analysisBasis === 'REVENUE' ? "deliveryProfit" : "deliveryRev"} 
+                        name={`Delivery ${secondaryMetricLabel}`} 
+                        stroke="#db2777" 
+                        strokeWidth={2}
+                        strokeDasharray="2 2"
+                        dot={false}
+                      />
+                    )}
+                    {showAvgTicket && (
+                      <Line 
+                        yAxisId="right"
+                        type="monotone" 
+                        dataKey="deliveryAOV" 
+                        name="Delivery AOV" 
+                        stroke="#db2777" 
+                        strokeWidth={2}
+                        strokeDasharray="4 4"
+                        dot={false}
+                      />
+                    )}
+                    {showSMA && (
+                      <>
+                        {showBaseMetric && <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "deliveryRevSMA" : "deliveryOrdersSMA"} name={`Delivery ${metricLabel} (WMA)`} stroke="#db2777" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />}
+                        {showSecondaryMetric && <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "deliveryProfitSMA" : "deliveryRevSMA"} name={`Delivery ${secondaryMetricLabel} (WMA)`} stroke="#db2777" strokeWidth={1} strokeDasharray="1 3" dot={false} />}
+                      </>
+                    )}
+                  </>
+                )}
+
+                {(deliveryBrandMode === 'SPLIT' || deliveryBrandMode === 'MINMOMOS') && (
+                  <>
+                    {showBaseMetric && (
+                      <Area 
+                        yAxisId="left"
+                        type="monotone" 
+                        dataKey={analysisBasis === 'REVENUE' ? "minmomosRev" : "minmomosOrders"} 
+                        name={`🥟 MinMomos ${metricLabel}`} 
+                        stroke="#D95323" 
+                        fill="#ffedd5" 
+                        strokeWidth={2.5}
+                        fillOpacity={0.25}
+                      />
+                    )}
+                    {showSecondaryMetric && (
+                      <Line 
+                        yAxisId="left"
+                        type="monotone" 
+                        dataKey={analysisBasis === 'REVENUE' ? "minmomosProfit" : "minmomosRev"} 
+                        name={`🥟 MinMomos ${secondaryMetricLabel}`} 
+                        stroke="#D95323" 
+                        strokeWidth={2}
+                        strokeDasharray="2 2"
+                        dot={false}
+                      />
+                    )}
+                    {showAvgTicket && (
+                      <Line 
+                        yAxisId="right"
+                        type="monotone" 
+                        dataKey="minmomosAOV" 
+                        name="🥟 MinMomos AOV" 
+                        stroke="#D95323" 
+                        strokeWidth={2}
+                        strokeDasharray="4 4"
+                        dot={false}
+                      />
+                    )}
+                    {showSMA && (
+                      <>
+                        {showBaseMetric && <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "minmomosRevSMA" : "minmomosOrdersSMA"} name={`MinMomos ${metricLabel} (WMA)`} stroke="#D95323" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />}
+                        {showSecondaryMetric && <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "minmomosProfitSMA" : "minmomosRevSMA"} name={`MinMomos ${secondaryMetricLabel} (WMA)`} stroke="#D95323" strokeWidth={1} strokeDasharray="1 3" dot={false} />}
+                      </>
+                    )}
+                  </>
+                )}
+
+                {(deliveryBrandMode === 'SPLIT' || deliveryBrandMode === 'MINCHICKEN') && (
+                  <>
+                    {showBaseMetric && (
+                      <Area 
+                        yAxisId="left"
+                        type="monotone" 
+                        dataKey={analysisBasis === 'REVENUE' ? "minchickenRev" : "minchickenOrders"} 
+                        name={`🍗 MinChicken ${metricLabel}`} 
+                        stroke="#D97706" 
+                        fill="#fef3c7" 
+                        strokeWidth={2.5}
+                        fillOpacity={0.25}
+                      />
+                    )}
+                    {showSecondaryMetric && (
+                      <Line 
+                        yAxisId="left"
+                        type="monotone" 
+                        dataKey={analysisBasis === 'REVENUE' ? "minchickenProfit" : "minchickenRev"} 
+                        name={`🍗 MinChicken ${secondaryMetricLabel}`} 
+                        stroke="#D97706" 
+                        strokeWidth={2}
+                        strokeDasharray="2 2"
+                        dot={false}
+                      />
+                    )}
+                    {showAvgTicket && (
+                      <Line 
+                        yAxisId="right"
+                        type="monotone" 
+                        dataKey="minchickenAOV" 
+                        name="🍗 MinChicken AOV" 
+                        stroke="#D97706" 
+                        strokeWidth={2}
+                        strokeDasharray="4 4"
+                        dot={false}
+                      />
+                    )}
+                    {showSMA && (
+                      <>
+                        {showBaseMetric && <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "minchickenRevSMA" : "minchickenOrdersSMA"} name={`MinChicken ${metricLabel} (WMA)`} stroke="#D97706" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />}
+                        {showSecondaryMetric && <Line yAxisId="left" type="monotone" dataKey={analysisBasis === 'REVENUE' ? "minchickenProfitSMA" : "minchickenRevSMA"} name={`MinChicken ${secondaryMetricLabel} (WMA)`} stroke="#D97706" strokeWidth={1} strokeDasharray="1 3" dot={false} />}
+                      </>
+                    )}
                   </>
                 )}
               </>

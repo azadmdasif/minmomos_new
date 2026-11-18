@@ -27,6 +27,9 @@ interface SalesData {
   dineInQty: number;
   takeawayQty: number;
   deliveryQty: number;
+  minmomosQty: number;
+  minchickenQty: number;
+  unassignedDeliveryQty: number;
 }
 
 type SortKey = 'name' | 'quantity' | 'revenue' | 'share' | 'cogs' | 'profit';
@@ -214,6 +217,7 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
   studentPhoneSet
 }) => {
   const [selectedChannels, setSelectedChannels] = useState<string[]>(['DINE_IN', 'TAKEAWAY', 'DELIVERY']);
+  const [deliveryBrandMode, setDeliveryBrandMode] = useState<'ALL' | 'SPLIT' | 'MINMOMOS' | 'MINCHICKEN'>('ALL');
   const [isSplit, setIsSplit] = useState(false);
   const [isDiscountExpanded, setIsDiscountExpanded] = useState(false);
   const [discountSortBy, setDiscountSortBy] = useState<'amount' | 'count' | 'name'>('amount');
@@ -275,8 +279,16 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
   const safeOrders = useMemo(() => Array.isArray(orders) ? orders : [], [orders]);
 
   const filteredOrders = useMemo(() => {
-    return safeOrders.filter(o => o && selectedChannels.includes(o.type));
-  }, [safeOrders, selectedChannels]);
+    return safeOrders.filter(o => {
+      if (!o || !selectedChannels.includes(o.type)) return false;
+      if (o.type === 'DELIVERY') {
+        const brand = (o.deliveryBrand || '').toUpperCase();
+        if (deliveryBrandMode === 'MINMOMOS') return brand !== 'MINCHICKEN';
+        if (deliveryBrandMode === 'MINCHICKEN') return brand === 'MINCHICKEN';
+      }
+      return true;
+    });
+  }, [safeOrders, selectedChannels, deliveryBrandMode]);
 
   // Track loyalty discounts and promotional vouchers applied with granular breakdown
   const discountStats = useMemo<DiscountStats>(() => {
@@ -406,10 +418,14 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
       dineInQty: number;
       takeawayQty: number;
       deliveryQty: number;
+      minmomosQty: number;
+      minchickenQty: number;
+      unassignedDeliveryQty: number;
     }>();
 
     filteredOrders.forEach(order => {
       const items = Array.isArray(order.items) ? order.items : [];
+      const brand = order.type === 'DELIVERY' ? (order.deliveryBrand || '').toUpperCase() : '';
       items.forEach(item => {
         // Exclude discount line items from product inventory reports
         if (isDiscountOrNonProductItem(item)) return;
@@ -426,6 +442,9 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
         const dineQty = order.type === 'DINE_IN' ? quantity : 0;
         const takeQty = order.type === 'TAKEAWAY' ? quantity : 0;
         const delQty = order.type === 'DELIVERY' ? quantity : 0;
+        const mcQty = order.type === 'DELIVERY' && brand === 'MINCHICKEN' ? quantity : 0;
+        const mmQty = order.type === 'DELIVERY' && brand !== 'MINCHICKEN' ? quantity : 0;
+        const unQty = 0;
 
         if (existing) {
           existing.quantity += quantity;
@@ -434,6 +453,9 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
           existing.dineInQty += dineQty;
           existing.takeawayQty += takeQty;
           existing.deliveryQty += delQty;
+          existing.minmomosQty += mmQty;
+          existing.minchickenQty += mcQty;
+          existing.unassignedDeliveryQty += unQty;
         } else {
           itemMap.set(item.name, {
             name: item.name,
@@ -443,6 +465,9 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
             dineInQty: dineQty,
             takeawayQty: takeQty,
             deliveryQty: delQty,
+            minmomosQty: mmQty,
+            minchickenQty: mcQty,
+            unassignedDeliveryQty: unQty,
           });
         }
       });
@@ -454,6 +479,9 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
       dineInQty: Math.max(0, data.dineInQty),
       takeawayQty: Math.max(0, data.takeawayQty),
       deliveryQty: Math.max(0, data.deliveryQty),
+      minmomosQty: Math.max(0, data.minmomosQty),
+      minchickenQty: Math.max(0, data.minchickenQty),
+      unassignedDeliveryQty: Math.max(0, data.unassignedDeliveryQty),
       profit: data.revenue - data.cogs,
     }));
   }, [filteredOrders]);
@@ -468,10 +496,14 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
       dineInQty: number;
       takeawayQty: number;
       deliveryQty: number;
+      minmomosQty: number;
+      minchickenQty: number;
+      unassignedDeliveryQty: number;
     }>();
 
     filteredOrders.forEach(order => {
       const items = Array.isArray(order.items) ? order.items : [];
+      const brand = order.type === 'DELIVERY' ? (order.deliveryBrand || '').toUpperCase() : '';
       items.forEach(item => {
         // Exclude discount line items from product category reports
         if (isDiscountOrNonProductItem(item)) return;
@@ -489,6 +521,9 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
         const dineQty = order.type === 'DINE_IN' ? quantity : 0;
         const takeQty = order.type === 'TAKEAWAY' ? quantity : 0;
         const delQty = order.type === 'DELIVERY' ? quantity : 0;
+        const mcQty = order.type === 'DELIVERY' && brand === 'MINCHICKEN' ? quantity : 0;
+        const mmQty = order.type === 'DELIVERY' && brand !== 'MINCHICKEN' ? quantity : 0;
+        const unQty = 0;
 
         if (existing) {
           existing.quantity += quantity;
@@ -497,6 +532,9 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
           existing.dineInQty += dineQty;
           existing.takeawayQty += takeQty;
           existing.deliveryQty += delQty;
+          existing.minmomosQty += mmQty;
+          existing.minchickenQty += mcQty;
+          existing.unassignedDeliveryQty += unQty;
         } else {
           categoryMap.set(categoryName, {
             name: categoryName,
@@ -506,6 +544,9 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
             dineInQty: dineQty,
             takeawayQty: takeQty,
             deliveryQty: delQty,
+            minmomosQty: mmQty,
+            minchickenQty: mcQty,
+            unassignedDeliveryQty: unQty,
           });
         }
       });
@@ -517,6 +558,9 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
       dineInQty: Math.max(0, data.dineInQty),
       takeawayQty: Math.max(0, data.takeawayQty),
       deliveryQty: Math.max(0, data.deliveryQty),
+      minmomosQty: Math.max(0, data.minmomosQty),
+      minchickenQty: Math.max(0, data.minchickenQty),
+      unassignedDeliveryQty: Math.max(0, data.unassignedDeliveryQty),
       profit: data.revenue - data.cogs,
     }));
   }, [filteredOrders, menuItems, sections]);
@@ -524,25 +568,19 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
   const activeSalesData = distributionView === 'category' ? categorySalesData : salesData;
 
   const chartData = useMemo(() => {
+    const mapRow = (d: SalesData) => ({
+      ...d,
+      dineInQty: Number(d.dineInQty) || 0,
+      takeawayQty: Number(d.takeawayQty) || 0,
+      deliveryQty: Number(d.deliveryQty) || 0,
+      minmomosQty: Number(d.minmomosQty) || 0,
+      minchickenQty: Number(d.minchickenQty) || 0,
+      unassignedDeliveryQty: Number(d.unassignedDeliveryQty) || 0,
+    });
     if (distributionView === 'category') {
-      return [...categorySalesData]
-        .sort((a, b) => b.quantity - a.quantity)
-        .map(d => ({
-          ...d,
-          dineInQty: Number(d.dineInQty) || 0,
-          takeawayQty: Number(d.takeawayQty) || 0,
-          deliveryQty: Number(d.deliveryQty) || 0,
-        }));
+      return [...categorySalesData].sort((a, b) => b.quantity - a.quantity).map(mapRow);
     }
-    return [...salesData]
-      .sort((a, b) => b.quantity - a.quantity)
-      .slice(0, 15)
-      .map(d => ({
-        ...d,
-        dineInQty: Number(d.dineInQty) || 0,
-        takeawayQty: Number(d.takeawayQty) || 0,
-        deliveryQty: Number(d.deliveryQty) || 0,
-      }));
+    return [...salesData].sort((a, b) => b.quantity - a.quantity).slice(0, 15).map(mapRow);
   }, [distributionView, categorySalesData, salesData]);
 
   const sortedSalesData = useMemo(() => {
@@ -640,6 +678,32 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
               <Truck className="w-4 h-4" />
               Delivery
             </button>
+
+            {selectedChannels.includes('DELIVERY') && (
+              <div className="flex flex-wrap items-center bg-brand-brown/5 p-1 rounded-2xl border border-brand-stone gap-0.5">
+                {(
+                  [
+                    { id: 'ALL', label: 'All Zomato' },
+                    { id: 'SPLIT', label: 'Split Brands' },
+                    { id: 'MINMOMOS', label: '🥟 MinMomos' },
+                    { id: 'MINCHICKEN', label: '🍗 MinChicken' }
+                  ] as const
+                ).map(opt => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setDeliveryBrandMode(opt.id)}
+                    className={`px-3 py-2 rounded-xl text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                      deliveryBrandMode === opt.id
+                        ? 'bg-brand-brown text-brand-yellow shadow-sm'
+                        : 'text-brand-brown/50 hover:text-brand-brown'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <div className="w-[2px] h-8 bg-brand-stone mx-2 hidden sm:block" />
 
@@ -1046,15 +1110,44 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
                     isAnimationActive={false}
                   />
                 )}
-                {selectedChannels.includes('DELIVERY') && (
+                {selectedChannels.includes('DELIVERY') && deliveryBrandMode === 'SPLIT' ? (
+                  <>
+                    <Bar
+                      dataKey="minmomosQty"
+                      name="Delivery • 🥟 MinMomos"
+                      stackId="salesStack"
+                      fill="#D95323"
+                      isAnimationActive={false}
+                    />
+                    <Bar
+                      dataKey="minchickenQty"
+                      name="Delivery • 🍗 MinChicken"
+                      stackId="salesStack"
+                      fill="#D97706"
+                      isAnimationActive={false}
+                    />
+                  </>
+                ) : selectedChannels.includes('DELIVERY') ? (
                   <Bar 
                     dataKey="deliveryQty" 
-                    name="Delivery" 
+                    name={
+                      deliveryBrandMode === 'MINMOMOS'
+                        ? 'Delivery • 🥟 MinMomos'
+                        : deliveryBrandMode === 'MINCHICKEN'
+                        ? 'Delivery • 🍗 MinChicken'
+                        : 'Delivery'
+                    }
                     stackId="salesStack" 
-                    fill="#E11D48" 
+                    fill={
+                      deliveryBrandMode === 'MINMOMOS'
+                        ? '#D95323'
+                        : deliveryBrandMode === 'MINCHICKEN'
+                        ? '#D97706'
+                        : '#E11D48'
+                    }
                     isAnimationActive={false}
                   />
-                )}
+                ) : null}
               </BarChart>
             </ResponsiveContainer>
           ) : (
@@ -1066,7 +1159,7 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
       </div>
 
       {/* Visual Analytics */}
-      <div className={`grid gap-12 min-w-0 ${isSplit ? 'grid-cols-1 lg:grid-cols-3' : 'grid-cols-1'}`}>
+      <div className={`grid gap-12 min-w-0 ${isSplit ? (deliveryBrandMode === 'SPLIT' ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1 lg:grid-cols-3') : 'grid-cols-1'}`}>
         {!isSplit ? (
           <ItemCategoryPieChart 
             orders={filteredOrders} 
@@ -1093,15 +1186,50 @@ const ItemSalesReport: React.FC<ItemSalesReportProps> = ({
               menuItems={menuItems}
               menuSections={sections}
             />
-            <ItemCategoryPieChart 
-              orders={filteredOrders.filter(o => o.type === 'DELIVERY')} 
-              title="Delivery"
-              colorTheme="#E11D48"
-              disabled={!selectedChannels.includes('DELIVERY')}
-              groupMode={distributionView}
-              menuItems={menuItems}
-              menuSections={sections}
-            />
+            {deliveryBrandMode === 'SPLIT' ? (
+              <>
+                <ItemCategoryPieChart 
+                  orders={filteredOrders.filter(o => o.type === 'DELIVERY' && (o.deliveryBrand || '').toUpperCase() !== 'MINCHICKEN')} 
+                  title="Delivery • 🥟 MinMomos"
+                  colorTheme="#D95323"
+                  disabled={!selectedChannels.includes('DELIVERY')}
+                  groupMode={distributionView}
+                  menuItems={menuItems}
+                  menuSections={sections}
+                />
+                <ItemCategoryPieChart 
+                  orders={filteredOrders.filter(o => o.type === 'DELIVERY' && (o.deliveryBrand || '').toUpperCase() === 'MINCHICKEN')} 
+                  title="Delivery • 🍗 MinChicken"
+                  colorTheme="#D97706"
+                  disabled={!selectedChannels.includes('DELIVERY')}
+                  groupMode={distributionView}
+                  menuItems={menuItems}
+                  menuSections={sections}
+                />
+              </>
+            ) : (
+              <ItemCategoryPieChart 
+                orders={filteredOrders.filter(o => o.type === 'DELIVERY')} 
+                title={
+                  deliveryBrandMode === 'MINMOMOS'
+                    ? 'Delivery • 🥟 MinMomos'
+                    : deliveryBrandMode === 'MINCHICKEN'
+                    ? 'Delivery • 🍗 MinChicken'
+                    : 'Delivery'
+                }
+                colorTheme={
+                  deliveryBrandMode === 'MINMOMOS'
+                    ? '#D95323'
+                    : deliveryBrandMode === 'MINCHICKEN'
+                    ? '#D97706'
+                    : '#E11D48'
+                }
+                disabled={!selectedChannels.includes('DELIVERY')}
+                groupMode={distributionView}
+                menuItems={menuItems}
+                menuSections={sections}
+              />
+            )}
           </>
         )}
       </div>

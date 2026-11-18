@@ -23,7 +23,7 @@ interface CustomerHistogramProps {
   customers: Customer[];
   allCustomers?: Customer[];
   allOrders?: CompletedOrder[];
-  customerOrderStats?: Record<string, { DINE_IN: number; TAKEAWAY: number; DELIVERY: number; total: number }>;
+  customerOrderStats?: Record<string, { DINE_IN: number; TAKEAWAY: number; DELIVERY: number; DELIVERY_MINMOMOS?: number; DELIVERY_MINCHICKEN?: number; total: number }>;
 }
 
 export const CustomerHistogram: React.FC<CustomerHistogramProps> = ({ 
@@ -136,6 +136,8 @@ export const CustomerHistogram: React.FC<CustomerHistogramProps> = ({
     let totalDineIn = 0;
     let totalTakeaway = 0;
     let totalDelivery = 0;
+    let totalMinMomos = 0;
+    let totalMinChicken = 0;
     let customersWithStats = 0;
 
     customers.forEach(c => {
@@ -145,6 +147,10 @@ export const CustomerHistogram: React.FC<CustomerHistogramProps> = ({
         totalDineIn += st.DINE_IN || 0;
         totalTakeaway += st.TAKEAWAY || 0;
         totalDelivery += st.DELIVERY || 0;
+        const mcCount = st.DELIVERY_MINCHICKEN || 0;
+        const mmCount = st.DELIVERY_MINMOMOS ?? Math.max(0, (st.DELIVERY || 0) - mcCount);
+        totalMinMomos += mmCount;
+        totalMinChicken += mcCount;
         customersWithStats++;
       }
     });
@@ -153,6 +159,8 @@ export const CustomerHistogram: React.FC<CustomerHistogramProps> = ({
     const dineInPct = totalModeOrders > 0 ? Math.round((totalDineIn / totalModeOrders) * 100) : 45;
     const takeawayPct = totalModeOrders > 0 ? Math.round((totalTakeaway / totalModeOrders) * 100) : 45;
     const deliveryPct = totalModeOrders > 0 ? Math.max(0, 100 - dineInPct - takeawayPct) : 10;
+    const minMomosPct = totalModeOrders > 0 ? Math.round((totalMinMomos / totalModeOrders) * 100) : 0;
+    const minChickenPct = totalModeOrders > 0 ? Math.round((totalMinChicken / totalModeOrders) * 100) : 0;
 
     // Recency / Retention Health
     const now = Date.now();
@@ -228,6 +236,9 @@ export const CustomerHistogram: React.FC<CustomerHistogramProps> = ({
       dineInPct,
       takeawayPct,
       deliveryPct,
+      minMomosPct,
+      minChickenPct,
+      hasBrandSplit: totalMinMomos > 0 || totalMinChicken > 0,
       active30d,
       atRisk60d,
       dormant,
@@ -673,6 +684,12 @@ export const CustomerHistogram: React.FC<CustomerHistogramProps> = ({
                   <span>🛵 Delivery:</span>
                   <span className="font-black text-blue-600">{categoryMap.deliveryPct}%</span>
                 </div>
+                {categoryMap.hasBrandSplit && (
+                  <div className="flex justify-between text-[10px] font-bold text-brand-brown/60 pl-3">
+                    <span>🥟 {categoryMap.minMomosPct}%</span>
+                    <span>🍗 {categoryMap.minChickenPct}%</span>
+                  </div>
+                )}
               </div>
             </div>
 
